@@ -41,7 +41,7 @@ fn main() {
     }
 
     // You can also use generics with functions that take multiple types. For example, you can create a function that takes two generic types T and U.
-    fn generic_function_with_two_types<T, U>(value1: T, value2: U) {
+    fn generic_function_with_two_types<T: std::fmt::Debug, U: std::fmt::Debug>(value1: T, value2: U) {
         println!("Value 1: {:?}, Value 2: {:?}", value1, value2);
     }
 

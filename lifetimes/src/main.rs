@@ -30,8 +30,4 @@ fn main() {
     // They allow you to specify how long references should be valid and ensure that references do not outlive the data they point to.
     // This prevents memory safety issues and makes your code more reliable.
     // Lifetimes can be complex, but they are an essential part of Rust's ownership system and help ensure that your code is safe and efficient.
-    // Here's an example of a function that takes a reference with a specific lifetime and returns a reference with a different lifetime.
-    fn longest_with_different_lifetime<'a, 'b>(s1: &'a str, s2: &'b str) -> &'a str {
-        if s1.len() > s2.len() { s1 } else { s2 }
-    }
 }
