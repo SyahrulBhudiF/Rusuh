@@ -4,33 +4,47 @@ Rust rewrite of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — 
 
 Single binary, zero runtime dependencies, built with [Axum](https://github.com/tokio-rs/axum).
 
-## Quick Start
-
-```bash
-# Build
-cargo build --release
-
-# Run (serves on :8317 by default)
-./target/release/rusuh
-
-# Or with a custom config
-./target/release/rusuh --config my-config.yaml
-```
-
 ## Installation
 
 **Requirements:** Rust 1.75+ (2021 edition)
 
 ```bash
-git clone https://github.com/your-user/rusuh.git
-cd rusuh
+git clone https://github.com/SyahrulBhudiF/Rusuh.git
+cd Rusuh
+
+# Install to ~/.cargo/bin (recommended — makes `rusuh` available globally)
+cargo install --path .
+
+# Or build without installing
 cargo build --release
-# Binary at ./target/release/rusuh (8 MB stripped)
+# Binary at ./target/release/rusuh
 ```
+
+After `cargo install`, make sure `~/.cargo/bin` is in your PATH.
+
+## Quick Start
+
+```bash
+# 1. Login with your Google account
+rusuh antigravity-login
+
+# 2. Start the proxy server
+rusuh
+
+# 3. Chat (from another terminal)
+curl http://localhost:8317/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+> **Important:** You must restart `rusuh` after logging in. The server loads credentials at startup — if you login while the server is already running, it won't pick up the new credentials until restarted.
 
 ## Configuration
 
-Rusuh works with **zero configuration** — just run it. For customization, create a `config.yaml`:
+Rusuh works with **zero configuration** — just login and run. For customization, create a `config.yaml`:
 
 ```yaml
 host: ""           # bind address ("" = all interfaces)
@@ -76,13 +90,19 @@ routing:
 
 See [`config.example.yaml`](config.example.yaml) for a full reference.
 
+Run with a custom config:
+
+```bash
+rusuh --config my-config.yaml
+```
+
 ## Authentication
+
 ### Antigravity Login (Google Cloud Code)
 
 Antigravity is the primary provider — it uses Google OAuth to authenticate with the Cloud Code API.
 
 ```bash
-# Login with your Google account
 rusuh antigravity-login
 ```
 
@@ -92,6 +112,13 @@ This will:
 3. Exchange the authorization code for access + refresh tokens
 4. Fetch your email and GCP project ID
 5. Save credentials to `~/.rusuh/antigravity-<email>.json`
+
+After login, **restart the server** to load the new credentials:
+
+```bash
+# Stop the running server (Ctrl+C), then:
+rusuh
+```
 
 ### Multi-Account Setup
 
@@ -105,6 +132,9 @@ rusuh antigravity-login
 # Login with another account (different browser profile or incognito)
 rusuh antigravity-login
 # → saved to ~/.rusuh/antigravity-user2@gmail.com.json
+
+# Restart to load both accounts
+rusuh
 ```
 
 At startup, Rusuh loads **all** credential files and creates a provider instance per account. Requests are distributed across accounts using the configured load balancing strategy (round-robin by default).
@@ -223,9 +253,8 @@ GET  /health
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
   -d '{
-    "model": "gemini-2.5-pro",
+    "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -235,19 +264,17 @@ curl http://localhost:8317/v1/chat/completions \
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
   -d '{
-    "model": "gemini-2.5-pro",
+    "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Write a haiku"}],
     "stream": true
   }'
 ```
 
-### List models
+### List available models
 
 ```bash
-curl http://localhost:8317/v1/models \
-  -H "Authorization: Bearer your-secret-key"
+curl http://localhost:8317/v1/models
 ```
 
 ### Route to specific provider
@@ -255,39 +282,41 @@ curl http://localhost:8317/v1/models \
 ```bash
 curl http://localhost:8317/api/provider/antigravity/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
   -d '{
-    "model": "gemini-2.5-pro",
+    "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hi"}]
   }'
 ```
 
-### Use with OpenAI SDK
+### Use with OpenAI SDK (Python)
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8317/v1",
-    api_key="your-secret-key",
+    api_key="unused",  # no api-keys in config = auth disabled
 )
 
 response = client.chat.completions.create(
-    model="gemini-2.5-pro",
+    model="gemini-2.5-flash",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
 ```
 
-### Use with `curl` (no auth)
+### With API key auth
 
-If `api-keys` is empty in config, auth is disabled:
+If you set `api-keys` in config, pass the key via header:
 
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "gemini-2.5-pro", "messages": [{"role": "user", "content": "Hi"}]}'
+  -H "Authorization: Bearer your-secret-key" \
+  -d '{"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Hi"}]}'
 ```
+
+Without `api-keys` configured, auth is disabled and no header is needed.
 
 ## Testing
 
@@ -380,3 +409,7 @@ tests/
 RUST_LOG=rusuh=debug     # Enable debug logging
 RUST_LOG=rusuh=trace     # Trace-level logging
 ```
+
+## License
+
+MIT
