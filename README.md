@@ -409,7 +409,3 @@ tests/
 RUST_LOG=rusuh=debug     # Enable debug logging
 RUST_LOG=rusuh=trace     # Trace-level logging
 ```
-
-## License
-
-MIT
