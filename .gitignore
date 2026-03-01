@@ -1,0 +1,6 @@
+/target
+config.yaml
+.env
+auths/
+*.token
+.claude

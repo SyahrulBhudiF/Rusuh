@@ -1,0 +1,30 @@
+host: ""
+port: 8317
+
+auth-dir: "~/.rusuh"
+
+api-keys:
+  - "your-api-key"
+
+debug: false
+request-retry: 3
+
+routing:
+  strategy: "round-robin"
+
+# proxy-url: "socks5://user:pass@127.0.0.1:1080"
+
+# gemini-api-key:
+#   - api-key: "AIzaSy..."
+
+# codex-api-key:
+#   - api-key: "sk-..."
+
+# claude-api-key:
+#   - api-key: "sk-ant-..."
+
+# openai-compatibility:
+#   - name: "openrouter"
+#     base-url: "https://openrouter.ai/api/v1"
+#     api-key-entries:
+#       - api-key: "sk-or-v1-..."
