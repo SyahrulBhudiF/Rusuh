@@ -81,6 +81,10 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
 
         // ── Management API ────────────────────────────────────────────────────
         .nest("/v0/management", crate::proxy::management::router(state.clone()))
-
+        // ── OAuth callbacks (top-level, no auth middleware) ──────────────────
+        .route(
+            "/antigravity/callback",
+            get(crate::proxy::oauth::antigravity_callback),
+        )
         .with_state(state)
 }

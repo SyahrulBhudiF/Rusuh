@@ -1,6 +1,7 @@
 pub mod balancer;
 pub mod handlers;
 pub mod management;
+pub mod oauth;
 pub mod stream;
 
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use crate::providers::model_registry::ModelRegistry;
 use crate::providers::Provider;
 
 use self::balancer::{Balancer, Strategy};
+use self::oauth::OAuthSessionStore;
 
 /// Shared application state — injected into all route handlers.
 pub struct ProxyState {
@@ -25,6 +27,8 @@ pub struct ProxyState {
     pub model_registry: Arc<ModelRegistry>,
     /// Load balancer for distributing requests across providers
     pub balancer: Balancer,
+    /// In-memory OAuth session tracker for web-triggered flows
+    pub oauth_sessions: OAuthSessionStore,
 }
 
 impl ProxyState {
@@ -41,6 +45,7 @@ impl ProxyState {
             accounts,
             model_registry,
             balancer: Balancer::new(strategy, provider_count),
+            oauth_sessions: OAuthSessionStore::new(),
         }
     }
 }

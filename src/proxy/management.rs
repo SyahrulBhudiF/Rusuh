@@ -35,6 +35,9 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/auth-files/download", get(download_auth_file))
         .route("/auth-files/status", patch(patch_auth_file_status))
         .route("/auth-files/fields", patch(patch_auth_file_fields))
+        // ── OAuth trigger ────────────────────────────────────────────────────
+        .route("/antigravity-auth-url", get(crate::proxy::oauth::antigravity_auth_url))
+        .route("/auth-status", get(crate::proxy::oauth::get_auth_status))
         // ── Management auth layer (applied to all routes above) ──────────────
         .layer(middleware::from_fn_with_state(state, management_auth))
 }
