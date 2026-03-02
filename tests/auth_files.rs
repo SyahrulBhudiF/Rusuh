@@ -389,3 +389,186 @@ async fn auth_files_requires_management_key() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ── Path traversal protection ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn upload_rejects_path_traversal_dotdot() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=../../../etc/passwd.json",
+            json!({"type": "evil"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("invalid filename"));
+}
+
+#[tokio::test]
+async fn upload_rejects_forward_slash_in_name() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=subdir/evil.json",
+            json!({"type": "evil"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn upload_rejects_backslash_in_name() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=subdir%5Cevil.json",
+            json!({"type": "evil"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn upload_rejects_null_bytes() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=evil%00.json",
+            json!({"type": "evil"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn upload_rejects_non_ascii() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=%C3%A9vil.json",
+            json!({"type": "evil"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn delete_rejects_path_traversal() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request(
+            "DELETE",
+            "/v0/management/auth-files?name=../../etc/passwd.json",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn download_rejects_path_traversal() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request(
+            "GET",
+            "/v0/management/auth-files/download?name=../secret.json",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_status_rejects_path_traversal() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "PATCH",
+            "/v0/management/auth-files/status",
+            json!({"name": "../../../etc/shadow.json", "disabled": true}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_fields_rejects_path_traversal() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "PATCH",
+            "/v0/management/auth-files/fields",
+            json!({"name": "../../evil.json", "priority": 99}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── Upload size limit ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn upload_rejects_oversized_body() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    // 1 MiB + 1 byte should exceed the limit
+    let oversized = "x".repeat(1024 * 1024 + 1);
+    let body_json_str = format!(r#"{{"data": "{oversized}"}}"#);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v0/management/auth-files?name=big.json")
+                .header("authorization", format!("Bearer {SECRET}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body_json_str))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // tower-http RequestBodyLimitLayer returns 413 Payload Too Large
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

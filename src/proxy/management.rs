@@ -8,11 +8,17 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Mutex;
+use tower_http::limit::RequestBodyLimitLayer;
 use crate::auth::store::AuthStatus;
 use crate::proxy::ProxyState;
 
+/// Max upload body size for auth files (1 MiB).
+const MAX_UPLOAD_BYTES: usize = 1024 * 1024;
 pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
     Router::new()
         .route("/status", get(status))
@@ -38,7 +44,9 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         // ── OAuth trigger ────────────────────────────────────────────────────
         .route("/antigravity-auth-url", get(crate::proxy::oauth::antigravity_auth_url))
         .route("/auth-status", get(crate::proxy::oauth::get_auth_status))
-        // ── Management auth layer (applied to all routes above) ──────────────
+        // ── Layers ───────────────────────────────────────────────────────────
+        .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
+        .layer(middleware::from_fn(rate_limit))
         .layer(middleware::from_fn_with_state(state, management_auth))
 }
 
@@ -126,6 +134,59 @@ fn extract_management_key(req: &Request) -> Option<String> {
     }
 
     None
+}
+
+// ── Rate limiting middleware ───────────────────────────────────────────────────
+
+/// Per-IP rate limit: 60 requests per 60 seconds (sliding window).
+const RATE_LIMIT_MAX: u32 = 60;
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
+static RATE_LIMITER: std::sync::LazyLock<Mutex<HashMap<IpAddr, (Instant, u32)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Simple per-IP rate limiter for management endpoints.
+///
+/// Tracks request counts per IP in a sliding window. Returns 429 when exceeded.
+/// Falls back to global rate limiting when `ConnectInfo` is unavailable.
+async fn rate_limit(req: Request, next: Next) -> Response {
+    let ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    {
+        let mut map = RATE_LIMITER.lock().await;
+        let now = Instant::now();
+        let entry = map.entry(ip).or_insert((now, 0));
+
+        // Reset window if expired
+        if now.duration_since(entry.0).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+            *entry = (now, 0);
+        }
+
+        entry.1 += 1;
+
+        if entry.1 > RATE_LIMIT_MAX {
+            let retry_after = RATE_LIMIT_WINDOW_SECS
+                .saturating_sub(now.duration_since(entry.0).as_secs());
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    retry_after.to_string().parse::<axum::http::HeaderValue>().unwrap(),
+                )],
+                Json(json!({
+                    "error": "rate limit exceeded — max 60 requests per minute",
+                    "retry_after": retry_after,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    next.run(req).await
 }
 
 // ── Existing handlers ────────────────────────────────────────────────────────
@@ -339,6 +400,50 @@ fn parse_string_list(body: &Value) -> Option<Vec<String>> {
     None
 }
 
+/// Validate an auth-file name against path-traversal and injection attacks.
+///
+/// Rejects:
+/// - empty / whitespace-only names
+/// - path separators (`/`, `\`)
+/// - parent-directory traversal (`..`)
+/// - null bytes
+/// - non-ASCII characters
+/// - names not ending with `.json`
+///
+/// Returns the trimmed name on success, or a 400 error response.
+fn sanitize_filename(raw: &str) -> Result<String, (StatusCode, Json<Value>)> {
+    let name = raw.trim().to_string();
+
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name must not be empty"})),
+        ));
+    }
+
+    // Reject path separators, parent traversal, null bytes, non-ASCII
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('\0')
+        || !name.is_ascii()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid filename — must be ASCII, no path separators, no '..' or null bytes"})),
+        ));
+    }
+
+    if !name.to_lowercase().ends_with(".json") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name must end with .json"})),
+        ));
+    }
+
+    Ok(name)
+}
+
 // ── Auth file CRUD ───────────────────────────────────────────────────────────
 
 /// `GET /v0/management/auth-files` — list all auth files with metadata.
@@ -388,13 +493,10 @@ async fn upload_auth_file(
     Query(q): Query<UploadQuery>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let name = q.name.trim().to_string();
-    if name.is_empty() || !name.ends_with(".json") || name.contains(std::path::MAIN_SEPARATOR) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name must be a .json filename without path separators"})),
-        );
-    }
+    let name = match sanitize_filename(&q.name) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
 
     // Validate JSON
     if serde_json::from_slice::<Value>(&body).is_err() {
@@ -477,22 +579,12 @@ async fn delete_auth_file(
         return (StatusCode::OK, Json(json!({"status": "ok", "deleted": deleted})));
     }
 
-    let name = q.name.as_deref().unwrap_or("").trim();
-    if name.is_empty() || name.contains(std::path::MAIN_SEPARATOR) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name is required"})),
-        );
-    }
+    let name = match sanitize_filename(q.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
 
-    if !name.to_lowercase().ends_with(".json") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name must end with .json"})),
-        );
-    }
-
-    let path = dir.join(name);
+    let path = dir.join(&name);
     if !path.exists() {
         return (
             StatusCode::NOT_FOUND,
@@ -527,24 +619,13 @@ async fn download_auth_file(
     State(state): State<Arc<ProxyState>>,
     Query(q): Query<DownloadQuery>,
 ) -> Response {
-    let name = q.name.trim();
-    if name.is_empty() || name.contains(std::path::MAIN_SEPARATOR) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid name"})),
-        )
-            .into_response();
-    }
-    if !name.to_lowercase().ends_with(".json") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name must end with .json"})),
-        )
-            .into_response();
-    }
+    let name = match sanitize_filename(&q.name) {
+        Ok(n) => n,
+        Err((status, json)) => return (status, json).into_response(),
+    };
 
     let dir = state.accounts.store().base_dir().await;
-    let path = dir.join(name);
+    let path = dir.join(&name);
 
     match tokio::fs::read(&path).await {
         Ok(data) => {
@@ -588,13 +669,10 @@ async fn patch_auth_file_status(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<PatchStatusBody>,
 ) -> impl IntoResponse {
-    let name = body.name.trim();
-    if name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name is required"})),
-        );
-    }
+    let name = match sanitize_filename(&body.name) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
     let Some(disabled) = body.disabled else {
         return (
             StatusCode::BAD_REQUEST,
@@ -604,7 +682,7 @@ async fn patch_auth_file_status(
 
     // Read file, update disabled field, write back
     let dir = state.accounts.store().base_dir().await;
-    let path = dir.join(name);
+    let path = dir.join(&name);
 
     let data = match tokio::fs::read_to_string(&path).await {
         Ok(d) => d,
@@ -681,16 +759,13 @@ async fn patch_auth_file_fields(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<PatchFieldsBody>,
 ) -> impl IntoResponse {
-    let name = body.name.trim();
-    if name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "name is required"})),
-        );
-    }
+    let name = match sanitize_filename(&body.name) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
 
     let dir = state.accounts.store().base_dir().await;
-    let path = dir.join(name);
+    let path = dir.join(&name);
 
     let data = match tokio::fs::read_to_string(&path).await {
         Ok(d) => d,
