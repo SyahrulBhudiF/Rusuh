@@ -4,6 +4,7 @@
 //! Each file is a JSON object with at minimum a `"type"` field identifying the provider.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -13,6 +14,59 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::error::{AppError, AppResult};
+
+// ── AuthStatus ───────────────────────────────────────────────────────────────
+
+/// Lifecycle state of an auth entry (matches Go `cliproxyauth.Status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthStatus {
+    /// State could not be determined.
+    Unknown,
+    /// Valid and ready for execution.
+    #[default]
+    Active,
+    /// Waiting for external action (e.g. MFA).
+    Pending,
+    /// Undergoing a refresh flow.
+    Refreshing,
+    /// Temporarily unavailable due to errors.
+    Error,
+    /// Intentionally disabled by the user.
+    Disabled,
+}
+
+impl fmt::Display for AuthStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "unknown"),
+            Self::Active => write!(f, "active"),
+            Self::Pending => write!(f, "pending"),
+            Self::Refreshing => write!(f, "refreshing"),
+            Self::Error => write!(f, "error"),
+            Self::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+impl AuthStatus {
+    /// Parse from string (case-insensitive). Unknown values → `Unknown`.
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "active" => Self::Active,
+            "pending" => Self::Pending,
+            "refreshing" => Self::Refreshing,
+            "error" => Self::Error,
+            "disabled" => Self::Disabled,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Whether this status allows the credential to be used for requests.
+    pub fn is_usable(&self) -> bool {
+        matches!(self, Self::Active | Self::Refreshing)
+    }
+}
 
 // ── AuthRecord ───────────────────────────────────────────────────────────────
 
@@ -25,8 +79,16 @@ pub struct AuthRecord {
     pub provider: String,
     /// Human-readable label (email, project_id, etc.)
     pub label: String,
-    /// Whether this credential is disabled
+    /// Whether this credential is disabled (legacy field, prefer `status`)
     pub disabled: bool,
+    /// Lifecycle status of this credential
+    pub status: AuthStatus,
+    /// Optional status message (e.g. error reason)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+    /// Last successful token refresh time (UTC)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_refreshed_at: Option<DateTime<Utc>>,
     /// File path on disk
     pub path: PathBuf,
     /// Raw metadata from the JSON file
@@ -77,6 +139,16 @@ impl AuthRecord {
         }
         None
     }
+
+    /// Derive effective status from the `disabled` flag and `status` field.
+    /// If `disabled` is true, overrides to `Disabled` regardless of `status`.
+    pub fn effective_status(&self) -> AuthStatus {
+        if self.disabled {
+            AuthStatus::Disabled
+        } else {
+            self.status.clone()
+        }
+    }
 }
 
 // ── FileTokenStore ───────────────────────────────────────────────────────────
@@ -97,6 +169,11 @@ impl FileTokenStore {
     /// Update the base directory.
     pub async fn set_base_dir(&self, dir: impl Into<PathBuf>) {
         *self.base_dir.write().await = dir.into();
+    }
+
+    /// Get the current base directory.
+    pub async fn base_dir(&self) -> PathBuf {
+        self.base_dir.read().await.clone()
     }
 
     /// List all auth records found under `base_dir`.
@@ -208,6 +285,28 @@ impl FileTokenStore {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Derive status from metadata or disabled flag
+        let status = if disabled {
+            AuthStatus::Disabled
+        } else {
+            metadata
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(AuthStatus::from_str_loose)
+                .unwrap_or(AuthStatus::Active)
+        };
+
+        let status_message = metadata
+            .get("status_message")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let last_refreshed_at = metadata
+            .get("last_refreshed_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
         let label = Self::extract_label(&metadata);
 
         let id = path
@@ -230,6 +329,9 @@ impl FileTokenStore {
             provider,
             label,
             disabled,
+            status,
+            status_message,
+            last_refreshed_at,
             path: path.to_path_buf(),
             metadata,
             updated_at,

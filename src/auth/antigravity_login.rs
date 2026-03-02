@@ -105,6 +105,9 @@ pub async fn login(store: &FileTokenStore) -> anyhow::Result<()> {
         provider: "antigravity".into(),
         label: email.clone(),
         disabled: false,
+        status: crate::auth::store::AuthStatus::Active,
+        status_message: None,
+        last_refreshed_at: Some(chrono::Utc::now()),
         path: PathBuf::from(&filename),
         metadata,
         updated_at: chrono::Utc::now(),
@@ -252,7 +255,7 @@ async fn fetch_user_info(
         .ok_or_else(|| anyhow::anyhow!("userinfo response missing email"))
 }
 
-async fn fetch_project_id(
+pub async fn fetch_project_id(
     client: &reqwest::Client,
     access_token: &str,
 ) -> anyhow::Result<String> {
