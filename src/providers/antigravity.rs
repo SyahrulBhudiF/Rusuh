@@ -1,10 +1,13 @@
 //! Antigravity provider — translates OpenAI chat completions to/from Antigravity's Gemini-like API.
 
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::auth::antigravity_login;
 use crate::auth::store::AuthRecord;
@@ -21,61 +24,188 @@ const GENERATE_PATH: &str = "/v1internal:generateContent";
 const MODELS_PATH: &str = "/v1internal:fetchAvailableModels";
 const USER_AGENT: &str = "antigravity/1.104.0 darwin/arm64";
 
+/// Refresh skew — refresh token 50 minutes before expiry (matching Go CLIProxy `refreshSkew = 3000s`).
+const REFRESH_SKEW_SECS: i64 = 3000;
+
+// ── Token state ──────────────────────────────────────────────────────────────
+
+/// Runtime token state, wrapped in RwLock for safe concurrent refresh.
+struct TokenState {
+    access_token: String,
+    refresh_token: String,
+    /// Absolute expiry time (UTC)
+    expires_at: DateTime<Utc>,
+    /// Tracks last successful refresh for logging
+    last_refreshed_at: Option<DateTime<Utc>>,
+}
+
+impl TokenState {
+    fn from_record(record: &AuthRecord) -> Self {
+        let access_token = record
+            .access_token()
+            .unwrap_or_default()
+            .to_string();
+
+        let refresh_token = record
+            .metadata
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let expires_at = parse_expiry(&record.metadata);
+
+        Self {
+            access_token,
+            refresh_token,
+            expires_at,
+            last_refreshed_at: None,
+        }
+    }
+
+    /// Check whether the token needs refreshing (expired or within skew window).
+    fn needs_refresh(&self) -> bool {
+        if self.access_token.is_empty() {
+            return true;
+        }
+        let now = Utc::now();
+        let deadline = self.expires_at - chrono::Duration::seconds(REFRESH_SKEW_SECS);
+        now >= deadline
+    }
+}
+
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 pub struct AntigravityProvider {
     record: AuthRecord,
     client: reqwest::Client,
-    /// Cached access token (refreshed when expired)
-    access_token: RwLock<String>,
+    token: RwLock<TokenState>,
+    /// Path to auth file on disk for persisting refreshed tokens
+    auth_file_path: PathBuf,
 }
 
 impl AntigravityProvider {
     pub fn new(record: AuthRecord) -> Self {
-        let token = record
-            .access_token()
-            .unwrap_or_default()
-            .to_string();
+        let auth_file_path = record.path.clone();
+        let token = TokenState::from_record(&record);
         Self {
             record,
             client: reqwest::Client::new(),
-            access_token: RwLock::new(token),
+            token: RwLock::new(token),
+            auth_file_path,
         }
     }
 
-    /// Get a valid access token, refreshing if needed.
-    async fn get_token(&self) -> AppResult<String> {
-        // Check if current token is still valid
-        let token = self.access_token.read().await.clone();
-        if !token.is_empty() && !self.is_token_expired() {
-            return Ok(token);
+    /// Get a valid access token, refreshing if within the 50-minute skew window.
+    async fn ensure_access_token(&self) -> AppResult<String> {
+        // Fast path: token is still valid
+        {
+            let state = self.token.read().await;
+            if !state.needs_refresh() {
+                return Ok(state.access_token.clone());
+            }
         }
 
-        // Try refresh
-        let refresh_token = self
-            .record
-            .metadata
-            .get("refresh_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Auth("missing refresh_token".into()))?;
+        // Slow path: need to refresh
+        let mut state = self.token.write().await;
 
-        debug!("refreshing antigravity access token");
-        let resp = antigravity_login::refresh_access_token(&self.client, refresh_token)
+        // Double-check after acquiring write lock (another task may have refreshed)
+        if !state.needs_refresh() {
+            return Ok(state.access_token.clone());
+        }
+
+        if state.refresh_token.is_empty() {
+            return Err(AppError::Auth("missing refresh_token".into()));
+        }
+
+        debug!(
+            provider = "antigravity",
+            label = %self.record.label,
+            "refreshing access token (expired or within {}s skew)",
+            REFRESH_SKEW_SECS
+        );
+
+        let resp = antigravity_login::refresh_access_token(&self.client, &state.refresh_token)
             .await
             .map_err(|e| AppError::Auth(format!("token refresh failed: {e}")))?;
 
-        let new_token = resp.access_token.clone();
-        *self.access_token.write().await = new_token.clone();
+        let now = Utc::now();
+        let expires_in = resp.expires_in.unwrap_or(3599);
+        let expires_at = now + chrono::Duration::seconds(expires_in);
+
+        // Update in-memory state
+        state.access_token = resp.access_token.clone();
+        if let Some(ref new_refresh) = resp.refresh_token {
+            if !new_refresh.is_empty() {
+                state.refresh_token = new_refresh.clone();
+            }
+        }
+        state.expires_at = expires_at;
+        state.last_refreshed_at = Some(now);
+
+        let new_token = state.access_token.clone();
+
+        // Persist to disk (don't fail the request if persistence fails)
+        if let Err(e) = self.persist_token(&state, now, expires_in, expires_at).await {
+            warn!(
+                provider = "antigravity",
+                label = %self.record.label,
+                "failed to persist refreshed token: {e}"
+            );
+        } else {
+            info!(
+                provider = "antigravity",
+                label = %self.record.label,
+                expires_in_secs = expires_in,
+                "token refreshed and persisted"
+            );
+        }
+
         Ok(new_token)
     }
 
-    fn is_token_expired(&self) -> bool {
-        if let Some(Value::Number(n)) = self.record.metadata.get("expires_at") {
-            if let Some(exp) = n.as_i64() {
-                return chrono::Utc::now().timestamp() >= exp;
-            }
+    /// Persist refreshed token state back to the auth file on disk.
+    /// Reads the existing file, updates token fields, writes back — preserving other metadata.
+    async fn persist_token(
+        &self,
+        state: &TokenState,
+        now: DateTime<Utc>,
+        expires_in: i64,
+        expires_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        // Read existing file to preserve all other fields
+        let data = tokio::fs::read_to_string(&self.auth_file_path)
+            .await
+            .map_err(|e| AppError::Config(format!("read auth file for persist: {e}")))?;
+
+        let mut metadata: serde_json::Map<String, Value> = serde_json::from_str(&data)
+            .map_err(|e| AppError::Config(format!("parse auth file for persist: {e}")))?;
+
+        // Update token fields (matching Go CLIProxy format)
+        metadata.insert("access_token".into(), json!(state.access_token));
+        if !state.refresh_token.is_empty() {
+            metadata.insert("refresh_token".into(), json!(state.refresh_token));
         }
-        false
+        metadata.insert("expires_in".into(), json!(expires_in));
+        metadata.insert("timestamp".into(), json!(now.timestamp_millis()));
+        metadata.insert("expired".into(), json!(expires_at.to_rfc3339()));
+
+        let json = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| AppError::Config(format!("serialize auth file: {e}")))?;
+
+        tokio::fs::write(&self.auth_file_path, json)
+            .await
+            .map_err(|e| AppError::Config(format!("write auth file: {e}")))?;
+
+        // Restrict permissions on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            let _ = tokio::fs::set_permissions(&self.auth_file_path, perms).await;
+        }
+
+        Ok(())
     }
 
     fn project_id(&self) -> Option<&str> {
@@ -168,7 +298,7 @@ impl AntigravityProvider {
             }
         }
 
-        let payload = json!({
+        let mut payload = json!({
             "model": model,
             "userAgent": "antigravity",
             "requestType": "agent",
@@ -178,7 +308,6 @@ impl AntigravityProvider {
         });
 
         // Set session ID
-        let mut payload = payload;
         payload["request"]["sessionId"] = json!(session_id);
 
         payload
@@ -252,7 +381,7 @@ impl Provider for AntigravityProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let token = self.get_token().await?;
+        let token = self.ensure_access_token().await?;
         let now = chrono::Utc::now().timestamp();
 
         for base_url in self.base_urls() {
@@ -327,7 +456,7 @@ impl Provider for AntigravityProvider {
         &self,
         req: &ChatCompletionRequest,
     ) -> AppResult<ChatCompletionResponse> {
-        let token = self.get_token().await?;
+        let token = self.ensure_access_token().await?;
         let payload = self.translate_request(req, false);
 
         for base_url in self.base_urls() {
@@ -377,7 +506,7 @@ impl Provider for AntigravityProvider {
         &self,
         req: &ChatCompletionRequest,
     ) -> AppResult<BoxStream> {
-        let token = self.get_token().await?;
+        let token = self.ensure_access_token().await?;
         let payload = self.translate_request(req, true);
         let model = req.model.clone();
         for base_url in self.base_urls() {
@@ -424,6 +553,54 @@ impl Provider for AntigravityProvider {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Parse token expiry from auth record metadata.
+///
+/// Checks (in order, matching Go CLIProxy `tokenExpiry()`):
+/// 1. `expired` — RFC3339 string (e.g. "2025-03-02T14:00:00Z")
+/// 2. `timestamp` (millis) + `expires_in` (seconds) → computed absolute time
+/// 3. `expires_at` — unix timestamp (seconds)
+///
+/// Falls back to epoch (always triggers refresh).
+fn parse_expiry(metadata: &std::collections::HashMap<String, Value>) -> DateTime<Utc> {
+    // 1. RFC3339 "expired" field (set by Go CLIProxy and our persist_token)
+    if let Some(Value::String(s)) = metadata.get("expired") {
+        let s = s.trim();
+        if !s.is_empty() {
+            if let Ok(parsed) = DateTime::parse_from_rfc3339(s) {
+                return parsed.with_timezone(&Utc);
+            }
+        }
+    }
+
+    // 2. timestamp (ms) + expires_in (s)
+    let ts_ms = metadata.get("timestamp").and_then(int64_value);
+    let expires_in = metadata.get("expires_in").and_then(int64_value);
+    if let (Some(ts_ms), Some(exp_secs)) = (ts_ms, expires_in) {
+        if let Some(base) = DateTime::from_timestamp_millis(ts_ms) {
+            return base + chrono::Duration::seconds(exp_secs);
+        }
+    }
+
+    // 3. expires_at as unix seconds
+    if let Some(exp) = metadata.get("expires_at").and_then(int64_value) {
+        if let Some(dt) = DateTime::from_timestamp(exp, 0) {
+            return dt;
+        }
+    }
+
+    // Fallback: epoch → always refresh
+    DateTime::UNIX_EPOCH
+}
+
+/// Extract an i64 from a serde_json Value (handles both Number and String).
+fn int64_value(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
 
 /// Helper trait on MessageContent for translation.
 trait MessageContentExt {
@@ -481,4 +658,120 @@ fn translate_tools_to_gemini(tools: &[Value]) -> Vec<Value> {
         }
     }
     declarations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn parse_expiry_from_expired_rfc3339() {
+        let mut meta = HashMap::new();
+        meta.insert("expired".into(), json!("2025-03-02T14:00:00Z"));
+        let exp = parse_expiry(&meta);
+        assert_eq!(exp, DateTime::parse_from_rfc3339("2025-03-02T14:00:00Z").unwrap().with_timezone(&Utc));
+    }
+
+    #[test]
+    fn parse_expiry_from_timestamp_plus_expires_in() {
+        let mut meta = HashMap::new();
+        // timestamp = 1709388000000 ms = 2024-03-02T14:00:00Z
+        meta.insert("timestamp".into(), json!(1709388000000_i64));
+        meta.insert("expires_in".into(), json!(3599));
+        let exp = parse_expiry(&meta);
+        let expected = DateTime::from_timestamp_millis(1709388000000).unwrap()
+            + chrono::Duration::seconds(3599);
+        assert_eq!(exp, expected);
+    }
+
+    #[test]
+    fn parse_expiry_from_expires_at_unix() {
+        let mut meta = HashMap::new();
+        meta.insert("expires_at".into(), json!(1709391599));
+        let exp = parse_expiry(&meta);
+        assert_eq!(exp, DateTime::from_timestamp(1709391599, 0).unwrap());
+    }
+
+    #[test]
+    fn parse_expiry_fallback_to_epoch() {
+        let meta = HashMap::new();
+        let exp = parse_expiry(&meta);
+        assert_eq!(exp, DateTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn parse_expiry_rfc3339_takes_priority() {
+        let mut meta = HashMap::new();
+        meta.insert("expired".into(), json!("2030-01-01T00:00:00Z"));
+        meta.insert("timestamp".into(), json!(1000000000000_i64));
+        meta.insert("expires_in".into(), json!(3599));
+        let exp = parse_expiry(&meta);
+        // RFC3339 should win
+        assert_eq!(exp, DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z").unwrap().with_timezone(&Utc));
+    }
+
+    #[test]
+    fn needs_refresh_empty_token() {
+        let state = TokenState {
+            access_token: String::new(),
+            refresh_token: "refresh".into(),
+            expires_at: Utc::now() + chrono::Duration::hours(2),
+            last_refreshed_at: None,
+        };
+        assert!(state.needs_refresh());
+    }
+
+    #[test]
+    fn needs_refresh_expired_token() {
+        let state = TokenState {
+            access_token: "token".into(),
+            refresh_token: "refresh".into(),
+            expires_at: Utc::now() - chrono::Duration::seconds(1),
+            last_refreshed_at: None,
+        };
+        assert!(state.needs_refresh());
+    }
+
+    #[test]
+    fn needs_refresh_within_skew() {
+        let state = TokenState {
+            access_token: "token".into(),
+            refresh_token: "refresh".into(),
+            // Expires in 40 minutes — within the 50-minute skew
+            expires_at: Utc::now() + chrono::Duration::minutes(40),
+            last_refreshed_at: None,
+        };
+        assert!(state.needs_refresh());
+    }
+
+    #[test]
+    fn no_refresh_when_far_from_expiry() {
+        let state = TokenState {
+            access_token: "token".into(),
+            refresh_token: "refresh".into(),
+            // Expires in 2 hours — well outside the 50-minute skew
+            expires_at: Utc::now() + chrono::Duration::hours(2),
+            last_refreshed_at: None,
+        };
+        assert!(!state.needs_refresh());
+    }
+
+    #[test]
+    fn int64_value_from_number() {
+        assert_eq!(int64_value(&json!(42)), Some(42));
+        assert_eq!(int64_value(&json!(-1)), Some(-1));
+    }
+
+    #[test]
+    fn int64_value_from_string() {
+        assert_eq!(int64_value(&json!("12345")), Some(12345));
+        assert_eq!(int64_value(&json!("not_a_number")), None);
+    }
+
+    #[test]
+    fn int64_value_from_other() {
+        assert_eq!(int64_value(&json!(true)), None);
+        assert_eq!(int64_value(&json!(null)), None);
+    }
 }
