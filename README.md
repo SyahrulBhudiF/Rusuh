@@ -34,6 +34,7 @@ rusuh
 # 3. Chat (from another terminal)
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-key>" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -51,7 +52,7 @@ host: ""           # bind address ("" = all interfaces)
 port: 8317         # listen port
 auth-dir: "~/.rusuh"  # OAuth token storage
 
-api-keys:          # incoming request auth (empty = disabled)
+api-keys:          # incoming request auth (auto-generated if empty)
   - "your-secret-key"
 
 debug: false
@@ -59,6 +60,12 @@ request-retry: 3   # retry on transient failures
 
 routing:
   strategy: "round-robin"  # or "fill-first"
+
+# Management API — required for /v0/management/* routes
+# Leave secret-key empty to disable management API entirely (404)
+remote-management:
+  allow-remote: false      # only localhost can access management routes
+  secret-key: ""           # admin password for management API
 
 # proxy-url: "socks5://user:pass@127.0.0.1:1080"
 
@@ -97,6 +104,78 @@ rusuh --config my-config.yaml
 ```
 
 ## Authentication
+
+### API Key Auth
+
+Rusuh requires API keys to access proxy endpoints. Two behaviors:
+
+- **Keys in config** — uses them, logs count at startup
+- **No keys configured** — auto-generates a `rsk-<uuid>` key, prints it to console (session-only, not persisted)
+
+```
+  ╔══════════════════════════════════════════════════════════════╗
+  ║  Auto-generated API key (not persisted):                    ║
+  ║  rsk-550e8400-e29b-41d4-a716-446655440000                   ║
+  ║                                                             ║
+  ║  Add to config.yaml under `api-keys:` to persist.           ║
+  ╚══════════════════════════════════════════════════════════════╝
+```
+
+Pass the key via header:
+
+```bash
+curl http://localhost:8317/v1/chat/completions \
+  -H "Authorization: Bearer rsk-550e8400-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+Or via `x-api-key` header:
+
+```bash
+curl -H "x-api-key: rsk-550e8400-..." http://localhost:8317/v1/models
+```
+
+### Management API Key CRUD
+
+Generate and manage API keys at runtime via the management API. Requires `remote-management.secret-key` in config.
+
+```bash
+# Generate a new key for a user
+curl -X PATCH http://localhost:8317/v0/management/api-keys \
+  -H "Authorization: Bearer <your-management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"generate": true}'
+# → {"generated":["rsk-..."],"api-keys":["rsk-auto-...","rsk-..."]}
+
+# Generate multiple keys at once
+curl -X PATCH http://localhost:8317/v0/management/api-keys \
+  -H "Authorization: Bearer <your-management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"generate": true, "count": 5}'
+
+# List all keys
+curl http://localhost:8317/v0/management/api-keys \
+  -H "Authorization: Bearer <your-management-secret>"
+
+# Add a custom key
+curl -X PATCH http://localhost:8317/v0/management/api-keys \
+  -H "Authorization: Bearer <your-management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"value": "my-custom-key"}'
+
+# Replace all keys
+curl -X PUT http://localhost:8317/v0/management/api-keys \
+  -H "Authorization: Bearer <your-management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '["key1", "key2", "key3"]'
+
+# Delete a key
+curl -X DELETE "http://localhost:8317/v0/management/api-keys?value=rsk-..." \
+  -H "Authorization: Bearer <your-management-secret>"
+```
+
+All changes are **hot-reloaded** — no restart needed.
 
 ### Antigravity Login (Google Cloud Code)
 
@@ -174,32 +253,6 @@ rusuh qwen-login         # Qwen Code
 rusuh iflow-login        # iFlow
 ```
 
-### Management API (planned)
-
-In addition to CLI login, Rusuh will support managing auth files via HTTP:
-
-```bash
-# List all auth files
-curl localhost:8317/v0/management/auth-files
-
-# Upload a credential file
-curl -X POST 'localhost:8317/v0/management/auth-files?name=antigravity-user@gmail.com.json' \
-  -H 'Content-Type: application/json' \
-  -d @~/.rusuh/antigravity-user@gmail.com.json
-
-# Trigger OAuth login via HTTP (for web UI)
-curl localhost:8317/v0/management/antigravity-auth-url
-# → {"status":"ok","url":"https://accounts.google.com/...","state":"..."}
-
-# Disable an account
-curl -X PATCH localhost:8317/v0/management/auth-files/status \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"antigravity-user@gmail.com.json","disabled":true}'
-
-# Delete an account
-curl -X DELETE 'localhost:8317/v0/management/auth-files?name=antigravity-user@gmail.com.json'
-```
-
 ## API Endpoints
 
 ### OpenAI-compatible
@@ -233,11 +286,17 @@ POST /api/provider/{provider}/v1/chat/completions
 POST /api/provider/{provider}/v1/messages
 ```
 
-### Management (localhost only)
+### Management API
+
+Requires `remote-management.secret-key` in config. Auth via `Authorization: Bearer <secret>` or `X-Management-Key` header.
 
 ```
-GET  /v0/management/status
-GET  /v0/management/config
+GET    /v0/management/status
+GET    /v0/management/config
+GET    /v0/management/api-keys
+PUT    /v0/management/api-keys
+PATCH  /v0/management/api-keys
+DELETE /v0/management/api-keys
 ```
 
 ### Health
@@ -253,6 +312,7 @@ GET  /health
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-key>" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -264,6 +324,7 @@ curl http://localhost:8317/v1/chat/completions \
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-key>" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Write a haiku"}],
@@ -274,7 +335,7 @@ curl http://localhost:8317/v1/chat/completions \
 ### List available models
 
 ```bash
-curl http://localhost:8317/v1/models
+curl -H "Authorization: Bearer <your-api-key>" http://localhost:8317/v1/models
 ```
 
 ### Route to specific provider
@@ -282,6 +343,7 @@ curl http://localhost:8317/v1/models
 ```bash
 curl http://localhost:8317/api/provider/antigravity/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-key>" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hi"}]
@@ -295,7 +357,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8317/v1",
-    api_key="unused",  # no api-keys in config = auth disabled
+    api_key="rsk-your-key-here",
 )
 
 response = client.chat.completions.create(
@@ -304,19 +366,6 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)
 ```
-
-### With API key auth
-
-If you set `api-keys` in config, pass the key via header:
-
-```bash
-curl http://localhost:8317/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret-key" \
-  -d '{"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Hi"}]}'
-```
-
-Without `api-keys` configured, auth is disabled and no header is needed.
 
 ## Testing
 
@@ -357,7 +406,7 @@ cargo clippy
 
 ```
 src/
-├── main.rs              # Entry point, CLI dispatch, server bootstrap
+├── main.rs              # Entry point, CLI dispatch, server bootstrap, API key auto-gen
 ├── lib.rs               # Library re-exports
 ├── error.rs             # AppError enum + IntoResponse
 ├── auth/
@@ -381,7 +430,7 @@ src/
 ├── proxy/
 │   ├── balancer.rs      # Round-robin / fill-first load balancer
 │   ├── handlers.rs      # Route handlers (chat, models, etc.)
-│   ├── management.rs    # Management API handlers
+│   ├── management.rs    # Management API + secret-key auth middleware
 │   ├── mod.rs           # ProxyState
 │   └── stream.rs        # SSE stream forwarding + buffering
 └── router/
@@ -397,11 +446,12 @@ tests/
 
 ## How It Works
 
-1. **Startup** — loads `config.yaml` (optional), reads OAuth tokens from `auth-dir`, builds providers
+1. **Startup** — loads `config.yaml` (optional), reads OAuth tokens from `auth-dir`, auto-generates API key if none configured
 2. **Model registry** — each provider registers its models with ref counting
-3. **Request routing** — incoming request → model alias resolution → registry lookup → provider selection via round-robin balancer
+3. **Request routing** — incoming request → API key auth → model alias resolution → registry lookup → provider selection via round-robin balancer
 4. **Retry logic** — transient errors (5xx, timeout) retry same provider; account errors (401, 429) skip to next
 5. **Streaming** — upstream SSE chunks are buffered across boundaries, transformed to OpenAI format, forwarded with proper headers
+6. **Management** — admin generates/manages API keys via `/v0/management/api-keys` (gated by `secret-key`)
 
 ## Environment Variables
 

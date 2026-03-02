@@ -12,6 +12,13 @@ request-retry: 3
 routing:
   strategy: "round-robin"
 
+# Management API settings
+# All /v0/management/ routes require this key.
+# Leave empty to disable the management API entirely (404).
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
 # proxy-url: "socks5://user:pass@127.0.0.1:1080"
 
 # gemini-api-key:

@@ -1,12 +1,11 @@
 use rusuh::{auth, config, middleware, providers, proxy, router};
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use auth::cli::{Cli, Commands};
 use auth::manager::AccountManager;
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -69,10 +68,52 @@ fn resolve_auth_dir(cfg: &config::Config) -> PathBuf {
         .join(".rusuh")
 }
 
-async fn serve(cfg: config::Config) -> anyhow::Result<()> {
+/// Generate a random API key in `rsk-<uuid>` format.
+fn generate_api_key() -> String {
+    format!("rsk-{}", uuid::Uuid::new_v4())
+}
+
+/// Ensure at least one API key exists. If `api-keys` is empty or contains only
+/// placeholder values, generate a fresh key and inject it into the config.
+/// The key is printed to stdout so the operator can grab it.
+fn ensure_api_keys(cfg: &mut config::Config) {
+    // Filter out placeholder/example keys
+    let real_keys: Vec<_> = cfg
+        .api_keys
+        .iter()
+        .filter(|k| {
+            let k = k.trim();
+            !k.is_empty()
+                && !k.starts_with("your-api-key")
+                && k != "changeme"
+        })
+        .cloned()
+        .collect();
+
+    if !real_keys.is_empty() {
+        cfg.api_keys = real_keys;
+        info!("loaded {} API key(s) from config", cfg.api_keys.len());
+        return;
+    }
+
+    let key = generate_api_key();
+    warn!("no API keys configured — auto-generated key for this session");
+    println!();
+    println!("  ╔══════════════════════════════════════════════════════════════╗");
+    println!("  ║  Auto-generated API key (not persisted):                    ║");
+    println!("  ║  {:<59}║", &key);
+    println!("  ║                                                             ║");
+    println!("  ║  Add to config.yaml under `api-keys:` to persist.           ║");
+    println!("  ╚══════════════════════════════════════════════════════════════╝");
+    println!();
+    cfg.api_keys = vec![key];
+}
+
+async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     let addr = cfg.listen_addr();
     let auth_dir = resolve_auth_dir(&cfg);
-
+    // Auto-generate API key if none configured
+    ensure_api_keys(&mut cfg);
     info!("auth directory: {}", auth_dir.display());
 
     // Load accounts from auth-dir

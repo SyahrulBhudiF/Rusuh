@@ -80,7 +80,7 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
         )
 
         // ── Management API ────────────────────────────────────────────────────
-        .nest("/v0/management", crate::proxy::management::router())
+        .nest("/v0/management", crate::proxy::management::router(state.clone()))
 
         .with_state(state)
 }
