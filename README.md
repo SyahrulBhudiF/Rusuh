@@ -236,7 +236,10 @@ Each file in `~/.rusuh/` is a JSON object:
   "access_token": "ya29.a0...",
   "refresh_token": "1//0e...",
   "expires_in": 3599,
+  "expired": "2025-03-02T14:00:00Z",
+  "timestamp": 1709388000000,
   "project_id": "useful-fuze-a1b2c",
+  "status": "active",
   "disabled": false
 }
 ```
@@ -370,23 +373,19 @@ print(response.choices[0].message.content)
 ## Testing
 
 ```bash
-# Run all tests (54 tests)
+# Run all tests (80 tests)
 cargo test
-
-# Run a specific test file
 cargo test --test balancer
 cargo test --test stream
 cargo test --test http
 cargo test --test model_registry
 cargo test --test config
 cargo test --test error
-
+cargo test --test antigravity
+cargo test --test auth_status
 # Run a single test
 cargo test round_robin_distributes_evenly
-
-# Run tests in release mode
 cargo test --release
-
 # Lint
 cargo clippy
 ```
@@ -395,6 +394,8 @@ cargo clippy
 
 | File | Tests | What's covered |
 |---|---|---|
+| `tests/antigravity.rs` | 13 | Token expiry parsing (RFC3339, timestamp+expires_in, unix), refresh skew, int64 helpers |
+| `tests/auth_status.rs` | 13 | AuthStatus enum (display, parse, serde, usable), effective_status, record metadata helpers |
 | `tests/balancer.rs` | 8 | Round-robin distribution, fill-first, counters, subset cycling, edge cases |
 | `tests/config.rs` | 8 | YAML parsing, defaults, listen address, model aliases, openai-compat |
 | `tests/error.rs` | 6 | Transient/account error classification, HTTP status codes |
@@ -402,56 +403,15 @@ cargo clippy
 | `tests/model_registry.rs` | 9 | Register/unregister, ref counting, multi-provider, quota, suspend/resume, reconciliation |
 | `tests/stream.rs` | 12 | SSE buffering, partial chunks, Antigravity→OpenAI transform, tool calls, DONE sentinel |
 
-## Project Structure
-
-```
-src/
-├── main.rs              # Entry point, CLI dispatch, server bootstrap, API key auto-gen
-├── lib.rs               # Library re-exports
-├── error.rs             # AppError enum + IntoResponse
-├── auth/
-│   ├── antigravity.rs   # Antigravity OAuth constants
-│   ├── antigravity_login.rs  # Full OAuth login flow
-│   ├── cli.rs           # CLI subcommands (clap)
-│   ├── manager.rs       # Account manager — loads credentials
-│   └── store.rs         # File-based token storage
-├── config/
-│   └── mod.rs           # YAML config (serde)
-├── middleware/
-│   └── auth.rs          # API key auth middleware
-├── models/
-│   └── mod.rs           # OpenAI-compatible request/response types
-├── providers/
-│   ├── antigravity.rs   # Antigravity provider (request/response translation)
-│   ├── model_info.rs    # ExtModelInfo type
-│   ├── model_registry.rs # Global model registry with ref counting
-│   ├── registry.rs      # Provider builder from config
-│   └── static_models.rs # Static model catalogs
-├── proxy/
-│   ├── balancer.rs      # Round-robin / fill-first load balancer
-│   ├── handlers.rs      # Route handlers (chat, models, etc.)
-│   ├── management.rs    # Management API + secret-key auth middleware
-│   ├── mod.rs           # ProxyState
-│   └── stream.rs        # SSE stream forwarding + buffering
-└── router/
-    └── mod.rs           # Axum route table
-tests/
-├── balancer.rs
-├── config.rs
-├── error.rs
-├── http.rs
-├── model_registry.rs
-└── stream.rs
-```
-
 ## How It Works
 
-1. **Startup** — loads `config.yaml` (optional), reads OAuth tokens from `auth-dir`, auto-generates API key if none configured
+1. **Startup** — loads `config.yaml` (optional), reads OAuth tokens from `auth-dir`, auto-fetches missing `project_id`, auto-generates API key if none configured
 2. **Model registry** — each provider registers its models with ref counting
-3. **Request routing** — incoming request → API key auth → model alias resolution → registry lookup → provider selection via round-robin balancer
-4. **Retry logic** — transient errors (5xx, timeout) retry same provider; account errors (401, 429) skip to next
-5. **Streaming** — upstream SSE chunks are buffered across boundaries, transformed to OpenAI format, forwarded with proper headers
-6. **Management** — admin generates/manages API keys via `/v0/management/api-keys` (gated by `secret-key`)
+3. **Token refresh** — antigravity tokens auto-refresh 50min before expiry (matching Go `refreshSkew = 3000s`), persisted to disk
+4. **Request routing** — incoming request → API key auth → model alias resolution → registry lookup → provider selection via round-robin balancer
+5. **Retry logic** — transient errors (5xx, timeout) retry same provider; account errors (401, 429) skip to next
+6. **Streaming** — upstream SSE chunks are buffered across boundaries, transformed to OpenAI format, forwarded with proper headers
+7. **Management** — admin generates/manages API keys via `/v0/management/api-keys` (gated by `secret-key`)
 
 ## Environment Variables
 
