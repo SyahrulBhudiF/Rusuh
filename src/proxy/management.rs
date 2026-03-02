@@ -4,13 +4,13 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, patch},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
-
+use crate::auth::store::AuthStatus;
 use crate::proxy::ProxyState;
 
 pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
@@ -25,6 +25,16 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
                 .patch(patch_api_keys)
                 .delete(delete_api_keys),
         )
+        // ── Auth file CRUD ───────────────────────────────────────────────────
+        .route(
+            "/auth-files",
+            get(list_auth_files)
+                .post(upload_auth_file)
+                .delete(delete_auth_file),
+        )
+        .route("/auth-files/download", get(download_auth_file))
+        .route("/auth-files/status", patch(patch_auth_file_status))
+        .route("/auth-files/fields", patch(patch_auth_file_fields))
         // ── Management auth layer (applied to all routes above) ──────────────
         .layer(middleware::from_fn_with_state(state, management_auth))
 }
@@ -324,4 +334,427 @@ fn parse_string_list(body: &Value) -> Option<Vec<String>> {
         return Some(strings);
     }
     None
+}
+
+// ── Auth file CRUD ───────────────────────────────────────────────────────────
+
+/// `GET /v0/management/auth-files` — list all auth files with metadata.
+async fn list_auth_files(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+    let store = state.accounts.store();
+    match store.list().await {
+        Ok(records) => {
+            let files: Vec<Value> = records
+                .iter()
+                .map(|r| {
+                    let size = std::fs::metadata(&r.path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    json!({
+                        "id": r.id,
+                        "type": r.provider,
+                        "email": r.email().unwrap_or(""),
+                        "project_id": r.project_id().unwrap_or(""),
+                        "status": r.effective_status().to_string(),
+                        "disabled": r.disabled,
+                        "size": size,
+                        "updated_at": r.updated_at.to_rfc3339(),
+                        "last_refreshed_at": r.last_refreshed_at.map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(json!({ "auth-files": files }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("failed to list auth files: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /v0/management/auth-files?name=x.json` — upload auth file.
+///
+/// Body: raw JSON. Saves to auth-dir and reloads accounts.
+#[derive(Deserialize)]
+struct UploadQuery {
+    name: String,
+}
+
+async fn upload_auth_file(
+    State(state): State<Arc<ProxyState>>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let name = q.name.trim().to_string();
+    if name.is_empty() || !name.ends_with(".json") || name.contains(std::path::MAIN_SEPARATOR) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name must be a .json filename without path separators"})),
+        );
+    }
+
+    // Validate JSON
+    if serde_json::from_slice::<Value>(&body).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "body is not valid JSON"})),
+        );
+    }
+
+    let dir = state.accounts.store().base_dir().await;
+    let path = dir.join(&name);
+
+    // Ensure dir exists
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("create auth dir: {e}")})),
+        );
+    }
+
+    if let Err(e) = tokio::fs::write(&path, &body).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("write file: {e}")})),
+        );
+    }
+
+    // Set permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
+    }
+
+    // Reload accounts
+    if let Err(e) = state.accounts.reload().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("reload accounts: {e}")})),
+        );
+    }
+
+    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+}
+
+/// `DELETE /v0/management/auth-files` — delete auth file(s).
+///
+/// Query: `?name=x.json` or `?all=true`
+#[derive(Deserialize)]
+struct DeleteAuthQuery {
+    name: Option<String>,
+    all: Option<bool>,
+}
+
+async fn delete_auth_file(
+    State(state): State<Arc<ProxyState>>,
+    Query(q): Query<DeleteAuthQuery>,
+) -> impl IntoResponse {
+    let store = state.accounts.store();
+    let dir = store.base_dir().await;
+
+    if q.all.unwrap_or(false) {
+        // Delete all .json files
+        let mut deleted = 0u32;
+        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "json")
+                    && tokio::fs::remove_file(&path).await.is_ok() {
+                        deleted += 1;
+                    }
+            }
+        }
+        if let Err(e) = state.accounts.reload().await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("reload accounts: {e}")})),
+            );
+        }
+        return (StatusCode::OK, Json(json!({"status": "ok", "deleted": deleted})));
+    }
+
+    let name = q.name.as_deref().unwrap_or("").trim();
+    if name.is_empty() || name.contains(std::path::MAIN_SEPARATOR) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name is required"})),
+        );
+    }
+
+    if !name.to_lowercase().ends_with(".json") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name must end with .json"})),
+        );
+    }
+
+    let path = dir.join(name);
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "file not found"})),
+        );
+    }
+
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("delete file: {e}")})),
+        );
+    }
+
+    if let Err(e) = state.accounts.reload().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("reload accounts: {e}")})),
+        );
+    }
+
+    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+}
+
+/// `GET /v0/management/auth-files/download?name=x.json` — download raw JSON.
+#[derive(Deserialize)]
+struct DownloadQuery {
+    name: String,
+}
+
+async fn download_auth_file(
+    State(state): State<Arc<ProxyState>>,
+    Query(q): Query<DownloadQuery>,
+) -> Response {
+    let name = q.name.trim();
+    if name.is_empty() || name.contains(std::path::MAIN_SEPARATOR) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid name"})),
+        )
+            .into_response();
+    }
+    if !name.to_lowercase().ends_with(".json") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name must end with .json"})),
+        )
+            .into_response();
+    }
+
+    let dir = state.accounts.store().base_dir().await;
+    let path = dir.join(name);
+
+    match tokio::fs::read(&path).await {
+        Ok(data) => {
+            let disposition = format!("attachment; filename=\"{name}\"");
+            (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/json"),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        disposition.as_str(),
+                    ),
+                ],
+                data,
+            )
+                .into_response()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "file not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("read file: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// `PATCH /v0/management/auth-files/status` — toggle disabled state.
+///
+/// Body: `{"name": "x.json", "disabled": true}`
+#[derive(Deserialize)]
+struct PatchStatusBody {
+    name: String,
+    disabled: Option<bool>,
+}
+
+async fn patch_auth_file_status(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<PatchStatusBody>,
+) -> impl IntoResponse {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name is required"})),
+        );
+    }
+    let Some(disabled) = body.disabled else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "disabled is required"})),
+        );
+    };
+
+    // Read file, update disabled field, write back
+    let dir = state.accounts.store().base_dir().await;
+    let path = dir.join(name);
+
+    let data = match tokio::fs::read_to_string(&path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "file not found"})),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("read file: {e}")})),
+            );
+        }
+    };
+
+    let mut metadata: serde_json::Map<String, Value> = match serde_json::from_str(&data) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("parse file: {e}")})),
+            );
+        }
+    };
+
+    metadata.insert("disabled".into(), json!(disabled));
+    let status = if disabled {
+        AuthStatus::Disabled
+    } else {
+        AuthStatus::Active
+    };
+    metadata.insert("status".into(), json!(status.to_string()));
+
+    let json_str = match serde_json::to_string_pretty(&metadata) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("serialize: {e}")})),
+            );
+        }
+    };
+
+    if let Err(e) = tokio::fs::write(&path, json_str).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("write file: {e}")})),
+        );
+    }
+
+    // Reload
+    let _ = state.accounts.reload().await;
+
+    (
+        StatusCode::OK,
+        Json(json!({"status": "ok", "name": name, "disabled": disabled})),
+    )
+}
+
+/// `PATCH /v0/management/auth-files/fields` — update editable fields.
+///
+/// Body: `{"name": "x.json", "prefix": "...", "proxy_url": "...", "priority": 1}`
+#[derive(Deserialize)]
+struct PatchFieldsBody {
+    name: String,
+    prefix: Option<String>,
+    proxy_url: Option<String>,
+    priority: Option<i32>,
+}
+
+async fn patch_auth_file_fields(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<PatchFieldsBody>,
+) -> impl IntoResponse {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name is required"})),
+        );
+    }
+
+    let dir = state.accounts.store().base_dir().await;
+    let path = dir.join(name);
+
+    let data = match tokio::fs::read_to_string(&path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "file not found"})),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("read file: {e}")})),
+            );
+        }
+    };
+
+    let mut metadata: serde_json::Map<String, Value> = match serde_json::from_str(&data) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("parse file: {e}")})),
+            );
+        }
+    };
+
+    let mut changed = false;
+    if let Some(ref prefix) = body.prefix {
+        metadata.insert("prefix".into(), json!(prefix));
+        changed = true;
+    }
+    if let Some(ref proxy_url) = body.proxy_url {
+        metadata.insert("proxy_url".into(), json!(proxy_url));
+        changed = true;
+    }
+    if let Some(priority) = body.priority {
+        metadata.insert("priority".into(), json!(priority));
+        changed = true;
+    }
+
+    if !changed {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "no fields to update — use prefix, proxy_url, or priority"})),
+        );
+    }
+
+    let json_str = match serde_json::to_string_pretty(&metadata) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("serialize: {e}")})),
+            );
+        }
+    };
+
+    if let Err(e) = tokio::fs::write(&path, json_str).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("write file: {e}")})),
+        );
+    }
+
+    // Reload
+    let _ = state.accounts.reload().await;
+
+    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
 }
