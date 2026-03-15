@@ -4,3 +4,7 @@ config.yaml
 auths/
 *.token
 .claude
+.tldr
+
+docs/kiro_event_stream.md
+docs/kiro_implementation_progress.md

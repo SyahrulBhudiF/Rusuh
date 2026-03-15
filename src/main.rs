@@ -38,6 +38,28 @@ async fn main() -> anyhow::Result<()> {
             let store = auth::store::FileTokenStore::new(&auth_dir);
             auth::antigravity_login::login(&store).await?
         }
+        Commands::KiroLogin { provider, start_url } => {
+            let auth_dir = resolve_auth_dir(&cfg);
+            let store = auth::store::FileTokenStore::new(&auth_dir);
+            
+            match provider.as_str() {
+                "google" | "github" => {
+                    auth::kiro_social::login(&store, &provider).await?
+                }
+                "sso" => {
+                    if let Some(url) = start_url {
+                        auth::kiro_sso::login_sso(&store, &url).await?
+                    } else {
+                        eprintln!("Error: --start-url is required for SSO login");
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    eprintln!("Error: Invalid provider '{}'. Use: google, github, or sso", provider);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::CodexLogin => {
             println!("Codex OAuth login not yet implemented (milestone 2)");
         }
@@ -83,9 +105,7 @@ fn ensure_api_keys(cfg: &mut config::Config) {
         .iter()
         .filter(|k| {
             let k = k.trim();
-            !k.is_empty()
-                && !k.starts_with("your-api-key")
-                && k != "changeme"
+            !k.is_empty() && !k.starts_with("your-api-key") && k != "changeme"
         })
         .cloned()
         .collect();

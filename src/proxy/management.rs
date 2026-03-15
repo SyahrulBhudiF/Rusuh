@@ -1,10 +1,12 @@
+use crate::auth::store::AuthStatus;
+use crate::proxy::ProxyState;
 use axum::{
-    Json, Router,
     extract::{ConnectInfo, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch},
+    Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,8 +16,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
-use crate::auth::store::AuthStatus;
-use crate::proxy::ProxyState;
 
 /// Max upload body size for auth files (1 MiB).
 const MAX_UPLOAD_BYTES: usize = 1024 * 1024;
@@ -42,8 +42,8 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/auth-files/status", patch(patch_auth_file_status))
         .route("/auth-files/fields", patch(patch_auth_file_fields))
         // ── OAuth trigger ────────────────────────────────────────────────────
-        .route("/antigravity-auth-url", get(crate::proxy::oauth::antigravity_auth_url))
-        .route("/auth-status", get(crate::proxy::oauth::get_auth_status))
+        .route("/oauth/start", get(crate::proxy::oauth::start_oauth))
+        .route("/oauth/status", get(crate::proxy::oauth::get_auth_status))
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn(rate_limit))
@@ -169,13 +169,16 @@ async fn rate_limit(req: Request, next: Next) -> Response {
         entry.1 += 1;
 
         if entry.1 > RATE_LIMIT_MAX {
-            let retry_after = RATE_LIMIT_WINDOW_SECS
-                .saturating_sub(now.duration_since(entry.0).as_secs());
+            let retry_after =
+                RATE_LIMIT_WINDOW_SECS.saturating_sub(now.duration_since(entry.0).as_secs());
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(
                     axum::http::header::RETRY_AFTER,
-                    retry_after.to_string().parse::<axum::http::HeaderValue>().unwrap(),
+                    retry_after
+                        .to_string()
+                        .parse::<axum::http::HeaderValue>()
+                        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("60")),
                 )],
                 Json(json!({
                     "error": "rate limit exceeded — max 60 requests per minute",
@@ -430,7 +433,9 @@ fn sanitize_filename(raw: &str) -> Result<String, (StatusCode, Json<Value>)> {
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid filename — must be ASCII, no path separators, no '..' or null bytes"})),
+            Json(
+                json!({"error": "invalid filename — must be ASCII, no path separators, no '..' or null bytes"}),
+            ),
         ));
     }
 
@@ -454,9 +459,7 @@ async fn list_auth_files(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
             let files: Vec<Value> = records
                 .iter()
                 .map(|r| {
-                    let size = std::fs::metadata(&r.path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let size = std::fs::metadata(&r.path).map(|m| m.len()).unwrap_or(0);
                     json!({
                         "id": r.id,
                         "type": r.provider,
@@ -565,9 +568,10 @@ async fn delete_auth_file(
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "json")
-                    && tokio::fs::remove_file(&path).await.is_ok() {
-                        deleted += 1;
-                    }
+                    && tokio::fs::remove_file(&path).await.is_ok()
+                {
+                    deleted += 1;
+                }
             }
         }
         if let Err(e) = state.accounts.reload().await {
@@ -576,7 +580,10 @@ async fn delete_auth_file(
                 Json(json!({"error": format!("reload accounts: {e}")})),
             );
         }
-        return (StatusCode::OK, Json(json!({"status": "ok", "deleted": deleted})));
+        return (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "deleted": deleted})),
+        );
     }
 
     let name = match sanitize_filename(q.name.as_deref().unwrap_or("")) {
