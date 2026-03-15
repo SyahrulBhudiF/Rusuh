@@ -30,4 +30,14 @@ pub enum Commands {
     QwenLogin,
     /// Login to iFlow via OAuth
     IflowLogin,
+    /// Login to KIRO (AWS CodeWhisperer) via social OAuth or SSO
+    #[command(name = "kiro-login")]
+    KiroLogin {
+        /// OAuth provider: google, github, or sso
+        #[arg(long, default_value = "google")]
+        provider: String,
+        /// AWS SSO start URL (required for --provider=sso)
+        #[arg(long)]
+        start_url: Option<String>,
+    },
 }

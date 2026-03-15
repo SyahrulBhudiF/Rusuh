@@ -246,10 +246,55 @@ Each file in `~/.rusuh/` is a JSON object:
 
 You can also manually create/copy credential files into `~/.rusuh/` and restart — they'll be auto-discovered.
 
-### Other Providers (coming soon)
+### KIRO Login (AWS CodeWhisperer)
+
+KIRO provides AWS CodeWhisperer access via social OAuth (Google/GitHub) or AWS SSO.
+
+**Social OAuth (Google/GitHub):**
 
 ```bash
-rusuh login              # Gemini / Google
+# Login with Google
+rusuh kiro-login --provider google
+
+# Login with GitHub
+rusuh kiro-login --provider github
+```
+
+This will:
+1. Open your browser to KIRO OAuth consent screen
+2. Start a local callback server on port 9876
+3. Exchange the authorization code for AWS SSO tokens
+4. Save credentials to `~/.rusuh/kiro-google-<email>.json` or `~/.rusuh/kiro-github-<username>.json`
+
+**AWS SSO (Enterprise IDC):**
+
+```bash
+# Login with AWS Identity Center
+rusuh kiro-login --provider sso --start-url https://your-org.awsapps.com/start
+```
+
+After login, **restart the server** to load the new credentials:
+
+```bash
+rusuh
+```
+
+**Multi-Account KIRO:**
+
+You can login with multiple KIRO accounts (mix Google, GitHub, SSO):
+
+```bash
+rusuh kiro-login --provider google
+rusuh kiro-login --provider github
+rusuh kiro-login --provider sso --start-url https://company.awsapps.com/start
+
+# Restart to load all accounts
+rusuh
+```
+
+KIRO tokens auto-refresh before expiry (50-minute skew) and are persisted to disk.
+
+### Other Providers (coming soon)
 rusuh codex-login        # OpenAI Codex
 rusuh claude-login       # Claude Code
 rusuh qwen-login         # Qwen Code
@@ -293,6 +338,91 @@ POST /api/provider/{provider}/v1/messages
 
 Requires `remote-management.secret-key` in config. Auth via `Authorization: Bearer <secret>` or `X-Management-Key` header.
 
+#### Status & Config
+
+```
+GET  /v0/management/status
+GET  /v0/management/config
+```
+
+#### API Key Management
+
+```
+GET    /v0/management/api-keys
+PUT    /v0/management/api-keys
+PATCH  /v0/management/api-keys
+DELETE /v0/management/api-keys
+```
+
+#### Auth File Management
+
+```
+GET    /v0/management/auth-files
+POST   /v0/management/auth-files
+DELETE /v0/management/auth-files
+GET    /v0/management/auth-files/download?id=...
+PATCH  /v0/management/auth-files/status
+PATCH  /v0/management/auth-files/fields
+```
+
+**List auth files:**
+
+```bash
+curl http://localhost:8317/v0/management/auth-files \
+  -H "Authorization: Bearer <management-secret>"
+# → {"auth_files":[{"id":"antigravity-user@gmail.com.json","provider":"antigravity","label":"user@gmail.com","disabled":false,"status":"active","last_refreshed_at":"2026-03-16T05:30:00Z","updated_at":"2026-03-16T05:30:00Z"}]}
+```
+
+**Upload auth file:**
+
+```bash
+curl -X POST http://localhost:8317/v0/management/auth-files \
+  -H "Authorization: Bearer <management-secret>" \
+  -H "Content-Type: application/json" \
+  -d @antigravity-backup.json
+# → {"status":"ok","id":"antigravity-user@gmail.com.json"}
+```
+
+**Download auth file:**
+
+```bash
+curl "http://localhost:8317/v0/management/auth-files/download?id=antigravity-user@gmail.com.json" \
+  -H "Authorization: Bearer <management-secret>" \
+  -o backup.json
+```
+
+**Disable/enable account:**
+
+```bash
+# Disable
+curl -X PATCH http://localhost:8317/v0/management/auth-files/status \
+  -H "Authorization: Bearer <management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"antigravity-user@gmail.com.json","disabled":true}'
+
+# Enable
+curl -X PATCH http://localhost:8317/v0/management/auth-files/status \
+  -H "Authorization: Bearer <management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"antigravity-user@gmail.com.json","disabled":false}'
+```
+
+**Update account label:**
+
+```bash
+curl -X PATCH http://localhost:8317/v0/management/auth-files/fields \
+  -H "Authorization: Bearer <management-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"antigravity-user@gmail.com.json","label":"Work Account"}'
+```
+
+**Delete auth file:**
+
+```bash
+curl -X DELETE "http://localhost:8317/v0/management/auth-files?id=antigravity-user@gmail.com.json" \
+  -H "Authorization: Bearer <management-secret>"
+```
+
 ```
 GET    /v0/management/status
 GET    /v0/management/config
@@ -301,6 +431,46 @@ PUT    /v0/management/api-keys
 PATCH  /v0/management/api-keys
 DELETE /v0/management/api-keys
 ```
+
+#### OAuth Management
+
+```
+GET  /v0/management/oauth/start?provider=antigravity|kiro-google|kiro-github
+GET  /v0/management/oauth/status?state=...
+```
+
+**Start OAuth flow via API:**
+
+```bash
+# Start Antigravity OAuth
+curl "http://localhost:8317/v0/management/oauth/start?provider=antigravity" \
+  -H "Authorization: Bearer <management-secret>"
+# → {"status":"ok","url":"https://accounts.google.com/o/oauth2/v2/auth?...","state":"uuid","provider":"antigravity"}
+
+# Start KIRO Google OAuth
+curl "http://localhost:8317/v0/management/oauth/start?provider=kiro-google" \
+  -H "Authorization: Bearer <management-secret>"
+
+# Start KIRO GitHub OAuth
+curl "http://localhost:8317/v0/management/oauth/start?provider=kiro-github" \
+  -H "Authorization: Bearer <management-secret>"
+```
+
+**Poll OAuth status:**
+
+```bash
+curl "http://localhost:8317/v0/management/oauth/status?state=<uuid>" \
+  -H "Authorization: Bearer <management-secret>"
+# → {"status":"wait","provider":"antigravity"}  # pending
+# → {"status":"ok","provider":"antigravity"}    # complete
+# → {"status":"error","provider":"antigravity","error":"..."}
+```
+
+Workflow:
+1. Call `/oauth/start?provider=...` to get auth URL
+2. Open URL in browser (user authenticates)
+3. Poll `/oauth/status?state=...` until status is "ok" or "error"
+4. Server automatically saves credentials and reloads accounts
 
 ### Health
 

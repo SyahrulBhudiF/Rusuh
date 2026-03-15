@@ -1,4 +1,7 @@
 pub mod antigravity;
+pub mod kiro;
+pub mod kiro_stream;
+pub mod kiro_translator;
 pub mod model_info;
 pub mod model_registry;
 pub mod registry;
@@ -31,8 +34,5 @@ pub trait Provider: Send + Sync {
     ) -> AppResult<ChatCompletionResponse>;
 
     /// Streaming chat completion — returns SSE byte stream
-    async fn chat_completion_stream(
-        &self,
-        req: &ChatCompletionRequest,
-    ) -> AppResult<BoxStream>;
+    async fn chat_completion_stream(&self, req: &ChatCompletionRequest) -> AppResult<BoxStream>;
 }

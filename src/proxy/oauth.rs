@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::auth::antigravity::*;
+use crate::auth::kiro::{KIRO_AUTH_ENDPOINT, CALLBACK_PORT as KIRO_CALLBACK_PORT};
 use crate::auth::store::{AuthRecord, AuthStatus};
 use crate::proxy::ProxyState;
 
@@ -106,9 +107,7 @@ impl OAuthSessionStore {
 ///
 /// The caller should open the URL in a browser. After auth, Google redirects to
 /// `/antigravity/callback` on this server.
-pub async fn antigravity_auth_url(
-    State(state): State<Arc<ProxyState>>,
-) -> impl IntoResponse {
+pub async fn antigravity_auth_url(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let cfg = state.config.read().await;
     let port = cfg.port;
     drop(cfg);
@@ -130,7 +129,10 @@ pub async fn antigravity_auth_url(
     let auth_url = format!("{AUTH_ENDPOINT}?{query}");
 
     // Register session
-    state.oauth_sessions.register(&oauth_state, "antigravity").await;
+    state
+        .oauth_sessions
+        .register(&oauth_state, "antigravity")
+        .await;
 
     // Cleanup old sessions (>10 min)
     state.oauth_sessions.cleanup(600).await;
@@ -173,7 +175,10 @@ pub async fn antigravity_callback(
     match &session_status {
         Some((_, OAuthSessionStatus::Pending)) => {}
         Some((_, OAuthSessionStatus::Complete)) => {
-            return Html("<h1>Already completed</h1><p>This OAuth session has already been processed.</p>".to_string());
+            return Html(
+                "<h1>Already completed</h1><p>This OAuth session has already been processed.</p>"
+                    .to_string(),
+            );
         }
         Some((_, OAuthSessionStatus::Error(msg))) => {
             return Html(format!("<h1>Error</h1><p>Session error: {msg}</p>"));
@@ -187,13 +192,17 @@ pub async fn antigravity_callback(
     let state_clone = state.clone();
     let oauth_state_clone = oauth_state.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_antigravity_callback(&state_clone, &code, &oauth_state_clone).await {
+        if let Err(e) = process_antigravity_callback(&state_clone, &code, &oauth_state_clone).await
+        {
             warn!(
                 provider = "antigravity",
                 state = %oauth_state_clone,
                 "OAuth callback processing failed: {e}"
             );
-            state_clone.oauth_sessions.set_error(&oauth_state_clone, &e.to_string()).await;
+            state_clone
+                .oauth_sessions
+                .set_error(&oauth_state_clone, &e.to_string())
+                .await;
         }
     });
 
@@ -227,11 +236,7 @@ async fn process_antigravity_callback(
         ("grant_type", "authorization_code"),
     ];
 
-    let resp = client
-        .post(TOKEN_ENDPOINT)
-        .form(&params)
-        .send()
-        .await?;
+    let resp = client.post(TOKEN_ENDPOINT).form(&params).send().await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -266,16 +271,17 @@ async fn process_antigravity_callback(
     info!(provider = "antigravity", email = %email, "OAuth user authenticated");
 
     // Fetch project_id (best-effort)
-    let project_id = match crate::auth::antigravity_login::fetch_project_id(&client, &access_token).await {
-        Ok(pid) => {
-            info!(provider = "antigravity", project_id = %pid, "project_id fetched");
-            Some(pid)
-        }
-        Err(e) => {
-            warn!(provider = "antigravity", "could not fetch project_id: {e}");
-            None
-        }
-    };
+    let project_id =
+        match crate::auth::antigravity_login::fetch_project_id(&client, &access_token).await {
+            Ok(pid) => {
+                info!(provider = "antigravity", project_id = %pid, "project_id fetched");
+                Some(pid)
+            }
+            Err(e) => {
+                warn!(provider = "antigravity", "could not fetch project_id: {e}");
+                None
+            }
+        };
 
     // Build metadata
     let now = Utc::now();
@@ -318,7 +324,11 @@ async fn process_antigravity_callback(
         updated_at: now,
     };
 
-    state.accounts.store().save(&record).await
+    state
+        .accounts
+        .store()
+        .save(&record)
+        .await
         .map_err(|e| anyhow::anyhow!("save credential: {e}"))?;
 
     info!(
@@ -365,4 +375,163 @@ pub async fn get_auth_status(
         }
         None => Json(json!({"status": "ok"})),
     }
+}
+
+// ── Universal OAuth Handler ─────────────────────────────────────────────────
+
+/// `GET /v0/management/oauth/start?provider=antigravity|kiro-google|kiro-github` — start OAuth flow.
+///
+/// Query params:
+/// - `provider`: "antigravity", "kiro-google", or "kiro-github" (required)
+/// - `label`: optional account label for identification
+///
+/// Returns: {status, url, state, provider}
+#[derive(Deserialize)]
+pub struct StartOAuthQuery {
+    provider: String,
+    label: Option<String>,
+}
+
+pub async fn start_oauth(
+    State(state): State<Arc<ProxyState>>,
+    Query(q): Query<StartOAuthQuery>,
+) -> impl IntoResponse {
+    let provider = q.provider.trim().to_lowercase();
+    
+    match provider.as_str() {
+        "antigravity" => start_antigravity_oauth(state, q.label).await,
+        "kiro-google" | "kiro-github" => start_kiro_oauth(state, &provider, q.label).await,
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "error": format!("unsupported provider '{}' — supported: antigravity, kiro-google, kiro-github", provider)
+            })),
+        ).into_response(),
+    }
+}
+
+// ── Antigravity OAuth (existing logic) ──────────────────────────────────────
+
+async fn start_antigravity_oauth(
+    state: Arc<ProxyState>,
+    _label: Option<String>,
+) -> Response {
+    let cfg = state.config.read().await;
+    let port = cfg.port;
+    drop(cfg);
+
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let redirect_uri = format!("http://localhost:{port}/antigravity/callback");
+
+    let scopes = SCOPES.join(" ");
+    let params = [
+        ("access_type", "offline"),
+        ("client_id", CLIENT_ID),
+        ("prompt", "consent"),
+        ("redirect_uri", redirect_uri.as_str()),
+        ("response_type", "code"),
+        ("scope", &scopes),
+        ("state", &oauth_state),
+    ];
+    let query = serde_urlencoded::to_string(params).expect("encode params");
+    let auth_url = format!("{AUTH_ENDPOINT}?{query}");
+
+    state
+        .oauth_sessions
+        .register(&oauth_state, "antigravity")
+        .await;
+
+    state.oauth_sessions.cleanup(600).await;
+
+    info!(
+        provider = "antigravity",
+        state = %oauth_state,
+        "OAuth flow initiated via management API"
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "url": auth_url,
+            "state": oauth_state,
+            "provider": "antigravity"
+        })),
+    )
+        .into_response()
+}
+
+// ── KIRO OAuth ──────────────────────────────────────────────────────────────
+
+async fn start_kiro_oauth(
+    state: Arc<ProxyState>,
+    provider: &str,
+    _label: Option<String>,
+) -> Response {
+    let social_provider = provider.strip_prefix("kiro-").unwrap_or(provider);
+    
+    if social_provider != "google" && social_provider != "github" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "error": "KIRO provider must be 'kiro-google' or 'kiro-github'"
+            })),
+        ).into_response();
+    }
+
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let redirect_uri = format!("http://localhost:{}/kiro/callback", KIRO_CALLBACK_PORT);
+
+    // Generate PKCE parameters
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use rand::RngExt;
+    use sha2::{Digest, Sha256};
+
+    let mut verifier_bytes = [0u8; 32];
+    rand::rng().fill(&mut verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let challenge_hash = hasher.finalize();
+    let code_challenge = URL_SAFE_NO_PAD.encode(challenge_hash);
+
+    // Build KIRO auth URL
+    let auth_url = format!(
+        "{}/oauth2/authorize?client_id=kiro-desktop&response_type=code&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=codewhisperer:completions%20codewhisperer:analysis&provider={}",
+        KIRO_AUTH_ENDPOINT,
+        urlencoding::encode(&redirect_uri),
+        &oauth_state,
+        &code_challenge,
+        social_provider
+    );
+
+    state
+        .oauth_sessions
+        .register(&oauth_state, provider)
+        .await;
+
+    // TODO: Store code_verifier in session metadata for token exchange
+
+    state.oauth_sessions.cleanup(600).await;
+
+    info!(
+        provider = %provider,
+        state = %oauth_state,
+        "KIRO OAuth flow initiated via management API"
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "url": auth_url,
+            "state": oauth_state,
+            "provider": provider
+        })),
+    )
+        .into_response()
 }
