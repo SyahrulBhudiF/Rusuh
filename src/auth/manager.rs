@@ -13,7 +13,8 @@ use crate::error::AppResult;
 /// Manages loaded auth accounts, grouped by provider.
 pub struct AccountManager {
     store: Arc<FileTokenStore>,
-    /// provider → list of auth records
+    /// provider_key → list of auth records
+    /// provider_key → list of auth records
     accounts: tokio::sync::RwLock<HashMap<String, Vec<AuthRecord>>>,
 }
 
@@ -70,29 +71,26 @@ impl AccountManager {
         }
 
         let mut by_provider: HashMap<String, Vec<AuthRecord>> = HashMap::new();
-
         for record in records {
             if !record.effective_status().is_usable() {
                 info!(
                     "skipping {} account: {} (status: {})",
-                    record.provider,
+                    record.provider_key,
                     record.id,
                     record.effective_status()
                 );
                 continue;
             }
             by_provider
-                .entry(record.provider.clone())
+                .entry(record.provider_key.clone())
                 .or_default()
                 .push(record);
         }
-
         let total: usize = by_provider.values().map(|v| v.len()).sum();
         let providers: Vec<_> = by_provider
             .iter()
             .map(|(k, v)| format!("{}({})", k, v.len()))
             .collect();
-
         info!(
             "loaded {} accounts across {} providers: [{}]",
             total,

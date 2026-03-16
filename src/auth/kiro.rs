@@ -57,7 +57,7 @@ pub struct KiroTokenData {
     pub profile_arn: String,
     /// Token expiry timestamp (RFC3339)
     pub expires_at: String,
-    /// Authentication method: "builder-id", "social", or "idc"
+    /// Authentication method: "builder-id", "idc", "import", or legacy values still read from disk
     pub auth_method: String,
     /// OAuth provider: "AWS", "Google", "GitHub", or "Enterprise"
     pub provider: String,
@@ -76,6 +76,27 @@ pub struct KiroTokenData {
     /// User email address
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+/// Source of a persisted Kiro credential.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum KiroTokenSource {
+    BuilderIdWeb,
+    IdcWeb,
+    Import,
+    LegacySocial,
+}
+
+impl KiroTokenSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BuilderIdWeb => "builder-id-web",
+            Self::IdcWeb => "idc-web",
+            Self::Import => "import",
+            Self::LegacySocial => "legacy-social",
+        }
+    }
 }
 
 fn default_region() -> String {

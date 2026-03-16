@@ -142,7 +142,7 @@ export function ApiKeysPage() {
                     : 'config-backed or mixed'}
                 </p>
                 {mutationError ? (
-                  <p className='border-destructive/30 bg-destructive/10 text-destructive rounded-2xl border px-4 py-3 text-sm dark:text-destructive-foreground'>
+                  <p className='border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground rounded-2xl border px-4 py-3 text-sm'>
                     {mutationError.message}
                   </p>
                 ) : null}

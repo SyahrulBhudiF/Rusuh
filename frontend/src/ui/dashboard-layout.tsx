@@ -8,8 +8,8 @@ import { Button } from '@/components/ui/button'
 import { useManagementStatusQuery } from '../lib/management-api'
 import { useManagementAuth } from '../lib/management-auth'
 import { useOverviewQuery } from '../lib/query'
-import { cn } from '../lib/utils'
 import { useThemeStore } from '../lib/theme'
+import { cn } from '../lib/utils'
 
 const navItems = [
   { to: '/', label: 'Overview' },
@@ -45,7 +45,7 @@ function ThemeSegmentedControl({ theme, onChange }: ThemeSegmentedControlProps) 
             className={cn(
               'shrink rounded-xl',
               active
-                ? 'bg-background text-foreground shadow-sm ring-border/70 ring-1'
+                ? 'bg-background text-foreground ring-border/70 shadow-sm ring-1'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -57,7 +57,6 @@ function ThemeSegmentedControl({ theme, onChange }: ThemeSegmentedControlProps) 
     </div>
   )
 }
-
 
 export function DashboardLayout({ children }: PropsWithChildren<object>) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
@@ -115,14 +114,21 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
                   ? 'Management auth failed'
                   : 'Checking management access…'}
             </p>
-            <p className='text-xs leading-5'>Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}</p>
+            <p className='text-xs leading-5'>
+              Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}
+            </p>
             <div className='flex flex-col gap-2 pt-2 xl:flex-row xl:items-center xl:justify-between'>
               <Badge variant='secondary' className='w-fit rounded-full'>
                 {providerCount} provider{providerCount === 1 ? '' : 's'}
               </Badge>
               <div className='flex flex-wrap items-center gap-2 xl:justify-end'>
                 <ThemeSegmentedControl theme={theme} onChange={setTheme} />
-                <Button type='button' variant='outline' onClick={clearSecret} className='w-fit rounded-xl'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={clearSecret}
+                  className='w-fit rounded-xl'
+                >
                   Lock
                 </Button>
               </div>
@@ -197,7 +203,9 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
                         ? 'Management auth failed'
                         : 'Checking management access…'}
                   </p>
-                  <p className='text-xs leading-5'>Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}</p>
+                  <p className='text-xs leading-5'>
+                    Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}
+                  </p>
                 </div>
               </div>
             ) : null}

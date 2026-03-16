@@ -281,4 +281,3 @@ async fn spa_fallback_does_not_override_api_routes() {
     ));
     assert_ne!(spa_resp.status(), StatusCode::UNAUTHORIZED);
 }
-

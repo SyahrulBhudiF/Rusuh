@@ -21,7 +21,7 @@ export function QueryState({
   }
   if (isError) {
     return (
-      <div className='dashboard-enter border-destructive/30 bg-destructive/10 text-destructive rounded-3xl border p-8 text-sm shadow-sm dark:text-destructive-foreground'>
+      <div className='dashboard-enter border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground rounded-3xl border p-8 text-sm shadow-sm'>
         <p className='text-foreground font-medium'>Request failed</p>
         <p className='mt-2'>{error?.message ?? 'Try again in a moment.'}</p>
       </div>

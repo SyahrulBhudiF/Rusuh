@@ -77,6 +77,8 @@ pub struct AuthRecord {
     pub id: String,
     /// Provider key: `antigravity`, `gemini`, `codex`, `claude`, `qwen`, `iflow`
     pub provider: String,
+    /// Canonical provider grouping key exposed to management/UI.
+    pub provider_key: String,
     /// Human-readable label (email, project_id, etc.)
     pub label: String,
     /// Whether this credential is disabled (legacy field, prefer `status`)
@@ -276,6 +278,13 @@ impl FileTokenStore {
             .unwrap_or("unknown")
             .to_string();
 
+        let provider_key = metadata
+            .get("provider_key")
+            .and_then(|v| v.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(provider.as_str())
+            .to_string();
+
         let disabled = metadata
             .get("disabled")
             .and_then(|v| v.as_bool())
@@ -323,6 +332,7 @@ impl FileTokenStore {
         Ok(Some(AuthRecord {
             id,
             provider,
+            provider_key,
             label,
             disabled,
             status,

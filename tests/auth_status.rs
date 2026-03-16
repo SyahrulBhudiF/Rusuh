@@ -12,6 +12,7 @@ fn make_record(status: AuthStatus, disabled: bool) -> AuthRecord {
     AuthRecord {
         id: "test.json".into(),
         provider: "antigravity".into(),
+        provider_key: "antigravity".into(),
         label: "test@example.com".into(),
         disabled,
         status,

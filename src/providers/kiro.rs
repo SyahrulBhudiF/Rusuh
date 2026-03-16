@@ -12,7 +12,9 @@ use reqwest::StatusCode;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::auth::kiro::{KiroTokenData, REFRESH_SKEW_SECS};
+use crate::auth::kiro::{KiroTokenData, BUILDER_ID_START_URL, REFRESH_SKEW_SECS};
+use crate::auth::kiro_sso::SSOOIDCClient;
+use crate::auth::kiro_social::SocialAuthClient;
 use crate::auth::store::AuthRecord;
 use crate::error::{AppError, AppResult};
 use crate::models::{ChatCompletionRequest, ChatCompletionResponse, ModelInfo};
@@ -74,6 +76,16 @@ pub struct TokenState {
     pub auth_method: String,
     /// OAuth provider
     pub provider: String,
+    /// OIDC client ID for refresh-capable flows
+    pub client_id: Option<String>,
+    /// OIDC client secret for refresh-capable flows
+    pub client_secret: Option<String>,
+    /// AWS region for OIDC refresh
+    pub region: String,
+    /// Optional AWS start URL
+    pub start_url: Option<String>,
+    /// Optional user email
+    pub email: Option<String>,
     /// Tracks last successful refresh for logging
     pub last_refreshed_at: Option<DateTime<Utc>>,
 }
@@ -90,6 +102,11 @@ impl TokenState {
             expires_at,
             auth_method: data.auth_method.clone(),
             provider: data.provider.clone(),
+            client_id: data.client_id.clone(),
+            client_secret: data.client_secret.clone(),
+            region: data.region.clone(),
+            start_url: data.start_url.clone(),
+            email: data.email.clone(),
             last_refreshed_at: None,
         })
     }
@@ -169,7 +186,7 @@ impl KiroProvider {
             .metadata
             .get("profile_arn")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Auth("missing profile_arn".into()))?
+            .unwrap_or_default()
             .to_string();
 
         let expires_at = record
@@ -242,13 +259,11 @@ impl KiroProvider {
         }
 
         // Slow path: need to refresh
-        let state = self.token.write().await;
-
+        let mut state = self.token.write().await;
         // Double-check after acquiring write lock (another task may have refreshed)
         if !state.needs_refresh() {
             return Ok(state.access_token.clone());
         }
-
         if state.refresh_token.is_empty() {
             return Err(AppError::Auth("missing refresh_token".into()));
         }
@@ -257,16 +272,60 @@ impl KiroProvider {
             provider = "kiro",
             account = %self.account_name,
             auth_method = %state.auth_method,
+            region = %state.region,
             "refreshing access token (expired or within {}s skew)",
             REFRESH_SKEW_SECS
         );
 
-        // TODO: Implement token refresh based on auth_method
-        // For now, return error to indicate refresh is needed
-        Err(AppError::Auth(
-            "token refresh not yet implemented".into(),
-        ))
+        let refresh_result = if state.auth_method == "social" {
+            SocialAuthClient::new()
+                .refresh_social_token(&state.refresh_token)
+                .await?
+        } else {
+            let client_id = state
+                .client_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Auth("missing client_id for kiro refresh".into()))?;
+            let client_secret = state
+                .client_secret
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Auth("missing client_secret for kiro refresh".into()))?;
+            let start_url = state
+                .start_url
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            .unwrap_or(BUILDER_ID_START_URL);
+            SSOOIDCClient::new()
+                .refresh_token_with_region(
+                    client_id,
+                    client_secret,
+                    &state.refresh_token,
+                    &state.region,
+                    start_url,
+                )
+                .await?
+        };
+        state.access_token = refresh_result.access_token;
+        state.refresh_token = refresh_result.refresh_token;
+        state.expires_at = crate::auth::kiro::parse_expiry_str(&refresh_result.expires_at)
+            .ok_or_else(|| AppError::Auth("invalid refreshed expires_at format".into()))?;
+        state.last_refreshed_at = Some(Utc::now());
+
+        let new_token = state.access_token.clone();
+
+        if let Err(error) = self.persist_token(&state).await {
+            tracing::warn!(
+                provider = "kiro",
+                account = %self.account_name,
+                "failed to persist refreshed token: {error}"
+            );
+        }
+
+        Ok(new_token)
     }
+
 
     /// Check if an error is retryable
     fn is_retryable_error(error: &AppError) -> bool {
@@ -308,6 +367,60 @@ impl KiroProvider {
         let final_delay = delay_millis.saturating_add(jitter);
 
         Duration::from_millis(final_delay)
+    }
+
+    async fn persist_token(&self, state: &TokenState) -> AppResult<()> {
+        let refreshed_at = Utc::now().to_rfc3339();
+        let data = tokio::fs::read_to_string(&self.auth_file_path)
+            .await
+            .map_err(|e| AppError::Config(format!("read auth file for persist: {e}")))?;
+        let mut metadata: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&data)
+            .map_err(|e| AppError::Config(format!("parse auth file for persist: {e}")))?;
+
+        metadata.insert("type".into(), serde_json::json!("kiro"));
+        metadata.insert("provider_key".into(), serde_json::json!("kiro"));
+        metadata.insert("access_token".into(), serde_json::json!(state.access_token));
+        metadata.insert("refresh_token".into(), serde_json::json!(state.refresh_token));
+        metadata.insert("profile_arn".into(), serde_json::json!(state.profile_arn));
+        metadata.insert("expires_at".into(), serde_json::json!(state.expires_at.to_rfc3339()));
+        metadata.insert("auth_method".into(), serde_json::json!(state.auth_method));
+        metadata.insert("provider".into(), serde_json::json!(state.provider));
+        metadata.insert("region".into(), serde_json::json!(state.region));
+        metadata.insert("last_refresh".into(), serde_json::json!(&refreshed_at));
+        metadata.insert("last_refreshed_at".into(), serde_json::json!(&refreshed_at));
+        metadata.remove("status_message");
+
+        if let Some(client_id) = state.client_id.as_deref().filter(|value| !value.is_empty()) {
+            metadata.insert("client_id".into(), serde_json::json!(client_id));
+        }
+        if let Some(client_secret) = state
+            .client_secret
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            metadata.insert("client_secret".into(), serde_json::json!(client_secret));
+        }
+        if let Some(start_url) = state.start_url.as_deref().filter(|value| !value.is_empty()) {
+            metadata.insert("start_url".into(), serde_json::json!(start_url));
+        }
+        if let Some(email) = state.email.as_deref().filter(|value| !value.is_empty()) {
+            metadata.insert("email".into(), serde_json::json!(email));
+        }
+
+        let json = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| AppError::Config(format!("serialize auth file: {e}")))?;
+        tokio::fs::write(&self.auth_file_path, json)
+            .await
+            .map_err(|e| AppError::Config(format!("write auth file: {e}")))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            let _ = tokio::fs::set_permissions(&self.auth_file_path, perms).await;
+        }
+
+        Ok(())
     }
 }
 

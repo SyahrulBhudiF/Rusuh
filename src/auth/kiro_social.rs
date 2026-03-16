@@ -11,17 +11,18 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
-
-use crate::auth::kiro::{KiroTokenData, CALLBACK_PORT, KIRO_AUTH_ENDPOINT, REFRESH_SKEW_SECS};
 use crate::error::{AppError, AppResult};
+use crate::auth::kiro::{
+    KiroTokenData, CALLBACK_PORT, KIRO_AUTH_ENDPOINT, REFRESH_SKEW_SECS,
+};
 
 // ── PKCE Helper Functions ────────────────────────────────────────────────────
 
 /// Generate a random code verifier for PKCE (43-128 characters, base64url).
-fn generate_code_verifier() -> String {
+pub fn generate_code_verifier() -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use rand::RngExt;
@@ -32,7 +33,7 @@ fn generate_code_verifier() -> String {
 }
 
 /// Generate code challenge from verifier using SHA256 (base64url).
-fn generate_code_challenge(verifier: &str) -> String {
+pub fn generate_code_challenge(verifier: &str) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use sha2::{Digest, Sha256};
@@ -45,7 +46,7 @@ fn generate_code_challenge(verifier: &str) -> String {
 }
 
 /// Generate random state parameter for OAuth flow.
-fn generate_state() -> String {
+pub fn generate_state() -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use rand::RngExt;
@@ -72,6 +73,13 @@ struct TokenResponse {
     profile_arn: Option<String>,
     expires_in: Option<i64>,
 }
+
+#[derive(Debug, Serialize)]
+struct RefreshTokenRequest<'a> {
+    #[serde(rename = "refreshToken")]
+    refresh_token: &'a str,
+}
+
 
 // ── Callback Server ──────────────────────────────────────────────────────────
 
@@ -273,6 +281,58 @@ impl SocialAuthClient {
         Ok(result)
     }
 
+    /// Refresh an existing social token using only the refresh token.
+    pub async fn refresh_social_token(&self, refresh_token: &str) -> AppResult<KiroTokenData> {
+        let url = format!("{}/refreshToken", KIRO_AUTH_ENDPOINT);
+        let payload = RefreshTokenRequest { refresh_token };
+
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "KiroIDE/1.0.0")
+            .header("Accept", "application/json, text/plain, */*")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::Auth(format!("refresh request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Auth(format!(
+                "token refresh failed (status {}): {}",
+                status, body
+            )));
+        }
+
+        let token_resp: TokenResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Auth(format!("failed to parse refresh response: {}", e)))?;
+
+        let expires_at = chrono::Utc::now()
+            + chrono::Duration::seconds(token_resp.expires_in.unwrap_or(3600).max(1));
+
+        Ok(KiroTokenData {
+            access_token: token_resp.access_token,
+            refresh_token: token_resp
+                .refresh_token
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| refresh_token.to_string()),
+            profile_arn: token_resp.profile_arn.unwrap_or_default(),
+            expires_at: expires_at.to_rfc3339(),
+            auth_method: "social".to_string(),
+            provider: "imported".to_string(),
+            client_id: None,
+            client_secret: None,
+            region: "us-east-1".to_string(),
+            start_url: None,
+            email: None,
+        })
+    }
+
+
     /// Complete Google OAuth login flow.
     pub async fn login_with_google(&self) -> AppResult<KiroTokenData> {
         self.login_with_provider("google", "Google").await
@@ -310,7 +370,10 @@ impl SocialAuthClient {
         );
 
         println!("\n┌─────────────────────────────────────────────────────────┐");
-        println!("│  {} Authentication                              │", provider_name);
+        println!(
+            "│  {} Authentication                              │",
+            provider_name
+        );
         println!("├─────────────────────────────────────────────────────────┤");
         println!("│                                                         │");
         println!("│  Opening browser for authentication...                  │");
@@ -341,9 +404,7 @@ impl SocialAuthClient {
 
         // Convert to KiroTokenData
         let expires_at = chrono::Utc::now()
-            + chrono::Duration::seconds(
-                token_resp.expires_in.unwrap_or(3600) - REFRESH_SKEW_SECS,
-            );
+            + chrono::Duration::seconds(token_resp.expires_in.unwrap_or(3600) - REFRESH_SKEW_SECS);
 
         Ok(KiroTokenData {
             access_token: token_resp.access_token,
@@ -378,33 +439,28 @@ pub async fn login(store: &FileTokenStore, provider: &str) -> AppResult<()> {
     let token_data = match provider {
         "google" => client.login_with_google().await?,
         "github" => client.login_with_github().await?,
-        _ => return Err(AppError::Auth(format!("Unsupported provider: {}", provider))),
+        _ => {
+            return Err(AppError::Auth(format!(
+                "Unsupported provider: {}",
+                provider
+            )))
+        }
     };
-    // Save to store - need to convert metadata to HashMap
-    let mut metadata = std::collections::HashMap::new();
-    metadata.insert("access_token".to_string(), serde_json::json!(token_data.access_token));
-    metadata.insert("refresh_token".to_string(), serde_json::json!(token_data.refresh_token));
-    metadata.insert("profile_arn".to_string(), serde_json::json!(token_data.profile_arn));
-    metadata.insert("expires_at".to_string(), serde_json::json!(token_data.expires_at));
-    metadata.insert("auth_method".to_string(), serde_json::json!(token_data.auth_method));
-    metadata.insert("provider".to_string(), serde_json::json!(token_data.provider));
-    metadata.insert("region".to_string(), serde_json::json!(token_data.region));
-    if let Some(email) = &token_data.email {
-        metadata.insert("email".to_string(), serde_json::json!(email));
+    let label = format!(
+        "KIRO ({}) - {}",
+        provider,
+        token_data.email.as_deref().unwrap_or("user")
+    );
+    let record = crate::auth::kiro_record::KiroRecordInput {
+        token_data,
+        label: Some(label),
+        source: crate::auth::kiro::KiroTokenSource::LegacySocial,
     }
-    let record = crate::auth::store::AuthRecord {
-        id: format!("kiro-{}-{}", provider, uuid::Uuid::new_v4()),
-        provider: "kiro".to_string(),
-        label: format!("KIRO ({}) - {}", provider, token_data.email.as_deref().unwrap_or("user")),
-        disabled: false,
-        status: crate::auth::store::AuthStatus::Active,
-        status_message: None,
-        last_refreshed_at: Some(chrono::Utc::now()),
-        updated_at: chrono::Utc::now(),
-        path: std::path::PathBuf::new(),
-        metadata,
-    };
+    .into_auth_record();
     store.save(&record).await?;
-    println!("✓ KIRO {} login successful! Saved as: {}", provider, record.id);
+    println!(
+        "✓ KIRO {} login successful! Saved as: {}",
+        provider, record.id
+    );
     Ok(())
 }

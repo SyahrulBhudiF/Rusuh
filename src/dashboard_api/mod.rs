@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{routing::get, Json, Router};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::auth::store::{AuthRecord, AuthStatus};
 use crate::config::{OpenAICompatProvider, ProviderKeyEntry};
@@ -137,15 +137,21 @@ async fn health() -> Json<Value> {
     }))
 }
 
-async fn overview(axum::extract::State(state): axum::extract::State<Arc<ProxyState>>) -> Json<Value> {
+async fn overview(
+    axum::extract::State(state): axum::extract::State<Arc<ProxyState>>,
+) -> Json<Value> {
     Json(serde_json::to_value(build_overview(state).await).unwrap_or_else(|_| json!([])))
 }
 
-async fn accounts(axum::extract::State(state): axum::extract::State<Arc<ProxyState>>) -> Json<Value> {
+async fn accounts(
+    axum::extract::State(state): axum::extract::State<Arc<ProxyState>>,
+) -> Json<Value> {
     Json(serde_json::to_value(build_accounts_payload(state).await).unwrap_or_else(|_| json!([])))
 }
 
-async fn api_keys(axum::extract::State(state): axum::extract::State<Arc<ProxyState>>) -> Json<Value> {
+async fn api_keys(
+    axum::extract::State(state): axum::extract::State<Arc<ProxyState>>,
+) -> Json<Value> {
     Json(serde_json::to_value(build_api_keys_payload(state).await).unwrap_or_else(|_| json!([])))
 }
 
@@ -158,7 +164,11 @@ async fn build_overview(state: Arc<ProxyState>) -> DashboardOverview {
     let auth_records = state.accounts.store().list().await.unwrap_or_default();
     let account_summaries = summarize_accounts(&auth_records);
     let total_accounts = auth_records.len();
-    let available_model_count = state.model_registry.get_available_models("openai").await.len();
+    let available_model_count = state
+        .model_registry
+        .get_available_models("openai")
+        .await
+        .len();
     let provider_names = state
         .providers
         .iter()
@@ -186,7 +196,11 @@ async fn build_overview(state: Arc<ProxyState>) -> DashboardOverview {
         DashboardOverviewCard {
             label: "Routing".to_string(),
             value: routing_strategy.clone(),
-            hint: format!("{} provider(s), {} model(s)", provider_names.len(), available_model_count),
+            hint: format!(
+                "{} provider(s), {} model(s)",
+                provider_names.len(),
+                available_model_count
+            ),
         },
     ];
 
@@ -291,18 +305,19 @@ fn summarize_accounts(records: &[AuthRecord]) -> Vec<DashboardAccountSummary> {
     let mut grouped = BTreeMap::<String, DashboardAccountSummary>::new();
 
     for record in records {
-        let summary = grouped
-            .entry(record.provider.clone())
-            .or_insert_with(|| DashboardAccountSummary {
-                provider: record.provider.clone(),
-                total: 0,
-                active: 0,
-                refreshing: 0,
-                pending: 0,
-                error: 0,
-                disabled: 0,
-                unknown: 0,
-            });
+        let summary =
+            grouped
+                .entry(record.provider.clone())
+                .or_insert_with(|| DashboardAccountSummary {
+                    provider: record.provider.clone(),
+                    total: 0,
+                    active: 0,
+                    refreshing: 0,
+                    pending: 0,
+                    error: 0,
+                    disabled: 0,
+                    unknown: 0,
+                });
 
         summary.total += 1;
         match record.effective_status() {

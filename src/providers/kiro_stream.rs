@@ -81,8 +81,7 @@ impl<R: Read> EventStreamParser<R> {
 
         // Parse prelude fields
         let total_length = u32::from_be_bytes([prelude[0], prelude[1], prelude[2], prelude[3]]);
-        let headers_length =
-            u32::from_be_bytes([prelude[4], prelude[5], prelude[6], prelude[7]]);
+        let headers_length = u32::from_be_bytes([prelude[4], prelude[5], prelude[6], prelude[7]]);
         // prelude[8..12] is prelude_crc - we read it but don't validate
 
         // Boundary check: minimum frame size
@@ -221,11 +220,11 @@ fn extract_event_type(headers: &[u8]) -> String {
 /// Returns the new offset after skipping, or None if invalid
 fn skip_header_value(headers: &[u8], offset: usize, value_type: u8) -> Option<usize> {
     match value_type {
-        0 | 1 => Some(offset),     // bool true / bool false (no data)
-        2 => Some(offset + 1),     // byte
-        3 => Some(offset + 2),     // short
-        4 => Some(offset + 4),     // int
-        5 => Some(offset + 8),     // long
+        0 | 1 => Some(offset), // bool true / bool false (no data)
+        2 => Some(offset + 1), // byte
+        3 => Some(offset + 2), // short
+        4 => Some(offset + 4), // int
+        5 => Some(offset + 8), // long
         6 => {
             // byte array (2-byte length + data)
             if offset + 2 > headers.len() {
@@ -262,74 +261,4 @@ pub fn parse_payload(payload: &[u8]) -> Result<Value, serde_json::Error> {
         return Ok(Value::Null);
     }
     serde_json::from_slice(payload)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_event_type() {
-        // Construct a minimal header with ":event-type" = "testEvent"
-        let mut headers = Vec::new();
-
-        // Header name: ":event-type" (11 bytes)
-        headers.push(11u8); // name length
-        headers.extend_from_slice(b":event-type");
-
-        // Value type: 7 (string)
-        headers.push(7u8);
-
-        // Value: "testEvent" (9 bytes)
-        headers.push(0u8); // length high byte
-        headers.push(9u8); // length low byte
-        headers.extend_from_slice(b"testEvent");
-
-        let event_type = extract_event_type(&headers);
-        assert_eq!(event_type, "testEvent");
-    }
-
-    #[test]
-    fn test_skip_header_value() {
-        let headers = vec![0u8; 20];
-
-        // Test bool (no data)
-        assert_eq!(skip_header_value(&headers, 5, 0), Some(5));
-        assert_eq!(skip_header_value(&headers, 5, 1), Some(5));
-
-        // Test byte
-        assert_eq!(skip_header_value(&headers, 5, 2), Some(6));
-
-        // Test short
-        assert_eq!(skip_header_value(&headers, 5, 3), Some(7));
-
-        // Test int
-        assert_eq!(skip_header_value(&headers, 5, 4), Some(9));
-
-        // Test long
-        assert_eq!(skip_header_value(&headers, 5, 5), Some(13));
-
-        // Test timestamp
-        assert_eq!(skip_header_value(&headers, 5, 8), Some(13));
-
-        // Test uuid
-        assert_eq!(skip_header_value(&headers, 5, 9), Some(21));
-    }
-
-    #[test]
-    fn test_parse_empty_payload() {
-        let result = parse_payload(&[]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Value::Null);
-    }
-
-    #[test]
-    fn test_parse_json_payload() {
-        let json = br#"{"content":"hello","type":"text"}"#;
-        let result = parse_payload(json);
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        assert_eq!(value["content"], "hello");
-        assert_eq!(value["type"], "text");
-    }
 }

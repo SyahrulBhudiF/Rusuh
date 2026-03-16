@@ -103,6 +103,7 @@ pub async fn login(store: &FileTokenStore) -> anyhow::Result<()> {
     let record = AuthRecord {
         id: filename.clone(),
         provider: "antigravity".into(),
+        provider_key: "antigravity".into(),
         label: email.clone(),
         disabled: false,
         status: crate::auth::store::AuthStatus::Active,
