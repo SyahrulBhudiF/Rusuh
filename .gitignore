@@ -9,5 +9,6 @@ auths/
 .rusuh/
 ~/.rusuh
 node_modules/
+.vite/
 
 docs/
