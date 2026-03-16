@@ -1,8 +1,8 @@
 [package]
 name = "rusuh"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
-description = "Rust reimplementation of CLIProxyAPI — wraps Gemini CLI, Antigravity, Codex, Claude Code, Qwen Code, iFlow as OpenAI/Claude/Gemini compatible API"
+description = "Rust reimplementation of CLIProxyAPI — wraps Antigravity, Kiro as OpenAI/Claude/Gemini compatible API"
 
 [[bin]]
 name = "rusuh"
