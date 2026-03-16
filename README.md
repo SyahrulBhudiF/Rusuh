@@ -142,6 +142,24 @@ Dashboard pages currently cover:
 
 Management mutations in the dashboard require `remote-management.secret-key`. The UI asks for this secret and keeps it in tab session storage.
 
+### Using the dashboard
+
+In development, open:
+- `http://localhost:5173` — Vite frontend
+- `http://localhost:8317` — Rust backend API
+
+When the dashboard loads:
+1. Enter `remote-management.secret-key` in the auth prompt.
+2. Use the dashboard tabs: Overview, Accounts, API Keys, Config.
+3. Read data comes from `/dashboard/*`.
+4. Mutations still go through `/v0/management/*`.
+
+In production, after building the frontend and starting Rusuh, open:
+- `http://localhost:8317`
+
+Axum serves the built SPA and mounts API routes before the frontend fallback.
+
+
 Frontend toolchain now uses Oxc-native tooling:
 - `oxlint` for linting
 - `oxfmt` for formatting via `frontend/.oxfmt.json`
@@ -149,18 +167,18 @@ Frontend toolchain now uses Oxc-native tooling:
 
 
 ### Production build workflow
-
 Build frontend first, then backend:
-
 ```bash
 cd frontend
 bun install
 bun run build
-
 cd ..
 cargo build --release
+./target/release/rusuh
 ```
 
+Open:
+- `http://localhost:8317`
 At runtime, Axum serves the built frontend from `frontend/dist`, with API routes mounted before the SPA fallback.
 
 
