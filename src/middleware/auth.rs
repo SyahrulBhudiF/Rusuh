@@ -45,9 +45,7 @@ pub async fn api_key_auth(
     let provided_key = extract_api_key(&req);
 
     match provided_key {
-        Some(key) if api_keys.iter().any(|k| k == &key) => {
-            next.run(req).await
-        }
+        Some(key) if api_keys.iter().any(|k| k == &key) => next.run(req).await,
         _ => unauthorized_response(),
     }
 }

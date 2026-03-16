@@ -122,14 +122,12 @@ pub fn antigravity_to_openai_transform(
             .and_then(|p| p.iter().find_map(|part| part["text"].as_str()))
             .unwrap_or("");
 
-        let finish = candidate["finishReason"]
-            .as_str()
-            .and_then(|r| match r {
-                "STOP" => Some("stop"),
-                "MAX_TOKENS" | "MAX_OUTPUT_TOKENS" => Some("length"),
-                "TOOL_CALL" => Some("tool_calls"),
-                _ => None,
-            });
+        let finish = candidate["finishReason"].as_str().and_then(|r| match r {
+            "STOP" => Some("stop"),
+            "MAX_TOKENS" | "MAX_OUTPUT_TOKENS" => Some("length"),
+            "TOOL_CALL" => Some("tool_calls"),
+            _ => None,
+        });
 
         // Build tool_calls delta if present
         let tool_calls: Option<Vec<Value>> = parts.and_then(|p| {
@@ -148,7 +146,11 @@ pub fn antigravity_to_openai_transform(
                     }))
                 })
                 .collect();
-            if calls.is_empty() { None } else { Some(calls) }
+            if calls.is_empty() {
+                None
+            } else {
+                Some(calls)
+            }
         });
 
         // Skip chunks with no content and no tool calls and no finish reason
@@ -197,9 +199,7 @@ pub fn sse_response(stream: BoxStream) -> axum::response::Response {
 pub fn passthrough_sse_stream(
     upstream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
 ) -> BoxStream {
-    let stream = upstream.map(|chunk| {
-        chunk.map_err(|e| AppError::Upstream(format!("stream read: {e}")))
-    });
+    let stream =
+        upstream.map(|chunk| chunk.map_err(|e| AppError::Upstream(format!("stream read: {e}"))));
     Box::pin(stream)
 }
-

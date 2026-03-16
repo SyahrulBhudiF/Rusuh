@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 
-use rusuh::providers::antigravity::{
-    int64_value, parse_expiry, TokenState, REFRESH_SKEW_SECS,
-};
+use rusuh::providers::antigravity::{int64_value, parse_expiry, TokenState, REFRESH_SKEW_SECS};
 
 // ── parse_expiry ─────────────────────────────────────────────────────────────
 

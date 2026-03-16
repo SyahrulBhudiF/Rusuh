@@ -71,7 +71,9 @@ impl ModelRegistry {
             }
             raw_ids.push(model.id.clone());
             *new_counts.entry(model.id.clone()).or_insert(0) += 1;
-            new_models.entry(model.id.clone()).or_insert_with(|| model.clone());
+            new_models
+                .entry(model.id.clone())
+                .or_insert_with(|| model.clone());
             if !unique_ids.contains(&model.id) {
                 unique_ids.push(model.id.clone());
             }
@@ -116,9 +118,7 @@ impl ModelRegistry {
 
             debug!(
                 "registered client {} from provider {} with {} models",
-                client_id,
-                client_provider,
-                model_count
+                client_id, client_provider, model_count
             );
             return;
         }
@@ -290,9 +290,7 @@ impl ModelRegistry {
             let cooldown = Self::cooldown_suspended_count(registration);
             let other_suspended = Self::other_suspended_count(registration);
 
-            if eff > 0
-                || (avail > 0 && (expired > 0 || cooldown > 0) && other_suspended == 0)
-            {
+            if eff > 0 || (avail > 0 && (expired > 0 || cooldown > 0) && other_suspended == 0) {
                 if let Some(v) = Self::convert_model(&registration.info, handler_type) {
                     out.push(v);
                 }
@@ -302,11 +300,7 @@ impl ModelRegistry {
     }
 
     /// Get model info, preferring provider-specific definition.
-    pub async fn get_model_info(
-        &self,
-        model_id: &str,
-        provider: &str,
-    ) -> Option<ExtModelInfo> {
+    pub async fn get_model_info(&self, model_id: &str, provider: &str) -> Option<ExtModelInfo> {
         let reg = self.models.read().await;
         if let Some(r) = reg.get(model_id) {
             if !provider.is_empty() {
@@ -320,11 +314,7 @@ impl ModelRegistry {
     }
 
     /// Lookup model info: dynamic registry first, then static definitions.
-    pub async fn lookup_model_info(
-        &self,
-        model_id: &str,
-        provider: &str,
-    ) -> Option<ExtModelInfo> {
+    pub async fn lookup_model_info(&self, model_id: &str, provider: &str) -> Option<ExtModelInfo> {
         if let Some(info) = self.get_model_info(model_id, provider).await {
             return Some(info);
         }
@@ -446,7 +436,11 @@ impl ModelRegistry {
         let expired = Self::expired_quota_count(r);
         let other_suspended = Self::other_suspended_count(r);
         let eff = r.count - expired - other_suspended;
-        if eff < 0 { 0 } else { eff }
+        if eff < 0 {
+            0
+        } else {
+            eff
+        }
     }
 
     fn expired_quota_count(r: &ModelRegistration) -> i32 {
@@ -478,14 +472,30 @@ impl ModelRegistry {
                     "object": "model",
                     "owned_by": model.owned_by,
                 });
-                if model.created > 0 { r["created"] = json!(model.created); }
-                if !model.provider_type.is_empty() { r["type"] = json!(model.provider_type); }
-                if let Some(ref d) = model.display_name { r["display_name"] = json!(d); }
-                if let Some(ref v) = model.version { r["version"] = json!(v); }
-                if let Some(ref d) = model.description { r["description"] = json!(d); }
-                if model.context_length > 0 { r["context_length"] = json!(model.context_length); }
-                if model.max_completion_tokens > 0 { r["max_completion_tokens"] = json!(model.max_completion_tokens); }
-                if !model.supported_parameters.is_empty() { r["supported_parameters"] = json!(model.supported_parameters); }
+                if model.created > 0 {
+                    r["created"] = json!(model.created);
+                }
+                if !model.provider_type.is_empty() {
+                    r["type"] = json!(model.provider_type);
+                }
+                if let Some(ref d) = model.display_name {
+                    r["display_name"] = json!(d);
+                }
+                if let Some(ref v) = model.version {
+                    r["version"] = json!(v);
+                }
+                if let Some(ref d) = model.description {
+                    r["description"] = json!(d);
+                }
+                if model.context_length > 0 {
+                    r["context_length"] = json!(model.context_length);
+                }
+                if model.max_completion_tokens > 0 {
+                    r["max_completion_tokens"] = json!(model.max_completion_tokens);
+                }
+                if !model.supported_parameters.is_empty() {
+                    r["supported_parameters"] = json!(model.supported_parameters);
+                }
                 Some(r)
             }
             "claude" => {
@@ -494,20 +504,36 @@ impl ModelRegistry {
                     "object": "model",
                     "owned_by": model.owned_by,
                 });
-                if model.created > 0 { r["created_at"] = json!(model.created); }
+                if model.created > 0 {
+                    r["created_at"] = json!(model.created);
+                }
                 r["type"] = json!("model");
-                if let Some(ref d) = model.display_name { r["display_name"] = json!(d); }
+                if let Some(ref d) = model.display_name {
+                    r["display_name"] = json!(d);
+                }
                 Some(r)
             }
             "gemini" => {
                 let mut r = json!({});
                 r["name"] = json!(model.name.as_deref().unwrap_or(&model.id));
-                if let Some(ref v) = model.version { r["version"] = json!(v); }
-                if let Some(ref d) = model.display_name { r["displayName"] = json!(d); }
-                if let Some(ref d) = model.description { r["description"] = json!(d); }
-                if model.input_token_limit > 0 { r["inputTokenLimit"] = json!(model.input_token_limit); }
-                if model.output_token_limit > 0 { r["outputTokenLimit"] = json!(model.output_token_limit); }
-                if !model.supported_generation_methods.is_empty() { r["supportedGenerationMethods"] = json!(model.supported_generation_methods); }
+                if let Some(ref v) = model.version {
+                    r["version"] = json!(v);
+                }
+                if let Some(ref d) = model.display_name {
+                    r["displayName"] = json!(d);
+                }
+                if let Some(ref d) = model.description {
+                    r["description"] = json!(d);
+                }
+                if model.input_token_limit > 0 {
+                    r["inputTokenLimit"] = json!(model.input_token_limit);
+                }
+                if model.output_token_limit > 0 {
+                    r["outputTokenLimit"] = json!(model.output_token_limit);
+                }
+                if !model.supported_generation_methods.is_empty() {
+                    r["supportedGenerationMethods"] = json!(model.supported_generation_methods);
+                }
                 Some(r)
             }
             _ => {
@@ -515,12 +541,17 @@ impl ModelRegistry {
                     "id": model.id,
                     "object": "model",
                 });
-                if !model.owned_by.is_empty() { r["owned_by"] = json!(model.owned_by); }
-                if !model.provider_type.is_empty() { r["type"] = json!(model.provider_type); }
-                if model.created > 0 { r["created"] = json!(model.created); }
+                if !model.owned_by.is_empty() {
+                    r["owned_by"] = json!(model.owned_by);
+                }
+                if !model.provider_type.is_empty() {
+                    r["type"] = json!(model.provider_type);
+                }
+                if model.created > 0 {
+                    r["created"] = json!(model.created);
+                }
                 Some(r)
             }
         }
     }
 }
-

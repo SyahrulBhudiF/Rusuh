@@ -15,8 +15,7 @@ pub const SCOPES: &[&str] = &[
 
 pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
-pub const USERINFO_ENDPOINT: &str =
-    "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
+pub const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
 
 pub const API_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
 pub const API_VERSION: &str = "v1internal";

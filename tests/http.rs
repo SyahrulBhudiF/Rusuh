@@ -247,3 +247,38 @@ async fn management_endpoint_skips_auth() {
     // Should not be 401 — management skips auth
     assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn spa_fallback_does_not_override_api_routes() {
+    let app = test_app(Config::default());
+
+    let api_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(api_resp.status(), StatusCode::OK);
+
+    let spa_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        spa_resp.status(),
+        StatusCode::OK | StatusCode::NOT_FOUND | StatusCode::INTERNAL_SERVER_ERROR
+    ));
+    assert_ne!(spa_resp.status(), StatusCode::UNAUTHORIZED);
+}
+

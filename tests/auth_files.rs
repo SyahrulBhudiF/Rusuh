@@ -218,11 +218,7 @@ async fn download_nonexistent_returns_404() {
 #[tokio::test]
 async fn delete_single_auth_file() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(
-        dir.path().join("del.json"),
-        r#"{"type": "test"}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("del.json"), r#"{"type": "test"}"#).unwrap();
 
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
@@ -266,10 +262,7 @@ async fn delete_all_auth_files() {
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
     let resp = app
-        .oneshot(mgmt_request(
-            "DELETE",
-            "/v0/management/auth-files?all=true",
-        ))
+        .oneshot(mgmt_request("DELETE", "/v0/management/auth-files?all=true"))
         .await
         .unwrap();
 
@@ -307,10 +300,9 @@ async fn patch_status_disables_auth_file() {
     assert_eq!(body["disabled"], true);
 
     // Verify file on disk
-    let data: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("status.json")).unwrap(),
-    )
-    .unwrap();
+    let data: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("status.json")).unwrap())
+            .unwrap();
     assert_eq!(data["disabled"], true);
     assert_eq!(data["status"], "disabled");
 }
@@ -320,11 +312,7 @@ async fn patch_status_disables_auth_file() {
 #[tokio::test]
 async fn patch_fields_updates_priority() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(
-        dir.path().join("fields.json"),
-        r#"{"type": "antigravity"}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("fields.json"), r#"{"type": "antigravity"}"#).unwrap();
 
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
@@ -339,10 +327,9 @@ async fn patch_fields_updates_priority() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let data: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("fields.json")).unwrap(),
-    )
-    .unwrap();
+    let data: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("fields.json")).unwrap())
+            .unwrap();
     assert_eq!(data["priority"], 10);
     assert_eq!(data["prefix"], "us-");
 }
@@ -350,11 +337,7 @@ async fn patch_fields_updates_priority() {
 #[tokio::test]
 async fn patch_fields_no_fields_returns_400() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(
-        dir.path().join("nf.json"),
-        r#"{"type": "test"}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("nf.json"), r#"{"type": "test"}"#).unwrap();
 
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 

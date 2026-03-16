@@ -85,7 +85,10 @@ openai-compatibility:
     let cfg: Config = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(cfg.openai_compat.len(), 1);
     assert_eq!(cfg.openai_compat[0].name, "openrouter");
-    assert_eq!(cfg.openai_compat[0].base_url, "https://openrouter.ai/api/v1");
+    assert_eq!(
+        cfg.openai_compat[0].base_url,
+        "https://openrouter.ai/api/v1"
+    );
 }
 
 #[test]

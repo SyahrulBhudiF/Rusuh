@@ -48,10 +48,7 @@ impl AccountManager {
                 let token = record.access_token().unwrap_or_default().to_string();
                 match crate::auth::antigravity_login::fetch_project_id(&client, &token).await {
                     Ok(pid) => {
-                        info!(
-                            "auto-fetched project_id for {}: {}",
-                            record.id, pid
-                        );
+                        info!("auto-fetched project_id for {}: {}", record.id, pid);
                         record.metadata.insert("project_id".into(), json!(pid));
                         // Update label if empty
                         if record.label.is_empty() {
@@ -78,7 +75,9 @@ impl AccountManager {
             if !record.effective_status().is_usable() {
                 info!(
                     "skipping {} account: {} (status: {})",
-                    record.provider, record.id, record.effective_status()
+                    record.provider,
+                    record.id,
+                    record.effective_status()
                 );
                 continue;
             }

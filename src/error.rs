@@ -82,8 +82,11 @@ impl AppError {
             AppError::Auth(_) | AppError::QuotaExceeded(_) => true,
             AppError::Upstream(msg) => {
                 let m = msg.to_lowercase();
-                m.contains("401") || m.contains("429") || m.contains("unauthorized")
-                    || m.contains("rate limit") || m.contains("quota")
+                m.contains("401")
+                    || m.contains("429")
+                    || m.contains("unauthorized")
+                    || m.contains("rate limit")
+                    || m.contains("quota")
             }
             _ => false,
         }

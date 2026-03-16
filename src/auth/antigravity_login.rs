@@ -114,7 +114,10 @@ pub async fn login(store: &FileTokenStore) -> anyhow::Result<()> {
     };
 
     let saved_path = store.save(&record).await?;
-    println!("\n✓ Antigravity credentials saved to: {}", saved_path.display());
+    println!(
+        "\n✓ Antigravity credentials saved to: {}",
+        saved_path.display()
+    );
     println!("  Account: {}", email);
     if let Some(pid) = project_id {
         println!("  Project: {}", pid);
@@ -189,7 +192,9 @@ async fn wait_for_callback(expected_state: &str) -> anyhow::Result<String> {
             .expect("callback server failed");
     });
 
-    let code = rx.await.map_err(|_| anyhow::anyhow!("callback channel closed without receiving code"))?;
+    let code = rx
+        .await
+        .map_err(|_| anyhow::anyhow!("callback channel closed without receiving code"))?;
 
     // Shut down the server
     server.abort();
@@ -217,11 +222,7 @@ async fn exchange_code(
         ("grant_type", "authorization_code"),
     ];
 
-    let resp = client
-        .post(TOKEN_ENDPOINT)
-        .form(&params)
-        .send()
-        .await?;
+    let resp = client.post(TOKEN_ENDPOINT).form(&params).send().await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -232,10 +233,7 @@ async fn exchange_code(
     Ok(resp.json::<TokenResponse>().await?)
 }
 
-async fn fetch_user_info(
-    client: &reqwest::Client,
-    access_token: &str,
-) -> anyhow::Result<String> {
+async fn fetch_user_info(client: &reqwest::Client, access_token: &str) -> anyhow::Result<String> {
     let resp = client
         .get(USERINFO_ENDPOINT)
         .bearer_auth(access_token)
