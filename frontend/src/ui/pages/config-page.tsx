@@ -79,7 +79,7 @@ export function ConfigPage() {
       title='Runtime configuration'
       description='Read-only runtime snapshot: listener, management policy, routing, and provider key inventory.'
       actions={
-        <div className='grid grid-cols-3 gap-2 rounded-2xl border border-[var(--border)] bg-black/20 p-1 sm:flex sm:w-fit'>
+        <div className='border-border bg-background/60 grid grid-cols-1 gap-2 rounded-2xl border p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
           {(['structured', 'json', 'yaml'] as const).map((value) => (
             <Button
               key={value}
@@ -101,167 +101,157 @@ export function ConfigPage() {
       >
         {config.data ? (
           format === 'structured' ? (
-            <div className='space-y-6'>
-              <div className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-                <Card className='rounded-2xl border border-[var(--border)] bg-[var(--card)]'>
-                  <CardContent className='p-5'>
-                    <p className='text-sm text-[var(--muted-foreground)]'>Listen addr</p>
-                    <p className='mt-3 text-lg font-semibold break-all text-white'>
-                      {config.data.listen_addr}
-                    </p>
-                  </CardContent>
-                </Card>
-                <Card className='rounded-2xl border border-[var(--border)] bg-[var(--card)]'>
-                  <CardContent className='p-5'>
-                    <p className='text-sm text-[var(--muted-foreground)]'>Routing</p>
-                    <p className='mt-3 text-lg font-semibold text-white'>
-                      {config.data.routing_strategy}
-                    </p>
-                  </CardContent>
-                </Card>
-                <Card className='rounded-2xl border border-[var(--border)] bg-[var(--card)]'>
-                  <CardContent className='p-5'>
-                    <p className='text-sm text-[var(--muted-foreground)]'>Providers</p>
-                    <p className='mt-3 text-lg font-semibold text-white'>
-                      {config.data.provider_count}
-                    </p>
-                  </CardContent>
-                </Card>
-                <Card className='rounded-2xl border border-[var(--border)] bg-[var(--card)]'>
-                  <CardContent className='p-5'>
-                    <p className='text-sm text-[var(--muted-foreground)]'>API keys</p>
-                    <p className='mt-3 text-lg font-semibold text-white'>
-                      {config.data.api_key_count}
-                    </p>
-                  </CardContent>
-                </Card>
+            <div className='space-y-5'>
+              <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+                <div className='border-border rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>Listen addr</p>
+                  <p className='text-foreground mt-2 text-lg font-semibold break-all'>
+                    {config.data.listen_addr}
+                  </p>
+                </div>
+                <div className='border-border rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>Routing</p>
+                  <p className='text-foreground mt-2 text-lg font-semibold'>
+                    {config.data.routing_strategy}
+                  </p>
+                </div>
+                <div className='border-border rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>Providers</p>
+                  <p className='text-foreground mt-2 text-lg font-semibold'>
+                    {config.data.provider_count}
+                  </p>
+                </div>
+                <div className='border-border rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>API keys</p>
+                  <p className='text-foreground mt-2 text-lg font-semibold'>
+                    {config.data.api_key_count}
+                  </p>
+                </div>
               </div>
 
-              <div className='grid gap-6 xl:grid-cols-[0.9fr_1.1fr]'>
-                <article className='rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6'>
-                  <h3 className='text-lg font-semibold'>Core settings</h3>
-                  <dl className='mt-4 space-y-3 text-sm'>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Host</dt>
-                      <dd className='text-right text-white'>
+              <div className='grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
+                <section className='space-y-3'>
+                  <div>
+                    <h3 className='text-lg font-semibold'>Core settings</h3>
+                    <p className='text-muted-foreground mt-1 text-sm'>
+                      Runtime behavior and management flags.
+                    </p>
+                  </div>
+                  <dl className='space-y-2'>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Host</dt>
+                      <dd className='text-foreground text-right'>
                         {config.data.host || '(all interfaces)'}
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Port</dt>
-                      <dd className='text-right text-white'>{config.data.port}</dd>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Port</dt>
+                      <dd className='text-foreground text-right'>{config.data.port}</dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Auth dir</dt>
-                      <dd className='max-w-[18rem] text-right break-all text-white'>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Auth dir</dt>
+                      <dd className='text-foreground max-w-[18rem] text-right break-all'>
                         {config.data.auth_dir || '(default)'}
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Request retry</dt>
-                      <dd className='text-right text-white'>{config.data.request_retry}</dd>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Request retry</dt>
+                      <dd className='text-foreground text-right'>{config.data.request_retry}</dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Debug</dt>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Debug</dt>
                       <dd>
                         <BoolPill value={config.data.debug} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Management API</dt>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Management API</dt>
                       <dd>
                         <BoolPill value={config.data.management.enabled} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>Remote management</dt>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>Remote management</dt>
                       <dd>
                         <BoolPill value={config.data.management.allow_remote} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4'>
-                      <dt className='text-[var(--muted-foreground)]'>OAuth alias rules</dt>
-                      <dd className='text-right text-white'>
+                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                      <dt className='text-muted-foreground'>OAuth alias rules</dt>
+                      <dd className='text-foreground text-right'>
                         {config.data.oauth_alias_count} across{' '}
                         {config.data.oauth_alias_channel_count} channel(s)
                       </dd>
                     </div>
                   </dl>
-                </article>
+                </section>
 
-                <article className='rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6'>
-                  <div className='flex flex-col gap-3 md:flex-row md:items-start md:justify-between'>
+                <section className='space-y-4'>
+                  <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                     <div>
                       <h3 className='text-lg font-semibold'>Provider inventory</h3>
-                      <p className='mt-1 text-sm text-[var(--muted-foreground)]'>
-                        Snapshot of configured providers and API key inventories.
+                      <p className='text-muted-foreground mt-1 text-sm'>
+                        Configured providers and key inventories.
                       </p>
                     </div>
-                    <Badge
-                      variant='outline'
-                      className='rounded-full px-3 py-1 text-xs text-[var(--muted-foreground)]'
-                    >
+                    <Badge variant='outline' className='w-fit rounded-full px-3 py-1 text-xs'>
                       {hasProviders ? `${providerNames.length} configured` : 'No providers'}
                     </Badge>
                   </div>
-                  <div className='mt-4 space-y-4 text-sm'>
-                    <div>
-                      <p className='text-[var(--muted-foreground)]'>Registered providers</p>
-                      {hasProviders ? (
-                        <div className='mt-2 flex flex-wrap gap-2'>
-                          {providerNames.map((name) => (
-                            <Badge
-                              key={name}
-                              variant='outline'
-                              className='rounded-full border-[var(--border)] bg-white/5 px-3 py-1 text-white'
-                            >
-                              {name}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className='mt-2 text-white'>
-                          None configured in the current runtime snapshot.
-                        </p>
-                      )}
+
+                  <div>
+                    <p className='text-muted-foreground text-sm'>Registered providers</p>
+                    {hasProviders ? (
+                      <div className='mt-3 flex flex-wrap gap-2'>
+                        {providerNames.map((name) => (
+                          <Badge key={name} variant='outline' className='rounded-full px-3 py-1'>
+                            {name}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className='text-muted-foreground mt-2 text-sm'>
+                        None configured in the current runtime snapshot.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className='grid gap-3 sm:grid-cols-2'>
+                    <div className='border-border rounded-2xl border p-4'>
+                      <p className='text-muted-foreground text-sm'>Gemini API key entries</p>
+                      <p className='text-foreground mt-2 text-2xl font-semibold'>
+                        {config.data.gemini_api_keys.length}
+                      </p>
                     </div>
-                    <div className='grid gap-4 md:grid-cols-2'>
-                      <section className='rounded-2xl border border-[var(--border)] bg-black/10 p-4'>
-                        <p className='font-medium text-white'>Gemini API key entries</p>
-                        <p className='mt-2 text-2xl font-semibold text-white'>
-                          {config.data.gemini_api_keys.length}
-                        </p>
-                      </section>
-                      <section className='rounded-2xl border border-[var(--border)] bg-black/10 p-4'>
-                        <p className='font-medium text-white'>Codex API key entries</p>
-                        <p className='mt-2 text-2xl font-semibold text-white'>
-                          {config.data.codex_api_keys.length}
-                        </p>
-                      </section>
-                      <section className='rounded-2xl border border-[var(--border)] bg-black/10 p-4'>
-                        <p className='font-medium text-white'>Claude API key entries</p>
-                        <p className='mt-2 text-2xl font-semibold text-white'>
-                          {config.data.claude_api_keys.length}
-                        </p>
-                      </section>
-                      <section className='rounded-2xl border border-[var(--border)] bg-black/10 p-4'>
-                        <p className='font-medium text-white'>OpenAI-compatible providers</p>
-                        <p className='mt-2 text-2xl font-semibold text-white'>
-                          {config.data.openai_compat.length}
-                        </p>
-                      </section>
+                    <div className='border-border rounded-2xl border p-4'>
+                      <p className='text-muted-foreground text-sm'>Codex API key entries</p>
+                      <p className='text-foreground mt-2 text-2xl font-semibold'>
+                        {config.data.codex_api_keys.length}
+                      </p>
+                    </div>
+                    <div className='border-border rounded-2xl border p-4'>
+                      <p className='text-muted-foreground text-sm'>Claude API key entries</p>
+                      <p className='text-foreground mt-2 text-2xl font-semibold'>
+                        {config.data.claude_api_keys.length}
+                      </p>
+                    </div>
+                    <div className='border-border rounded-2xl border p-4'>
+                      <p className='text-muted-foreground text-sm'>OpenAI-compatible providers</p>
+                      <p className='text-foreground mt-2 text-2xl font-semibold'>
+                        {config.data.openai_compat.length}
+                      </p>
                     </div>
                   </div>
-                </article>
+                </section>
               </div>
             </div>
           ) : (
-            <Card className='rounded-3xl border border-[var(--border)] bg-[var(--card)]'>
-              <CardContent className='p-6'>
-                <p className='mb-4 text-sm text-[var(--muted-foreground)]'>
+            <Card className='border-border bg-card rounded-3xl border'>
+              <CardContent className='p-5 md:p-6'>
+                <p className='text-muted-foreground mb-4 text-sm'>
                   Raw {format.toUpperCase()} view of the current runtime snapshot.
                 </p>
-                <pre className='overflow-x-auto text-sm break-words whitespace-pre-wrap text-white'>
+                <pre className='text-foreground overflow-x-auto text-sm break-words whitespace-pre-wrap'>
                   {format === 'json' ? rawJson : rawYaml}
                 </pre>
               </CardContent>
