@@ -26,8 +26,12 @@ pub async fn api_key_auth(
 ) -> Response {
     let path = req.uri().path();
 
-    // Skip auth for health and management endpoints
-    if path == "/health" || path.starts_with("/v0/management") {
+    // Skip auth for health, management, dashboard read API, and OAuth callbacks
+    if path == "/health"
+        || path.starts_with("/v0/management")
+        || path.starts_with("/dashboard")
+        || path.ends_with("/callback")
+    {
         return next.run(req).await;
     }
 

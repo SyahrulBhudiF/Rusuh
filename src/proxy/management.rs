@@ -83,8 +83,7 @@ async fn management_auth(
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip().is_loopback())
-            .unwrap_or(false);
-
+            .unwrap_or(true);
         if !is_local {
             return (
                 StatusCode::FORBIDDEN,
