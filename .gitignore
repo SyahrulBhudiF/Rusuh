@@ -5,6 +5,7 @@ auths/
 *.token
 .claude
 .tldr
+.tldrignore
 .rusuh/
 ~/.rusuh
 node_modules/
