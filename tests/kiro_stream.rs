@@ -1,4 +1,4 @@
-use rusuh::providers::kiro_stream::{EventStreamParser, parse_payload};
+use rusuh::providers::kiro_stream::{parse_payload, EventStreamParser};
 use std::io::Cursor;
 
 /// Helper to create a minimal Event Stream message

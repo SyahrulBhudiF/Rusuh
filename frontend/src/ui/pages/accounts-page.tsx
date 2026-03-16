@@ -11,72 +11,122 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
   downloadAuthFile,
+  type ManagementAuthFile,
   useDeleteAuthFileMutation,
+  useManagementAuthFilesQuery,
   usePatchAuthFileFieldsMutation,
   useToggleAuthFileStatusMutation,
   useUploadAuthFileMutation,
 } from '../../lib/management-auth-files'
 import {
-  type OAuthProvider,
-  useOAuthStatusQuery,
-  useStartOAuthMutation,
-} from '../../lib/management-oauth'
-import { useAccountsQuery } from '../../lib/query'
+  useImportKiroMutation,
+  useImportKiroSocialMutation,
+  useStartKiroBuilderIdMutation,
+} from '../../lib/management-kiro'
+import { useOAuthStatusQuery, useStartOAuthMutation } from '../../lib/management-oauth'
 import { PageShell } from '../page-shell'
 import { QueryState } from '../query-state'
 import { statusTone } from '../status-tone'
 
 const ALL_FILTER = 'all'
 const STATUS_OPTIONS = ['active', 'refreshing', 'pending', 'error', 'disabled', 'unknown'] as const
-
 const MAX_LABEL_LENGTH = 200
 const MAX_UPLOAD_NAME_LENGTH = 200
 const MAX_UPLOAD_BODY_LENGTH = 20000
 const MAX_UPLOAD_FILE_SIZE = 1024 * 1024
 
+type ProviderGroup = {
+  key: string
+  label: string
+  items: ManagementAuthFile[]
+}
+
+function providerLabel(key: string) {
+  if (key === 'kiro') return 'Kiro'
+  if (key === 'antigravity') return 'Antigravity'
+  return key
+}
+
+function accountSubtitle(item: ManagementAuthFile) {
+  return item.email || item.project_id || item.provider || item.type || '—'
+}
+
+function renderKiroMetadata(item: ManagementAuthFile) {
+  return (
+    <div className='mt-3 flex flex-wrap gap-2 text-xs'>
+      {item.auth_method ? (
+        <Badge variant='outline' className='rounded-full px-2.5 py-1'>
+          {item.auth_method}
+        </Badge>
+      ) : null}
+      {item.region ? (
+        <Badge variant='outline' className='rounded-full px-2.5 py-1'>
+          {item.region}
+        </Badge>
+      ) : null}
+      {item.email ? (
+        <Badge variant='outline' className='rounded-full px-2.5 py-1'>
+          {item.email}
+        </Badge>
+      ) : null}
+      {item.start_url ? (
+        <Badge variant='outline' className='max-w-full rounded-full px-2.5 py-1'>
+          <span className='truncate'>{item.start_url}</span>
+        </Badge>
+      ) : null}
+    </div>
+  )
+}
+
 export function AccountsPage() {
-  const accounts = useAccountsQuery()
+  const accounts = useManagementAuthFilesQuery()
   const toggleStatus = useToggleAuthFileStatusMutation()
   const patchFields = usePatchAuthFileFieldsMutation()
   const deleteAuthFile = useDeleteAuthFileMutation()
   const uploadAuthFile = useUploadAuthFileMutation()
   const startOAuth = useStartOAuthMutation()
+  const startKiroBuilderId = useStartKiroBuilderIdMutation()
+  const importKiro = useImportKiroMutation()
+  const importKiroSocial = useImportKiroSocialMutation()
 
   const [providerFilter, setProviderFilter] = useState(ALL_FILTER)
   const [statusFilter, setStatusFilter] = useState(ALL_FILTER)
   const [editName, setEditName] = useState<string | null>(null)
   const [editLabel, setEditLabel] = useState('')
+
+  const [antigravityLabel, setAntigravityLabel] = useState('')
+  const [oauthState, setOauthState] = useState<string | null>(null)
+  const [onboardingProvider, setOnboardingProvider] = useState<'kiro' | 'antigravity'>('kiro')
+
+  const [kiroLabel, setKiroLabel] = useState('')
+  const [kiroImportMode, setKiroImportMode] = useState<'structured' | 'json'>('structured')
+  const [kiroImportJson, setKiroImportJson] = useState('')
+  const [kiroAccessToken, setKiroAccessToken] = useState('')
+  const [kiroRefreshToken, setKiroRefreshToken] = useState('')
+  const [kiroExpiresAt, setKiroExpiresAt] = useState('')
+  const [kiroClientId, setKiroClientId] = useState('')
+  const [kiroClientSecret, setKiroClientSecret] = useState('')
+  const [kiroProfileArn, setKiroProfileArn] = useState('')
+  const [kiroProvider, setKiroProvider] = useState('AWS')
+  const [kiroRegion, setKiroRegion] = useState('us-east-1')
+  const [kiroStartUrl, setKiroStartUrl] = useState('https://view.awsapps.com/start')
+  const [kiroEmail, setKiroEmail] = useState('')
+  const [kiroSocialRefreshToken, setKiroSocialRefreshToken] = useState('')
+
   const [uploadName, setUploadName] = useState('')
   const [uploadBody, setUploadBody] = useState('')
-  const [oauthProvider, setOauthProvider] = useState<OAuthProvider>('antigravity')
-  const [oauthLabel, setOauthLabel] = useState('')
-  const [oauthState, setOauthState] = useState<string | null>(null)
   const [uploadFileError, setUploadFileError] = useState<string | null>(null)
 
   const oauthStatus = useOAuthStatusQuery(oauthState, Boolean(oauthState))
   const oauthStatusData = oauthStatus.data
-
   const oauthStatusSummary = oauthState
     ? (oauthStatusData?.status ?? (oauthStatus.isFetching ? 'wait' : 'idle'))
     : 'idle'
-
-  const items = useMemo(() => {
-    const source = accounts.data?.items ?? []
-
-    return [...source]
-      .filter((item) => providerFilter === ALL_FILTER || item.provider === providerFilter)
-      .filter((item) => statusFilter === ALL_FILTER || item.status === statusFilter)
-      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
-  }, [accounts.data?.items, providerFilter, statusFilter])
-
-  const providers = useMemo(
-    () => (accounts.data?.grouped_counts ?? []).map((item) => item.provider),
-    [accounts.data?.grouped_counts],
-  )
 
   const mutationError = [
     toggleStatus,
@@ -84,15 +134,83 @@ export function AccountsPage() {
     deleteAuthFile,
     uploadAuthFile,
     startOAuth,
+    startKiroBuilderId,
+    importKiro,
+    importKiroSocial,
   ].find((mutation) => mutation.isError)?.error as Error | undefined
 
+  const items = useMemo(() => {
+    const source = accounts.data?.['auth-files'] ?? []
+
+    return [...source]
+      .filter((item) => providerFilter === ALL_FILTER || item.provider_key === providerFilter)
+      .filter((item) => statusFilter === ALL_FILTER || item.status === statusFilter)
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+  }, [accounts.data, providerFilter, statusFilter])
+
+  const providerGroups = useMemo<ProviderGroup[]>(() => {
+    const map = new Map<string, ManagementAuthFile[]>()
+
+    for (const item of items) {
+      const existing = map.get(item.provider_key) ?? []
+      existing.push(item)
+      map.set(item.provider_key, existing)
+    }
+
+    return [...map.entries()].map(([key, groupedItems]) => ({
+      key,
+      label: providerLabel(key),
+      items: groupedItems,
+    }))
+  }, [items])
+
+  const providerOptions = useMemo(() => {
+    const source = accounts.data?.['auth-files'] ?? []
+    return [...new Set(source.map((item) => item.provider_key))]
+  }, [accounts.data])
+
   const hasItems = items.length > 0
+
+  function submitKiroStructuredImport() {
+    importKiro.mutate({
+      access_token: kiroAccessToken.trim(),
+      refresh_token: kiroRefreshToken.trim(),
+      expires_at: kiroExpiresAt.trim(),
+      client_id: kiroClientId.trim(),
+      client_secret: kiroClientSecret.trim(),
+      profile_arn: kiroProfileArn.trim(),
+      auth_method: 'import',
+      provider: kiroProvider.trim() || 'AWS',
+      region: kiroRegion.trim() || 'us-east-1',
+      start_url: kiroStartUrl.trim(),
+      email: kiroEmail.trim(),
+      label: kiroLabel.trim(),
+    })
+  }
+
+  function submitKiroJsonImport() {
+    const parsed = JSON.parse(kiroImportJson) as Record<string, unknown>
+    importKiro.mutate({
+      access_token: String(parsed.access_token ?? ''),
+      refresh_token: String(parsed.refresh_token ?? ''),
+      expires_at: String(parsed.expires_at ?? ''),
+      client_id: String(parsed.client_id ?? ''),
+      client_secret: String(parsed.client_secret ?? ''),
+      profile_arn: String(parsed.profile_arn ?? ''),
+      auth_method: typeof parsed.auth_method === 'string' ? parsed.auth_method : 'import',
+      provider: typeof parsed.provider === 'string' ? parsed.provider : 'AWS',
+      region: typeof parsed.region === 'string' ? parsed.region : 'us-east-1',
+      start_url: typeof parsed.start_url === 'string' ? parsed.start_url : '',
+      email: typeof parsed.email === 'string' ? parsed.email : '',
+      label: kiroLabel.trim(),
+    })
+  }
 
   return (
     <PageShell
       eyebrow='Accounts'
-      title='Provider-agnostic auth inventory'
-      description='Read-only inventory plus core management actions from the existing management API.'
+      title='Provider onboarding and account management'
+      description='Separate add-account flows from existing account management, with Kiro grouped explicitly by provider.'
     >
       <QueryState
         isLoading={accounts.isLoading}
@@ -101,178 +219,550 @@ export function AccountsPage() {
       >
         {accounts.data ? (
           <div className='space-y-6'>
-            <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+            <section className='space-y-4'>
               <div>
-                <p className='text-muted-foreground text-sm'>
-                  {accounts.data.total} record{accounts.data.total === 1 ? '' : 's'} in inventory
+                <h3 className='text-lg font-semibold'>Login / Add account</h3>
+                <p className='text-muted-foreground mt-1 text-sm'>
+                  Start provider-specific onboarding here. Generic auth-file upload stays as an
+                  advanced fallback below.
                 </p>
-                <div className='mt-3 flex flex-wrap gap-2'>
-                  {accounts.data.grouped_counts.map((summary) => (
-                    <Badge
-                      key={summary.provider}
-                      variant='outline'
-                      className='rounded-full px-3 py-1 text-sm'
-                    >
-                      {summary.provider} · {summary.total}
-                    </Badge>
-                  ))}
-                </div>
               </div>
-              <Badge variant='outline' className='w-fit rounded-full px-3 py-1 text-xs'>
-                {hasItems ? `${items.length} visible` : 'No matches'}
-              </Badge>
-            </div>
 
-            <div className='grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'>
-              <section className='space-y-4'>
-                <div>
-                  <h3 className='text-lg font-semibold'>Filters</h3>
-                  <p className='text-muted-foreground mt-1 text-sm'>
-                    Narrow the inventory, then act on a record.
-                  </p>
-                </div>
-                <div className='grid gap-4 xl:grid-cols-[0.8fr_0.8fr_1.1fr]'>
-                  <label className='space-y-2'>
-                    <span className='text-muted-foreground text-sm'>Provider</span>
-                    <Select value={providerFilter} onValueChange={setProviderFilter}>
-                      <SelectTrigger className='border-border text-foreground bg-background/60 h-11 w-full rounded-2xl'>
-                        <SelectValue placeholder='All providers' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_FILTER}>All providers</SelectItem>
-                        {providers.map((provider) => (
-                          <SelectItem key={provider} value={provider}>
-                            {provider}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
+              <Tabs
+                value={onboardingProvider}
+                onValueChange={(value) => setOnboardingProvider(value as 'kiro' | 'antigravity')}
+              >
+                <TabsList className='grid w-full grid-cols-2 rounded-3xl p-2'>
+                  <TabsTrigger value='kiro' className='rounded-2xl'>
+                    Kiro
+                  </TabsTrigger>
+                  <TabsTrigger value='antigravity' className='rounded-2xl'>
+                    Antigravity
+                  </TabsTrigger>
+                </TabsList>
 
-                  <label className='space-y-2'>
-                    <span className='text-muted-foreground text-sm'>Status</span>
-                    <Select value={statusFilter} onValueChange={setStatusFilter}>
-                      <SelectTrigger className='border-border text-foreground bg-background/60 h-11 w-full rounded-2xl'>
-                        <SelectValue placeholder='All statuses' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_FILTER}>All statuses</SelectItem>
-                        {STATUS_OPTIONS.map((status) => (
-                          <SelectItem key={status} value={status}>
-                            {status}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-
-                  <p className='text-muted-foreground self-end text-sm leading-6'>
-                    Sorted by latest update. Inline edit writes the auth-file{' '}
-                    <span className='text-foreground'>prefix</span> field.
-                  </p>
-                </div>
-              </section>
-
-              <section className='space-y-4'>
-                <div>
-                  <h3 className='text-lg font-semibold'>Start OAuth</h3>
-                  <p className='text-muted-foreground mt-1 text-sm'>
-                    Launch a new auth flow when needed.
-                  </p>
-                </div>
-                <div className='grid gap-3 lg:grid-cols-[0.9fr_1.1fr] xl:grid-cols-[0.9fr_1.1fr_auto]'>
-                  <Select
-                    value={oauthProvider}
-                    onValueChange={(value) => setOauthProvider(value as OAuthProvider)}
-                  >
-                    <SelectTrigger className='border-border text-foreground bg-background/60 h-11 rounded-2xl'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value='antigravity'>antigravity</SelectItem>
-                      <SelectItem value='kiro-google'>kiro-google (unavailable)</SelectItem>
-                      <SelectItem value='kiro-github'>kiro-github (unavailable)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    type='text'
-                    value={oauthLabel}
-                    onChange={(event) => setOauthLabel(event.target.value)}
-                    className='border-border text-foreground bg-background/60 h-11 rounded-2xl'
-                    placeholder='Optional label'
-                    maxLength={MAX_LABEL_LENGTH}
-                  />
-                  <Button
-                    type='button'
-                    onClick={() => {
-                      if (oauthProvider !== 'antigravity') {
-                        return
-                      }
-                      const label = oauthLabel.trim()
-                      startOAuth.mutate(
-                        {
-                          provider: oauthProvider,
-                          label: label.length > 0 ? label : undefined,
-                        },
-                        {
-                          onSuccess: (data) => {
-                            setOauthState(data.state)
-                            window.open(data.url, '_blank', 'noopener,noreferrer')
-                          },
-                        },
-                      )
-                    }}
-                    disabled={startOAuth.isPending || oauthProvider !== 'antigravity'}
-                    className='h-11 rounded-xl px-4 xl:self-end'
-                  >
-                    {oauthProvider === 'antigravity'
-                      ? startOAuth.isPending
-                        ? 'Starting…'
-                        : 'Launch OAuth'
-                      : 'Unavailable'}
-                  </Button>
-                </div>
-                <div className='text-muted-foreground text-sm leading-6'>
-                  {oauthState ? (
-                    <>
-                      <p>
-                        Current state:{' '}
-                        <span className='text-foreground break-all'>{oauthState}</span>
-                      </p>
-                      <p className='mt-2'>
-                        Status: <span className='text-foreground'>{oauthStatusSummary}</span>
-                      </p>
-                      {oauthStatusData?.error ? (
-                        <p className='border-destructive/30 bg-destructive/10 text-destructive mt-3 rounded-2xl border px-4 py-3 dark:text-destructive-foreground'>
-                          {oauthStatusData.error}
+                <TabsContent value='kiro'>
+                  <Card className='border-border rounded-3xl border'>
+                    <CardContent className='space-y-4 p-5'>
+                      <div>
+                        <div className='flex items-center gap-2'>
+                          <h4 className='text-base font-semibold'>Kiro</h4>
+                          <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                            provider-specific
+                          </Badge>
+                        </div>
+                        <p className='text-muted-foreground mt-1 text-sm'>
+                          Choose the Kiro account path you want to add. Builder ID is live, import
+                          flows are ready, and Identity Center stays deferred for this pass.
                         </p>
-                      ) : null}
-                    </>
-                  ) : (
-                    <p>No OAuth flow started yet.</p>
-                  )}
-                </div>
-                {oauthProvider !== 'antigravity' ? (
-                  <p className='border-border bg-muted/50 text-muted-foreground rounded-2xl border px-4 py-3 text-sm'>
-                    Kiro social login is not supported for third-party apps in CLIProxyAPIPlus web flow.
-                    Use Builder ID / IDC outside this dashboard, or import an existing Kiro token file.
-                  </p>
-                ) : null}
-              </section>
+                      </div>
+
+                      <div className='space-y-3 rounded-2xl border p-4'>
+                        <div className='flex items-center justify-between gap-3'>
+                          <div>
+                            <p className='font-medium'>Builder ID</p>
+                            <p className='text-muted-foreground text-sm'>
+                              Launch the Kiro Builder ID web flow.
+                            </p>
+                          </div>
+                          <Button
+                            type='button'
+                            onClick={() =>
+                              startKiroBuilderId.mutate(
+                                { label: kiroLabel.trim() || undefined },
+                                {
+                                  onSuccess: (data) => {
+                                    setOauthState(data.session_id)
+                                    window.open(data.auth_url, '_blank', 'noopener,noreferrer')
+                                  },
+                                },
+                              )
+                            }
+                            disabled={startKiroBuilderId.isPending}
+                            className='h-10 rounded-xl px-4'
+                          >
+                            {startKiroBuilderId.isPending ? 'Launching…' : 'Launch'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className='space-y-3 rounded-2xl border p-4'>
+                        <div className='flex items-center justify-between gap-3'>
+                          <div>
+                            <p className='font-medium'>Identity Center</p>
+                            <p className='text-muted-foreground text-sm'>
+                              Deferred for now. Backend flow not wired yet.
+                            </p>
+                          </div>
+                          <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                            coming soon
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <div className='space-y-4 rounded-2xl border p-4'>
+                        <div className='flex items-center justify-between gap-3'>
+                          <div>
+                            <p className='font-medium'>Import Kiro auth</p>
+                            <p className='text-muted-foreground text-sm'>
+                              Paste canonical Kiro fields or a full JSON token document.
+                            </p>
+                          </div>
+                          <Select
+                            value={kiroImportMode}
+                            onValueChange={(value) =>
+                              setKiroImportMode(value as 'structured' | 'json')
+                            }
+                          >
+                            <SelectTrigger className='h-10 w-[180px] rounded-xl'>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value='structured'>Structured</SelectItem>
+                              <SelectItem value='json'>Paste JSON</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <Input
+                          type='text'
+                          value={kiroLabel}
+                          onChange={(event) => setKiroLabel(event.target.value)}
+                          placeholder='Optional label'
+                          maxLength={MAX_LABEL_LENGTH}
+                          className='h-11 rounded-2xl'
+                        />
+                        {kiroImportMode === 'structured' ? (
+                          <div className='grid gap-3 lg:grid-cols-2'>
+                            <Input
+                              value={kiroAccessToken}
+                              onChange={(event) => setKiroAccessToken(event.target.value)}
+                              placeholder='access_token'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroRefreshToken}
+                              onChange={(event) => setKiroRefreshToken(event.target.value)}
+                              placeholder='refresh_token'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroExpiresAt}
+                              onChange={(event) => setKiroExpiresAt(event.target.value)}
+                              placeholder='expires_at (RFC3339)'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroClientId}
+                              onChange={(event) => setKiroClientId(event.target.value)}
+                              placeholder='client_id'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroClientSecret}
+                              onChange={(event) => setKiroClientSecret(event.target.value)}
+                              placeholder='client_secret'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroProfileArn}
+                              onChange={(event) => setKiroProfileArn(event.target.value)}
+                              placeholder='profile_arn (optional)'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroProvider}
+                              onChange={(event) => setKiroProvider(event.target.value)}
+                              placeholder='provider'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroRegion}
+                              onChange={(event) => setKiroRegion(event.target.value)}
+                              placeholder='region'
+                              className='h-11 rounded-2xl'
+                            />
+                            <Input
+                              value={kiroStartUrl}
+                              onChange={(event) => setKiroStartUrl(event.target.value)}
+                              placeholder='start_url'
+                              className='h-11 rounded-2xl lg:col-span-2'
+                            />
+                            <Input
+                              value={kiroEmail}
+                              onChange={(event) => setKiroEmail(event.target.value)}
+                              placeholder='email (optional)'
+                              className='h-11 rounded-2xl lg:col-span-2'
+                            />
+                          </div>
+                        ) : (
+                          <Textarea
+                            value={kiroImportJson}
+                            onChange={(event) => setKiroImportJson(event.target.value)}
+                            placeholder='{"access_token":"...","refresh_token":"...","expires_at":"2026-04-01T00:00:00Z","client_id":"...","client_secret":"..."}'
+                            className='min-h-40 rounded-2xl px-4 py-3'
+                          />
+                        )}
+
+                        <div className='flex justify-end'>
+                          <Button
+                            type='button'
+                            onClick={() => {
+                              if (kiroImportMode === 'json') {
+                                submitKiroJsonImport()
+                                return
+                              }
+                              submitKiroStructuredImport()
+                            }}
+                            disabled={importKiro.isPending}
+                            className='h-11 rounded-xl px-4'
+                          >
+                            {importKiro.isPending ? 'Importing…' : 'Import Kiro auth'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className='space-y-4 rounded-2xl border p-4'>
+                        <div>
+                          <p className='font-medium'>Import social refresh token</p>
+                          <p className='text-muted-foreground text-sm'>
+                            Legacy Kiro social compatibility path. Paste a refresh token starting
+                            with `aorAAAAAG...`.
+                          </p>
+                        </div>
+
+                        <Textarea
+                          value={kiroSocialRefreshToken}
+                          onChange={(event) => setKiroSocialRefreshToken(event.target.value)}
+                          placeholder='aorAAAAAG...'
+                          className='min-h-24 rounded-2xl px-4 py-3'
+                        />
+
+                        <div className='flex justify-end'>
+                          <Button
+                            type='button'
+                            onClick={() =>
+                              importKiroSocial.mutate({
+                                refresh_token: kiroSocialRefreshToken.trim(),
+                                label: kiroLabel.trim() || undefined,
+                              })
+                            }
+                            disabled={importKiroSocial.isPending}
+                            className='h-11 rounded-xl px-4'
+                          >
+                            {importKiroSocial.isPending ? 'Importing…' : 'Import social token'}
+                          </Button>
+                        </div>
+                      </div>
+                      <div className='text-muted-foreground text-sm leading-6'>
+                        {oauthState ? (
+                          <>
+                            <p>
+                              Current session:{' '}
+                              <span className='text-foreground break-all'>{oauthState}</span>
+                            </p>
+                            <p className='mt-1'>
+                              Status: <span className='text-foreground'>{oauthStatusSummary}</span>
+                            </p>
+                            {oauthStatusData?.error ? (
+                              <p className='border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground mt-3 rounded-2xl border px-4 py-3'>
+                                {oauthStatusData.error}
+                              </p>
+                            ) : null}
+                          </>
+                        ) : (
+                          <p>No Kiro Builder ID session started yet.</p>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value='antigravity'>
+                  <Card className='border-border rounded-3xl border'>
+                    <CardContent className='space-y-4 p-5'>
+                      <div>
+                        <div className='flex items-center gap-2'>
+                          <h4 className='text-base font-semibold'>Antigravity</h4>
+                          <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                            OAuth
+                          </Badge>
+                        </div>
+                        <p className='text-muted-foreground mt-1 text-sm'>
+                          Use the existing generic OAuth launcher for Antigravity.
+                        </p>
+                      </div>
+
+                      <Input
+                        type='text'
+                        value={antigravityLabel}
+                        onChange={(event) => setAntigravityLabel(event.target.value)}
+                        className='h-11 rounded-2xl'
+                        placeholder='Optional label'
+                        maxLength={MAX_LABEL_LENGTH}
+                      />
+
+                      <div className='flex justify-end'>
+                        <Button
+                          type='button'
+                          onClick={() =>
+                            startOAuth.mutate(
+                              {
+                                provider: 'antigravity',
+                                label: antigravityLabel.trim() || undefined,
+                              },
+                              {
+                                onSuccess: (data) => {
+                                  setOauthState(data.state)
+                                  window.open(data.url, '_blank', 'noopener,noreferrer')
+                                },
+                              },
+                            )
+                          }
+                          disabled={startOAuth.isPending}
+                          className='h-11 rounded-xl px-4'
+                        >
+                          {startOAuth.isPending ? 'Launching…' : 'Launch OAuth'}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </Tabs>
+
               {mutationError ? (
-                <p className='border-destructive/30 bg-destructive/10 text-destructive rounded-2xl border px-4 py-3 text-sm xl:col-span-2 dark:text-destructive-foreground'>
+                <p className='border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground rounded-2xl border px-4 py-3 text-sm'>
                   {mutationError.message}
                 </p>
               ) : null}
-            </div>
+            </section>
+
+            <section className='space-y-4'>
+              <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+                <div>
+                  <h3 className='text-lg font-semibold'>Manage existing accounts</h3>
+                  <p className='text-muted-foreground mt-1 text-sm'>
+                    Provider-grouped inventory with Kiro-specific metadata and generic actions.
+                  </p>
+                  <div className='mt-3 flex flex-wrap gap-2'>
+                    {providerGroups.map((group) => (
+                      <Badge
+                        key={group.key}
+                        variant='outline'
+                        className='rounded-full px-3 py-1 text-sm'
+                      >
+                        {group.label} · {group.items.length}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+                <Badge variant='outline' className='w-fit rounded-full px-3 py-1 text-xs'>
+                  {hasItems ? `${items.length} visible` : 'No matches'}
+                </Badge>
+              </div>
+
+              <div className='grid gap-4 xl:grid-cols-[0.8fr_0.8fr_1.1fr]'>
+                <label className='space-y-2'>
+                  <span className='text-muted-foreground text-sm'>Provider</span>
+                  <Select value={providerFilter} onValueChange={setProviderFilter}>
+                    <SelectTrigger className='h-11 rounded-2xl'>
+                      <SelectValue placeholder='All providers' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_FILTER}>All providers</SelectItem>
+                      {providerOptions.map((provider) => (
+                        <SelectItem key={provider} value={provider}>
+                          {providerLabel(provider)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+
+                <label className='space-y-2'>
+                  <span className='text-muted-foreground text-sm'>Status</span>
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger className='h-11 rounded-2xl'>
+                      <SelectValue placeholder='All statuses' />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_FILTER}>All statuses</SelectItem>
+                      {STATUS_OPTIONS.map((status) => (
+                        <SelectItem key={status} value={status}>
+                          {status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+
+                <p className='text-muted-foreground self-end text-sm leading-6'>
+                  Sorted by latest update. Inline edit updates the persisted account label.
+                </p>
+              </div>
+
+              {!hasItems ? (
+                <article className='border-border bg-muted/40 text-muted-foreground rounded-3xl border border-dashed p-6 text-sm'>
+                  <p className='text-foreground'>No auth records match the current filters.</p>
+                  <p className='mt-2'>Change the filters or add another account above.</p>
+                </article>
+              ) : null}
+
+              <div className='space-y-6'>
+                {providerGroups.map((group) => (
+                  <section key={group.key} className='space-y-3'>
+                    <div className='flex items-center gap-2'>
+                      <h4 className='text-base font-semibold'>{group.label}</h4>
+                      <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                        {group.items.length}
+                      </Badge>
+                    </div>
+
+                    <div className='grid gap-3'>
+                      {group.items.map((item) => (
+                        <Card key={item.id} className='border-border rounded-2xl border'>
+                          <CardContent className='space-y-4 p-4'>
+                            <div className='flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between'>
+                              <div className='min-w-0'>
+                                <div className='flex flex-wrap items-center gap-2'>
+                                  <p className='text-foreground font-medium'>
+                                    {item.label || item.id}
+                                  </p>
+                                  <Badge
+                                    variant='outline'
+                                    className={`rounded-full px-2.5 py-1 text-xs ${statusTone(item.status)}`}
+                                  >
+                                    {item.status}
+                                  </Badge>
+                                </div>
+                                <p className='text-muted-foreground mt-1 truncate text-sm'>
+                                  {accountSubtitle(item)}
+                                </p>
+                                <p className='text-muted-foreground mt-1 truncate text-xs'>
+                                  {item.id}
+                                </p>
+                                {item.provider_key === 'kiro' ? renderKiroMetadata(item) : null}
+                                {item.status_message ? (
+                                  <p className='text-destructive dark:text-destructive-foreground mt-2 text-xs'>
+                                    {item.status_message}
+                                  </p>
+                                ) : null}
+                              </div>
+
+                              <div className='text-muted-foreground text-sm xl:text-right'>
+                                <p>{new Date(item.updated_at).toLocaleString()}</p>
+                                <p className='mt-1 text-xs'>
+                                  Refreshed:{' '}
+                                  {item.last_refreshed_at
+                                    ? new Date(item.last_refreshed_at).toLocaleString()
+                                    : 'never'}
+                                </p>
+                              </div>
+                            </div>
+
+                            {editName === item.id ? (
+                              <div className='border-border bg-background/50 space-y-3 rounded-2xl border p-4'>
+                                <Input
+                                  type='text'
+                                  value={editLabel}
+                                  onChange={(event) => setEditLabel(event.target.value)}
+                                  className='h-11 rounded-xl'
+                                  placeholder='Account label'
+                                />
+                                <div className='flex flex-col gap-2 sm:flex-row'>
+                                  <Button
+                                    type='button'
+                                    onClick={() =>
+                                      patchFields.mutate({ name: item.id, label: editLabel.trim() })
+                                    }
+                                    disabled={
+                                      patchFields.isPending || editLabel.trim().length === 0
+                                    }
+                                    className='h-11 rounded-xl px-3'
+                                  >
+                                    Save
+                                  </Button>
+                                  <Button
+                                    type='button'
+                                    variant='outline'
+                                    onClick={() => {
+                                      setEditName(null)
+                                      setEditLabel('')
+                                    }}
+                                    className='h-11 rounded-xl px-3'
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            <div className='grid gap-2 sm:grid-cols-2 xl:grid-cols-4'>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                onClick={() =>
+                                  toggleStatus.mutate({
+                                    name: item.id,
+                                    disabled: item.status !== 'disabled',
+                                  })
+                                }
+                                disabled={toggleStatus.isPending}
+                                className='h-11 rounded-xl px-3'
+                              >
+                                {item.status === 'disabled' ? 'Enable' : 'Disable'}
+                              </Button>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                onClick={() => {
+                                  setEditName(item.id)
+                                  setEditLabel(item.label)
+                                }}
+                                className='h-11 rounded-xl px-3'
+                              >
+                                Edit label
+                              </Button>
+                              <Button
+                                type='button'
+                                variant='outline'
+                                onClick={() => downloadAuthFile(item.id)}
+                                className='h-11 rounded-xl px-3'
+                              >
+                                Download
+                              </Button>
+                              <Button
+                                type='button'
+                                variant='destructive'
+                                onClick={() => {
+                                  if (window.confirm(`Delete ${item.id}?`)) {
+                                    deleteAuthFile.mutate(item.id)
+                                  }
+                                }}
+                                disabled={deleteAuthFile.isPending}
+                                className='h-11 rounded-xl px-3'
+                              >
+                                Delete
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
 
             <section className='space-y-4'>
               <div>
-                <h3 className='text-lg font-semibold'>Upload auth file</h3>
+                <h3 className='text-lg font-semibold'>Advanced fallback: upload raw auth file</h3>
                 <p className='text-muted-foreground mt-1 text-sm'>
-                  Paste an auth record or load a local JSON file to add it to the inventory.
+                  Keep for non-Kiro/manual recovery flows. Prefer provider-specific onboarding
+                  above.
                 </p>
               </div>
+
               <div className='grid gap-4'>
                 <Input
                   type='file'
@@ -281,10 +771,7 @@ export function AccountsPage() {
                     const file = event.target.files?.[0]
                     event.currentTarget.value = ''
 
-                    if (!file) {
-                      return
-                    }
-
+                    if (!file) return
                     if (file.size > MAX_UPLOAD_FILE_SIZE) {
                       setUploadFileError('JSON file too large. Max 1 MB.')
                       return
@@ -314,10 +801,10 @@ export function AccountsPage() {
                       setUploadFileError('Failed to read selected JSON file.')
                     }
                   }}
-                  className='border-border text-foreground bg-background/60 h-11 rounded-2xl file:mr-4 file:border-0 file:bg-transparent file:text-sm file:font-medium'
+                  className='h-11 rounded-2xl file:mr-4 file:border-0 file:bg-transparent file:text-sm file:font-medium'
                 />
                 {uploadFileError ? (
-                  <p className='border-destructive/30 bg-destructive/10 text-destructive rounded-2xl border px-4 py-3 text-sm dark:text-destructive-foreground'>
+                  <p className='border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground rounded-2xl border px-4 py-3 text-sm'>
                     {uploadFileError}
                   </p>
                 ) : null}
@@ -325,14 +812,14 @@ export function AccountsPage() {
                   type='text'
                   value={uploadName}
                   onChange={(event) => setUploadName(event.target.value)}
-                  className='border-border text-foreground bg-background/60 h-11 rounded-2xl'
-                  placeholder='antigravity-user.json'
+                  className='h-11 rounded-2xl'
+                  placeholder='auth-file.json'
                   maxLength={MAX_UPLOAD_NAME_LENGTH}
                 />
                 <Textarea
                   value={uploadBody}
                   onChange={(event) => setUploadBody(event.target.value)}
-                  className='border-border text-foreground bg-background/60 min-h-40 rounded-2xl px-4 py-3'
+                  className='min-h-40 rounded-2xl px-4 py-3'
                   placeholder='{"type":"antigravity"}'
                   maxLength={MAX_UPLOAD_BODY_LENGTH}
                 />
@@ -350,263 +837,10 @@ export function AccountsPage() {
                     className='h-11 rounded-xl px-4'
                   >
                     {uploadAuthFile.isPending ? 'Uploading…' : 'Upload auth file'}
-                    
                   </Button>
                 </div>
               </div>
             </section>
-
-            {!hasItems ? (
-              <article className='border-border bg-muted/40 text-muted-foreground rounded-3xl border border-dashed p-6 text-sm'>
-                <p className='text-foreground'>No auth records match the current filters.</p>
-                <p className='mt-2'>
-                  Change the filters, start OAuth, or upload an auth file to add another account.
-                </p>
-              </article>
-            ) : null}
-
-            <div className='grid gap-3 xl:hidden'>
-              {items.map((item) => (
-                <Card key={item.id} className='border-border bg-card rounded-2xl border'>
-                  <CardContent className='space-y-4 p-4'>
-                    <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
-                      <div className='min-w-0'>
-                        <p className='text-foreground font-medium'>{item.label || item.id}</p>
-                        <p className='text-muted-foreground mt-1 truncate text-sm'>
-                          {item.provider}
-                        </p>
-                        <p className='text-muted-foreground mt-2 truncate text-sm'>
-                          {item.email ?? item.project_id ?? '—'}
-                        </p>
-                        <p className='text-muted-foreground mt-1 truncate text-xs'>{item.path}</p>
-                      </div>
-                      <div className='flex flex-wrap items-center gap-2'>
-                        <Badge
-                          variant='outline'
-                          className={`rounded-full px-2.5 py-1 text-xs ${statusTone(item.status)}`}
-                        >
-                          {item.status}
-                        </Badge>
-                        <span className='text-muted-foreground text-xs'>
-                          {new Date(item.updated_at).toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-
-                    {item.status_message ? (
-                      <p className='text-destructive text-xs dark:text-destructive-foreground'>
-                        {item.status_message}
-                      </p>
-                    ) : null}
-
-                    {editName === item.id ? (
-                      <div className='border-border bg-background/50 space-y-3 rounded-2xl border p-4'>
-                        <Input
-                          type='text'
-                          value={editLabel}
-                          onChange={(event) => setEditLabel(event.target.value)}
-                          className='border-border text-foreground bg-background/60 h-11 rounded-xl'
-                          placeholder='prefix value'
-                        />
-                        <div className='flex flex-col gap-2 sm:flex-row'>
-                          <Button
-                            type='button'
-                            onClick={() =>
-                              patchFields.mutate({ name: item.id, label: editLabel.trim() })
-                            }
-                            disabled={patchFields.isPending || editLabel.trim().length === 0}
-                            className='h-11 rounded-xl px-3'
-                          >
-                            Save
-                          </Button>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            onClick={() => {
-                              setEditName(null)
-                              setEditLabel('')
-                            }}
-                            className='h-11 rounded-xl px-3'
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    <div className='grid gap-2 sm:grid-cols-2'>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() =>
-                          toggleStatus.mutate({
-                            name: item.id,
-                            disabled: item.status !== 'disabled',
-                          })
-                        }
-                        disabled={toggleStatus.isPending}
-                        className='h-11 rounded-xl px-3'
-                      >
-                        {item.status === 'disabled' ? 'Enable' : 'Disable'}
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() => {
-                          setEditName(item.id)
-                          setEditLabel(item.label)
-                        }}
-                        className='h-11 rounded-xl px-3'
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() => downloadAuthFile(item.id)}
-                        className='h-11 rounded-xl px-3'
-                      >
-                        Download
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='destructive'
-                        onClick={() => {
-                          if (window.confirm(`Delete ${item.id}?`)) {
-                            deleteAuthFile.mutate(item.id)
-                          }
-                        }}
-                        disabled={deleteAuthFile.isPending}
-                        className='h-11 rounded-xl px-3'
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-
-            <div className='hidden space-y-2 xl:block'>
-              {items.map((item) => (
-                <div key={item.id} className='border-border rounded-2xl border p-4'>
-                  <div className='grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto]'>
-                    <div className='min-w-0'>
-                      <div className='flex flex-wrap items-center gap-2'>
-                        <p className='text-foreground font-medium'>{item.label || item.id}</p>
-                        <Badge
-                          variant='outline'
-                          className={`rounded-full px-2.5 py-1 text-xs ${statusTone(item.status)}`}
-                        >
-                          {item.status}
-                        </Badge>
-                      </div>
-                      <p className='text-muted-foreground mt-1 truncate text-sm'>{item.provider}</p>
-                      <p className='text-muted-foreground mt-2 truncate text-sm'>
-                        {item.email ?? item.project_id ?? '—'}
-                      </p>
-                      <p className='text-muted-foreground mt-1 truncate text-xs'>{item.path}</p>
-                      {item.status_message ? (
-                        <p className='text-destructive mt-2 text-xs dark:text-destructive-foreground'>
-                          {item.status_message}
-                        </p>
-                      ) : null}
-                      {editName === item.id ? (
-                        <div className='mt-4 flex gap-2'>
-                          <Input
-                            type='text'
-                            value={editLabel}
-                            onChange={(event) => setEditLabel(event.target.value)}
-                            className='border-border text-foreground bg-background/60 h-10 rounded-xl'
-                            placeholder='prefix value'
-                          />
-                          <Button
-                            type='button'
-                            onClick={() =>
-                              patchFields.mutate({ name: item.id, label: editLabel.trim() })
-                            }
-                            disabled={patchFields.isPending || editLabel.trim().length === 0}
-                            className='h-10 rounded-xl px-3'
-                          >
-                            Save
-                          </Button>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            onClick={() => {
-                              setEditName(null)
-                              setEditLabel('')
-                            }}
-                            className='h-10 rounded-xl px-3'
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className='text-muted-foreground text-sm'>
-                      <p>{new Date(item.updated_at).toLocaleString()}</p>
-                      <p className='mt-1 text-xs'>
-                        Refreshed:{' '}
-                        {item.last_refreshed_at
-                          ? new Date(item.last_refreshed_at).toLocaleString()
-                          : 'never'}
-                      </p>
-                    </div>
-
-                    <div className='grid gap-2 sm:grid-cols-2 xl:w-[280px]'>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() =>
-                          toggleStatus.mutate({
-                            name: item.id,
-                            disabled: item.status !== 'disabled',
-                          })
-                        }
-                        disabled={toggleStatus.isPending}
-                        className='h-10 rounded-xl px-3'
-                      >
-                        {item.status === 'disabled' ? 'Enable' : 'Disable'}
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() => {
-                          setEditName(item.id)
-                          setEditLabel(item.label)
-                        }}
-                        className='h-10 rounded-xl px-3'
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() => downloadAuthFile(item.id)}
-                        className='h-10 rounded-xl px-3'
-                      >
-                        Download
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='destructive'
-                        onClick={() => {
-                          if (window.confirm(`Delete ${item.id}?`)) {
-                            deleteAuthFile.mutate(item.id)
-                          }
-                        }}
-                        disabled={deleteAuthFile.isPending}
-                        className='h-10 rounded-xl px-3'
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
         ) : null}
       </QueryState>

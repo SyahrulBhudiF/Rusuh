@@ -90,6 +90,10 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
             "/antigravity/callback",
             get(crate::proxy::oauth::antigravity_callback),
         )
+        .route(
+            "/kiro/builder-id/callback",
+            get(crate::proxy::kiro_oauth::builder_id_callback),
+        )
         // ── Frontend SPA fallback (after API routes) ──────────────────────────
         .fallback_service(
             ServeDir::new("frontend/dist")

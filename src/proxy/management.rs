@@ -1,3 +1,6 @@
+use crate::auth::kiro::{KiroTokenData, KiroTokenSource, DEFAULT_REGION};
+use crate::auth::kiro_record::KiroRecordInput;
+use crate::auth::kiro_social::SocialAuthClient;
 use crate::auth::store::AuthStatus;
 use crate::proxy::ProxyState;
 use axum::{
@@ -44,6 +47,18 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         // ── OAuth trigger ────────────────────────────────────────────────────
         .route("/oauth/start", get(crate::proxy::oauth::start_oauth))
         .route("/oauth/status", get(crate::proxy::oauth::get_auth_status))
+        .route(
+            "/kiro/builder-id/start",
+            axum::routing::post(crate::proxy::kiro_oauth::start_builder_id_login),
+        )
+        .route(
+            "/kiro/import",
+            axum::routing::post(import_kiro_auth_file),
+        )
+        .route(
+            "/kiro/social/import",
+            axum::routing::post(import_kiro_social_refresh_token),
+        )
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn(rate_limit))
@@ -462,9 +477,17 @@ async fn list_auth_files(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
                     json!({
                         "id": r.id,
                         "type": r.provider,
+                        "provider_key": r.provider_key,
+                        "label": r.label,
+                        "auth_method": r.metadata.get("auth_method").and_then(|v| v.as_str()),
+                        "provider": r.metadata.get("provider").and_then(|v| v.as_str()),
+                        "region": r.metadata.get("region").and_then(|v| v.as_str()),
+                        "start_url": r.metadata.get("start_url").and_then(|v| v.as_str()),
+                        "profile_arn": r.metadata.get("profile_arn").and_then(|v| v.as_str()),
                         "email": r.email().unwrap_or(""),
                         "project_id": r.project_id().unwrap_or(""),
                         "status": r.effective_status().to_string(),
+                        "status_message": r.status_message,
                         "disabled": r.disabled,
                         "size": size,
                         "updated_at": r.updated_at.to_rfc3339(),
@@ -542,6 +565,288 @@ async fn upload_auth_file(
     }
 
     (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+}
+
+
+#[derive(Deserialize)]
+struct ImportKiroBody {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    profile_arn: Option<String>,
+    expires_at: Option<String>,
+    auth_method: Option<String>,
+    provider: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    region: Option<String>,
+    start_url: Option<String>,
+    email: Option<String>,
+    label: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImportKiroSocialBody {
+    refresh_token: Option<String>,
+    label: Option<String>,
+}
+
+async fn import_kiro_social_refresh_token(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<ImportKiroSocialBody>,
+) -> impl IntoResponse {
+    let refresh_token = body
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let Some(refresh_token) = refresh_token else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "refresh_token is required"})),
+        );
+    };
+
+    if !refresh_token.starts_with("aorAAAAAG") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid token format. token should start with aorAAAAAG..."})),
+        );
+    }
+
+    let mut token_data = match SocialAuthClient::new().refresh_social_token(&refresh_token).await {
+        Ok(data) => data,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("token validation failed: {error}")})),
+            );
+        }
+    };
+
+    if token_data.refresh_token.trim().is_empty() {
+        token_data.refresh_token = refresh_token;
+    }
+    token_data.auth_method = "social".to_string();
+    token_data.provider = "imported".to_string();
+
+    let record = KiroRecordInput {
+        token_data,
+        label: body
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        source: KiroTokenSource::LegacySocial,
+    }
+    .into_auth_record();
+
+    let name = record.id.clone();
+    let label = record.label.clone();
+    let auth_method = record
+        .metadata
+        .get("auth_method")
+        .and_then(Value::as_str)
+        .unwrap_or("social")
+        .to_string();
+    let provider = record
+        .metadata
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("imported")
+        .to_string();
+
+    if let Err(error) = state.accounts.store().save(&record).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("save credential: {error}")})),
+        );
+    }
+
+    if let Err(error) = state.accounts.reload().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("reload accounts: {error}")})),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "name": name,
+            "provider_key": "kiro",
+            "label": label,
+            "auth_method": auth_method,
+            "provider": provider,
+        })),
+    )
+}
+
+
+async fn import_kiro_auth_file(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<ImportKiroBody>,
+) -> impl IntoResponse {
+    let access_token = body
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let refresh_token = body
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let expires_at = body
+        .expires_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let client_id = body
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let client_secret = body
+        .client_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let mut missing = Vec::new();
+    if access_token.is_none() {
+        missing.push("access_token");
+    }
+    if refresh_token.is_none() {
+        missing.push("refresh_token");
+    }
+    if expires_at.is_none() {
+        missing.push("expires_at");
+    }
+    if client_id.is_none() {
+        missing.push("client_id");
+    }
+    if client_secret.is_none() {
+        missing.push("client_secret");
+    }
+    if !missing.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("missing required fields: {}", missing.join(", "))
+            })),
+        );
+    }
+
+    let expires_at = expires_at.unwrap();
+    if crate::auth::kiro::parse_expiry_str(&expires_at).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expires_at must be RFC3339"})),
+        );
+    }
+
+    let token_data = KiroTokenData {
+        access_token: access_token.unwrap(),
+        refresh_token: refresh_token.unwrap(),
+        profile_arn: body.profile_arn.unwrap_or_default().trim().to_string(),
+        expires_at,
+        auth_method: body
+            .auth_method
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("import")
+            .to_string(),
+        provider: body
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("AWS")
+            .to_string(),
+        client_id,
+        client_secret,
+        region: body
+            .region
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_REGION)
+            .to_string(),
+        start_url: body
+            .start_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        email: body
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    };
+
+    let record = KiroRecordInput {
+        token_data,
+        label: body
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        source: KiroTokenSource::Import,
+    }
+    .into_auth_record();
+
+    let name = record.id.clone();
+    let label = record.label.clone();
+    let auth_method = record
+        .metadata
+        .get("auth_method")
+        .and_then(Value::as_str)
+        .unwrap_or("import")
+        .to_string();
+    let provider = record
+        .metadata
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("AWS")
+        .to_string();
+
+    if let Err(e) = state.accounts.store().save(&record).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("save auth file: {e}")})),
+        );
+    }
+    if let Err(e) = state.accounts.reload().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("reload accounts: {e}")})),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "name": name,
+            "provider_key": "kiro",
+            "label": label,
+            "auth_method": auth_method,
+            "provider": provider,
+        })),
+    )
 }
 
 /// `DELETE /v0/management/auth-files` — delete auth file(s).
@@ -752,10 +1057,11 @@ async fn patch_auth_file_status(
 
 /// `PATCH /v0/management/auth-files/fields` — update editable fields.
 ///
-/// Body: `{"name": "x.json", "prefix": "...", "proxy_url": "...", "priority": 1}`
+/// Body: `{"name": "x.json", "label": "...", "prefix": "...", "proxy_url": "...", "priority": 1}`
 #[derive(Deserialize)]
 struct PatchFieldsBody {
     name: String,
+    label: Option<String>,
     prefix: Option<String>,
     proxy_url: Option<String>,
     priority: Option<i32>,
@@ -800,6 +1106,10 @@ async fn patch_auth_file_fields(
     };
 
     let mut changed = false;
+    if let Some(ref label) = body.label {
+        metadata.insert("label".into(), json!(label));
+        changed = true;
+    }
     if let Some(ref prefix) = body.prefix {
         metadata.insert("prefix".into(), json!(prefix));
         changed = true;
@@ -812,11 +1122,10 @@ async fn patch_auth_file_fields(
         metadata.insert("priority".into(), json!(priority));
         changed = true;
     }
-
     if !changed {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no fields to update — use prefix, proxy_url, or priority"})),
+            Json(json!({"error": "no fields to update — use label, prefix, proxy_url, or priority"})),
         );
     }
 

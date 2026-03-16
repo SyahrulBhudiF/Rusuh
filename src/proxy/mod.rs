@@ -1,5 +1,6 @@
 pub mod balancer;
 pub mod handlers;
+pub mod kiro_oauth;
 pub mod management;
 pub mod oauth;
 pub mod stream;

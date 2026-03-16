@@ -1,7 +1,8 @@
 pub mod antigravity;
 pub mod antigravity_login;
-pub mod kiro;
 pub mod cli;
+pub mod kiro;
+pub mod kiro_record;
 pub mod kiro_social;
 pub mod kiro_sso;
 pub mod manager;

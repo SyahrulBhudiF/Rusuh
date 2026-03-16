@@ -38,14 +38,15 @@ async fn main() -> anyhow::Result<()> {
             let store = auth::store::FileTokenStore::new(&auth_dir);
             auth::antigravity_login::login(&store).await?
         }
-        Commands::KiroLogin { provider, start_url } => {
+        Commands::KiroLogin {
+            provider,
+            start_url,
+        } => {
             let auth_dir = resolve_auth_dir(&cfg);
             let store = auth::store::FileTokenStore::new(&auth_dir);
-            
+
             match provider.as_str() {
-                "google" | "github" => {
-                    auth::kiro_social::login(&store, &provider).await?
-                }
+                "google" | "github" => auth::kiro_social::login(&store, &provider).await?,
                 "sso" => {
                     if let Some(url) = start_url {
                         auth::kiro_sso::login_sso(&store, &url).await?
@@ -55,7 +56,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 _ => {
-                    eprintln!("Error: Invalid provider '{}'. Use: google, github, or sso", provider);
+                    eprintln!(
+                        "Error: Invalid provider '{}'. Use: google, github, or sso",
+                        provider
+                    );
                     std::process::exit(1);
                 }
             }

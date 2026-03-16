@@ -310,9 +310,34 @@ async fn patch_status_disables_auth_file() {
 // ── Patch fields ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn patch_fields_updates_priority() {
+async fn patch_fields_updates_label_and_priority() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("fields.json"), r#"{"type": "antigravity"}"#).unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "PATCH",
+            "/v0/management/auth-files/fields",
+            json!({"name": "fields.json", "priority": 10, "label": "Primary account"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let data: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("fields.json")).unwrap())
+            .unwrap();
+    assert_eq!(data["priority"], 10);
+    assert_eq!(data["label"], "Primary account");
+}
+
+#[tokio::test]
+async fn patch_fields_no_fields_returns_400() {
+
+#[tokio::test]
+async fn patch_fields_still_supports_prefix() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("fields-prefix.json"), r#"{"type": "antigravity"}"#).unwrap();
 
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
@@ -320,27 +345,22 @@ async fn patch_fields_updates_priority() {
         .oneshot(mgmt_request_json(
             "PATCH",
             "/v0/management/auth-files/fields",
-            json!({"name": "fields.json", "priority": 10, "prefix": "us-"}),
+            json!({"name": "fields-prefix.json", "prefix": "us-"}),
         ))
         .await
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let data: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("fields.json")).unwrap())
-            .unwrap();
-    assert_eq!(data["priority"], 10);
+    let data: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("fields-prefix.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(data["prefix"], "us-");
 }
-
-#[tokio::test]
-async fn patch_fields_no_fields_returns_400() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("nf.json"), r#"{"type": "test"}"#).unwrap();
-
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
-
     let resp = app
         .oneshot(mgmt_request_json(
             "PATCH",
@@ -349,8 +369,11 @@ async fn patch_fields_no_fields_returns_400() {
         ))
         .await
         .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("label, prefix, proxy_url, or priority"));
 }
 
 // ── Auth required ────────────────────────────────────────────────────────────
@@ -554,4 +577,115 @@ async fn upload_rejects_oversized_body() {
 
     // tower-http RequestBodyLimitLayer returns 413 Payload Too Large
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn import_kiro_auth_file_persists_canonical_record() {
+    let dir = TempDir::new().unwrap();
+    let cfg = mgmt_config(dir.path().to_str().unwrap());
+    let app = test_app(cfg.clone());
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/kiro/import",
+            json!({
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "profile_arn": "",
+                "expires_at": "2026-04-01T00:00:00Z",
+                "auth_method": "import",
+                "provider": "AWS Builder ID",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "region": "us-east-1",
+                "start_url": "https://view.awsapps.com/start",
+                "email": "kiro@example.com",
+                "label": "Imported Kiro"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["provider_key"], "kiro");
+    assert_eq!(body["label"], "Imported Kiro");
+    let name = body["name"].as_str().unwrap();
+
+    let saved = std::fs::read_to_string(dir.path().join(name)).unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["type"], "kiro");
+    assert_eq!(saved["provider_key"], "kiro");
+    assert_eq!(saved["source"], "import");
+    assert_eq!(saved["refresh_token"], "refresh-token");
+    assert_eq!(saved["client_id"], "client-id");
+    assert_eq!(saved["client_secret"], "client-secret");
+    assert_eq!(saved["region"], "us-east-1");
+    assert_eq!(saved["start_url"], "https://view.awsapps.com/start");
+    assert_eq!(saved["email"], "kiro@example.com");
+    assert_eq!(saved["label"], "Imported Kiro");
+
+    let app2 = test_app(cfg);
+    let list = app2
+        .oneshot(mgmt_request("GET", "/v0/management/auth-files"))
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    let files = list["auth-files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["provider_key"], "kiro");
+    assert_eq!(files[0]["auth_method"], "import");
+    assert_eq!(files[0]["email"], "kiro@example.com");
+}
+
+#[tokio::test]
+async fn import_kiro_auth_file_rejects_missing_refresh_fields() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/kiro/import",
+            json!({
+                "access_token": "access-token",
+                "expires_at": "2026-04-01T00:00:00Z"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("refresh_token"));
+    assert!(error.contains("client_id"));
+    assert!(error.contains("client_secret"));
+}
+
+#[tokio::test]
+async fn import_kiro_auth_file_rejects_invalid_expiry() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/kiro/import",
+            json!({
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_at": "not-a-date",
+                "client_id": "client-id",
+                "client_secret": "client-secret"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "expires_at must be RFC3339");
 }

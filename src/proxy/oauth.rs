@@ -4,26 +4,23 @@
 //! 1. Returns an auth URL immediately for the caller to open
 //! 2. Receives the callback on the main server at `/antigravity/callback`
 //! 3. Exchanges code → tokens → saves credentials → reloads accounts
-//! 4. Caller polls `/v0/management/auth-status?state=...` for completion
+//! 4. Caller polls `/v0/management/oauth/status?state=...` for completion
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::auth::antigravity::*;
+use crate::auth::store::{AuthRecord, AuthStatus};
+use crate::proxy::ProxyState;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::{routing::get, Json, Router};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
-use std::io::ErrorKind;
-
-use crate::auth::antigravity::*;
-use crate::auth::kiro::{KIRO_AUTH_ENDPOINT, CALLBACK_PORT as KIRO_CALLBACK_PORT};
-use crate::auth::store::{AuthRecord, AuthStatus};
-use crate::proxy::ProxyState;
 
 // ── Session tracker ──────────────────────────────────────────────────────────
 
@@ -42,6 +39,7 @@ struct OAuthSession {
     status: OAuthSessionStatus,
     created_at: DateTime<Utc>,
     code_verifier: Option<String>,
+    context: HashMap<String, Value>,
 }
 
 /// Thread-safe session store.
@@ -63,14 +61,25 @@ impl OAuthSessionStore {
     }
 
     pub async fn register(&self, state: &str, provider: &str) {
-        self.register_with_code_verifier(state, provider, None).await;
+        self.register_with_context(state, provider, None, HashMap::new())
+            .await;
     }
-
     pub async fn register_with_code_verifier(
         &self,
         state: &str,
         provider: &str,
         code_verifier: Option<String>,
+    ) {
+        self.register_with_context(state, provider, code_verifier, HashMap::new())
+            .await;
+    }
+
+    pub async fn register_with_context(
+        &self,
+        state: &str,
+        provider: &str,
+        code_verifier: Option<String>,
+        context: HashMap<String, Value>,
     ) {
         self.sessions.write().await.insert(
             state.to_string(),
@@ -79,6 +88,7 @@ impl OAuthSessionStore {
                 status: OAuthSessionStatus::Pending,
                 created_at: Utc::now(),
                 code_verifier,
+                context,
             },
         );
     }
@@ -111,6 +121,14 @@ impl OAuthSessionStore {
             .and_then(|s| s.code_verifier.clone())
     }
 
+    pub async fn get_context(&self, state: &str) -> Option<HashMap<String, Value>> {
+        self.sessions
+            .read()
+            .await
+            .get(state)
+            .map(|s| s.context.clone())
+    }
+
     /// Clean up sessions older than `max_age` seconds.
     pub async fn cleanup(&self, max_age_secs: i64) {
         let cutoff = Utc::now() - chrono::Duration::seconds(max_age_secs);
@@ -119,34 +137,14 @@ impl OAuthSessionStore {
             .await
             .retain(|_, s| s.created_at > cutoff);
     }
-
-}
-
-async fn ensure_kiro_callback_server(state: Arc<ProxyState>) -> anyhow::Result<String> {
-    let addr = format!("127.0.0.1:{KIRO_CALLBACK_PORT}");
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(listener) => listener,
-        Err(err) if err.kind() == ErrorKind::AddrInUse => {
-            return Ok(format!("http://localhost:{KIRO_CALLBACK_PORT}/oauth/callback"));
-        }
-        Err(err) => return Err(anyhow::anyhow!("bind {addr}: {err}")),
-    };
-    let app = Router::new().route("/oauth/callback", get(kiro_callback));
-    tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, app.with_state(state)).await {
-            warn!("KIRO callback server error: {err}");
-        }
-    });
-    Ok(format!("http://localhost:{KIRO_CALLBACK_PORT}/oauth/callback"))
-
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// `GET /v0/management/antigravity-auth-url` — generate OAuth URL, return {status, url, state}.
+/// `GET /v0/management/oauth/start?provider=antigravity` — generate OAuth URL,
+/// return `{status, provider, url, state}`.
 ///
 /// The caller should open the URL in a browser. After auth, Google redirects to
-/// `/antigravity/callback` on this server.
 pub async fn antigravity_auth_url(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let cfg = state.config.read().await;
     let port = cfg.port;
@@ -249,7 +247,7 @@ pub async fn antigravity_callback(
     Html(
         "<h1>✓ Authenticating...</h1>\
          <p>Processing your credentials. You can close this tab.</p>\
-         <p>Check status via <code>GET /v0/management/auth-status?state=...</code></p>"
+         <p>Check status via <code>GET /v0/management/oauth/status?state=...</code></p>"
             .to_string(),
     )
 }
@@ -354,6 +352,7 @@ async fn process_antigravity_callback(
     let record = AuthRecord {
         id: filename.clone(),
         provider: "antigravity".into(),
+        provider_key: "antigravity".into(),
         label: email.clone(),
         disabled: false,
         status: AuthStatus::Active,
@@ -389,7 +388,7 @@ async fn process_antigravity_callback(
     Ok(())
 }
 
-/// `GET /v0/management/auth-status?state=...` — poll OAuth session status.
+/// `GET /v0/management/oauth/status?state=...` — poll OAuth session status.
 #[derive(Deserialize)]
 pub struct AuthStatusQuery {
     state: Option<String>,
@@ -419,13 +418,10 @@ pub async fn get_auth_status(
 
 // ── Universal OAuth Handler ─────────────────────────────────────────────────
 
-/// `GET /v0/management/oauth/start?provider=antigravity|kiro-google|kiro-github` — start OAuth flow.
+/// `GET /v0/management/oauth/start?provider=antigravity|kiro-google|kiro-github`.
 ///
-/// Query params:
-/// - `provider`: "antigravity", "kiro-google", or "kiro-github" (required)
-/// - `label`: optional account label for identification
-///
-/// Returns: {status, url, state, provider}
+/// Kiro social providers are intentionally unsupported. Supported Kiro web
+/// management flows live under provider-specific `/v0/management/kiro/*` routes.
 #[derive(Deserialize)]
 pub struct StartOAuthQuery {
     provider: String,
@@ -437,15 +433,17 @@ pub async fn start_oauth(
     Query(q): Query<StartOAuthQuery>,
 ) -> impl IntoResponse {
     let provider = q.provider.trim().to_lowercase();
-    
     match provider.as_str() {
         "antigravity" => start_antigravity_oauth(state, q.label).await,
-        "kiro-google" | "kiro-github" => start_kiro_oauth(state, &provider, q.label).await,
+        "kiro-google" | "kiro-github" => reject_legacy_kiro_social(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "status": "error",
-                "error": format!("unsupported provider '{}' — supported: antigravity, kiro-google, kiro-github", provider)
+                "error": format!(
+                    "unsupported provider '{}' — supported: antigravity; Kiro uses provider-specific /v0/management/kiro/* endpoints",
+                    provider
+                )
             })),
         ).into_response(),
     }
@@ -453,10 +451,7 @@ pub async fn start_oauth(
 
 // ── Antigravity OAuth (existing logic) ──────────────────────────────────────
 
-async fn start_antigravity_oauth(
-    state: Arc<ProxyState>,
-    _label: Option<String>,
-) -> Response {
+async fn start_antigravity_oauth(state: Arc<ProxyState>, _label: Option<String>) -> Response {
     let cfg = state.config.read().await;
     let port = cfg.port;
     drop(cfg);
@@ -502,18 +497,14 @@ async fn start_antigravity_oauth(
         .into_response()
 }
 
-// ── KIRO OAuth ──────────────────────────────────────────────────────────────
+// ── Legacy KIRO social rejection ────────────────────────────────────────────
 
-async fn start_kiro_oauth(
-    _state: Arc<ProxyState>,
-    _provider: &str,
-    _label: Option<String>,
-) -> Response {
+fn reject_legacy_kiro_social() -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(json!({
             "status": "error",
-            "error": "Google/GitHub Kiro login is not available for third-party applications. Use AWS Builder ID / IDC flow or import an existing Kiro token instead."
+            "error": "Kiro social login is unsupported. Use /v0/management/kiro/builder-id/start, the IDC flow, or token import instead."
         })),
     )
         .into_response()
@@ -526,191 +517,13 @@ pub struct KiroCallbackQuery {
     error: Option<String>,
     error_description: Option<String>,
 }
-
 pub async fn kiro_callback(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
     Query(q): Query<KiroCallbackQuery>,
 ) -> impl IntoResponse {
-    let Some(oauth_state) = q.state.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-        return Html("<h1>Error</h1><p>Missing state parameter.</p>".to_string());
-    };
-
-    if let Some(error) = q.error.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let description = q.error_description.as_deref().unwrap_or_default();
-        let message = if description.trim().is_empty() {
-            format!("OAuth error: {error}")
-        } else {
-            format!("OAuth error: {error} - {}", description.trim())
-        };
-        state.oauth_sessions.set_error(oauth_state, &message).await;
-        return Html(format!("<h1>Authentication failed</h1><p>{message}</p>"));
-    }
-
-    let Some(code) = q.code.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-        state
-            .oauth_sessions
-            .set_error(oauth_state, "missing authorization code in callback")
-            .await;
-        return Html("<h1>Authentication failed</h1><p>Missing authorization code.</p>".to_string());
-    };
-
-    let session_status = state.oauth_sessions.get_status(oauth_state).await;
-    match &session_status {
-        Some((_, OAuthSessionStatus::Pending)) => {}
-        Some((_, OAuthSessionStatus::Complete)) => {
-            return Html(
-                "<h1>Already completed</h1><p>This OAuth session has already been processed.</p>"
-                    .to_string(),
-            );
-        }
-        Some((_, OAuthSessionStatus::Error(msg))) => {
-            return Html(format!("<h1>Error</h1><p>Session error: {msg}</p>"));
-        }
-        None => {
-            return Html("<h1>Error</h1><p>Unknown or expired OAuth session.</p>".to_string());
-        }
-    }
-
-    let state_clone = state.clone();
-    let oauth_state_clone = oauth_state.to_string();
-    let code_clone = code.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = process_kiro_callback(&state_clone, &code_clone, &oauth_state_clone).await {
-            warn!(
-                provider = "kiro",
-                state = %oauth_state_clone,
-                "OAuth callback processing failed: {e}"
-            );
-            state_clone
-                .oauth_sessions
-                .set_error(&oauth_state_clone, &e.to_string())
-                .await;
-        }
-    });
-
+    let _ = (&q.code, &q.state, &q.error, &q.error_description);
     Html(
-        "<h1>✓ Authenticating...</h1>\
-         <p>Processing your Kiro credentials. You can close this tab.</p>\
-         <p>Check status via <code>GET /v0/management/oauth/status?state=...</code></p>"
+        "<h1>Unsupported</h1><p>Legacy Kiro social OAuth callback is disabled. Use the provider-specific Kiro management flows instead.</p>"
             .to_string(),
     )
 }
-
-async fn process_kiro_callback(
-    state: &Arc<ProxyState>,
-    code: &str,
-    oauth_state: &str,
-) -> anyhow::Result<()> {
-    let code_verifier = state
-        .oauth_sessions
-        .get_code_verifier(oauth_state)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("missing PKCE verifier for OAuth session"))?;
-
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", KIRO_CALLBACK_PORT);
-    let token_url = format!("{}/oauth/token", KIRO_AUTH_ENDPOINT);
-    let client = reqwest::Client::new();
-    let payload = json!({
-        "code": code,
-        "code_verifier": code_verifier,
-        "redirect_uri": redirect_uri,
-    });
-
-    let resp = client
-        .post(&token_url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/plain, */*")
-        .header("User-Agent", "KiroIDE/1.0.0")
-        .json(&payload)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("token exchange failed ({status}): {body}");
-    }
-
-    let token_resp: Value = resp.json().await?;
-    let access_token = token_resp
-        .get("accessToken")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if access_token.is_empty() {
-        anyhow::bail!("token exchange returned empty access token");
-    }
-
-    let refresh_token = token_resp
-        .get("refreshToken")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let profile_arn = token_resp
-        .get("profileArn")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let expires_in = token_resp
-        .get("expiresIn")
-        .and_then(Value::as_i64)
-        .filter(|v| *v > 0)
-        .unwrap_or(3600);
-
-    let provider = state
-        .oauth_sessions
-        .get_status(oauth_state)
-        .await
-        .map(|(provider, _)| provider)
-        .ok_or_else(|| anyhow::anyhow!("OAuth session disappeared during processing"))?;
-    let social_provider = provider.strip_prefix("kiro-").unwrap_or("social");
-
-    let now = Utc::now();
-    let expires_at = (now + chrono::Duration::seconds(expires_in - crate::auth::kiro::REFRESH_SKEW_SECS))
-        .to_rfc3339();
-
-    let mut metadata: HashMap<String, Value> = HashMap::new();
-    metadata.insert("type".into(), json!("kiro"));
-    metadata.insert("access_token".into(), json!(access_token));
-    metadata.insert("refresh_token".into(), json!(refresh_token));
-    metadata.insert("profile_arn".into(), json!(profile_arn));
-    metadata.insert("expires_at".into(), json!(expires_at));
-    metadata.insert("auth_method".into(), json!("social"));
-    metadata.insert("provider".into(), json!(social_provider));
-    metadata.insert("region".into(), json!("us-east-1"));
-    metadata.insert("disabled".into(), json!(false));
-    metadata.insert("last_refreshed_at".into(), json!(now.to_rfc3339()));
-    metadata.insert("status".into(), json!("active"));
-
-    let filename = format!("kiro-{}-{}.json", social_provider, uuid::Uuid::new_v4());
-    let record = AuthRecord {
-        id: filename.clone(),
-        provider: "kiro".into(),
-        label: format!("KIRO ({social_provider})"),
-        disabled: false,
-        status: AuthStatus::Active,
-        status_message: None,
-        last_refreshed_at: Some(now),
-        path: std::path::PathBuf::from(&filename),
-        metadata,
-        updated_at: now,
-    };
-
-    state
-        .accounts
-        .store()
-        .save(&record)
-        .await
-        .map_err(|e| anyhow::anyhow!("save credential: {e}"))?;
-
-    if let Err(e) = state.accounts.reload().await {
-        warn!("failed to reload accounts after Kiro OAuth: {e}");
-    }
-
-    state.oauth_sessions.complete(oauth_state).await;
-    Ok(())
-}
-
