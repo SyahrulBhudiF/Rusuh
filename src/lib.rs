@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod dashboard_api;
 pub mod error;
 pub mod middleware;
 pub mod models;
