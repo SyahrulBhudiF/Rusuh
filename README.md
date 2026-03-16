@@ -4,6 +4,7 @@ Rusuh is a Rust proxy server that exposes multiple coding/LLM backends behind Op
 
 Today the main implemented provider is:
 - Antigravity
+- Kiro
 
 Also included:
 - management API
