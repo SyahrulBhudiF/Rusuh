@@ -1,0 +1,12 @@
+target
+.git
+.github
+jj
+.jj
+.env
+.env.*
+*.log
+node_modules
+frontend/node_modules
+frontend/dist
+.DS_Store

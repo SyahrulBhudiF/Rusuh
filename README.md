@@ -181,6 +181,68 @@ Open:
 - `http://localhost:8317`
 At runtime, Axum serves the built frontend from `frontend/dist`, with API routes mounted before the SPA fallback.
 
+## Docker
+
+### Quick start
+
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+# edit config.yaml, especially:
+# - api-keys
+# - remote-management.secret-key
+
+docker compose up --build
+```
+
+Open:
+- `http://localhost:8317`
+
+### Compose environment variables
+
+`docker-compose.yml` supports `.env` overrides:
+
+```env
+RUSUH_IMAGE=rusuh:local
+RUSUH_PORT=8317
+RUSUH_CONFIG_PATH=./config.yaml
+RUSUH_AUTH_VOLUME=rusuh-auth
+RUSUH_LOG=rusuh=info,tower_http=debug
+```
+
+Included example:
+- [`.env.example`](.env.example)
+
+### Persistent auth storage
+
+Compose mounts the auth directory to:
+- `/home/rusuh/.rusuh`
+
+This matches the default config:
+
+```yaml
+auth-dir: "~/.rusuh"
+```
+
+If you change `auth-dir` in `config.yaml`, update the compose volume path too.
+
+### Healthcheck
+
+The container includes a healthcheck against:
+- `GET /health`
+
+Check status:
+
+```bash
+docker compose ps
+```
+
+### Stop
+
+```bash
+docker compose down
+```
+
 
 ## Authentication
 
