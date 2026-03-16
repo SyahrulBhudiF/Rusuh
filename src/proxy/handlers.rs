@@ -1,14 +1,14 @@
 use axum::{
-    Json,
     extract::{Path, State},
     response::{IntoResponse, Response},
+    Json,
 };
-use std::sync::Arc;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::{
     error::AppError,
-    models::{ChatCompletionRequest, ModelsResponse, ModelInfo},
+    models::{ChatCompletionRequest, ModelInfo, ModelsResponse},
     proxy::ProxyState,
 };
 
@@ -150,10 +150,7 @@ async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
 /// Resolve model name through OAuth model alias.
 /// Config format: `oauth-model-alias.<channel>: [{name, alias}]`
 /// When a request asks for `alias`, we rewrite to `name` for the upstream.
-fn resolve_oauth_model_alias(
-    config: &crate::config::Config,
-    model: &str,
-) -> String {
+fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> String {
     for aliases in config.oauth_model_alias.values() {
         for entry in aliases {
             if entry.alias.eq_ignore_ascii_case(model) {
@@ -190,10 +187,7 @@ async fn route_chat(
     }
 
     // Step 2: Get providers for this model from registry
-    let model_providers = state
-        .model_registry
-        .get_model_providers(&req.model)
-        .await;
+    let model_providers = state.model_registry.get_model_providers(&req.model).await;
 
     // Step 3: Build candidate provider list
     let candidates: Vec<usize> = if let Some(ref hint) = provider_hint {
@@ -251,16 +245,23 @@ async fn route_chat(
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));
                 tracing::info!(
                     "retry {}/{} for provider {} (backoff {}ms)",
-                    attempt + 1, max_retries, provider.name(), delay.as_millis()
+                    attempt + 1,
+                    max_retries,
+                    provider.name(),
+                    delay.as_millis()
                 );
                 tokio::time::sleep(delay).await;
             }
 
             let result = if is_stream {
-                provider.chat_completion_stream(&req).await
+                provider
+                    .chat_completion_stream(&req)
+                    .await
                     .map(crate::proxy::stream::sse_response)
             } else {
-                provider.chat_completion(&req).await
+                provider
+                    .chat_completion(&req)
+                    .await
                     .map(|r| Json(r).into_response())
             };
 
@@ -269,7 +270,8 @@ async fn route_chat(
                 Err(e) => {
                     if e.is_account_error() {
                         tracing::warn!(
-                            "provider {} account error (skipping): {e}", provider.name()
+                            "provider {} account error (skipping): {e}",
+                            provider.name()
                         );
                         last_error = Some(e);
                         break; // skip to next provider
@@ -277,7 +279,9 @@ async fn route_chat(
                     if e.is_transient() && attempt + 1 < max_retries {
                         tracing::warn!(
                             "provider {} transient error (attempt {}/{}): {e}",
-                            provider.name(), attempt + 1, max_retries
+                            provider.name(),
+                            attempt + 1,
+                            max_retries
                         );
                         last_error = Some(e);
                         continue; // retry same provider
@@ -291,8 +295,10 @@ async fn route_chat(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| AppError::NoAccounts(format!(
-        "All providers failed for model '{}'. Check credentials and upstream availability.",
-        req.model
-    ))))
+    Err(last_error.unwrap_or_else(|| {
+        AppError::NoAccounts(format!(
+            "All providers failed for model '{}'. Check credentials and upstream availability.",
+            req.model
+        ))
+    }))
 }

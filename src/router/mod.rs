@@ -1,8 +1,11 @@
-use axum::{
-    Router,
-    routing::{get, post},
-};
 use std::sync::Arc;
+
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use tower_http::services::{ServeDir, ServeFile};
+
 use crate::proxy::ProxyState;
 
 /// Build the main Axum router with all API routes matching the Go CLIProxyAPI layout:
@@ -35,7 +38,6 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
     Router::new()
         // ── Health ────────────────────────────────────────────────────────────
         .route("/health", get(crate::proxy::handlers::health))
-
         // ── OpenAI-compatible ─────────────────────────────────────────────────
         .route("/v1/models", get(crate::proxy::handlers::list_models))
         .route(
@@ -54,7 +56,6 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
             "/v1/messages",
             post(crate::proxy::handlers::claude_messages),
         )
-
         // ── Gemini-compatible ─────────────────────────────────────────────────
         .route(
             "/v1beta/models",
@@ -64,7 +65,6 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
             "/v1beta/models/{model_action}",
             post(crate::proxy::handlers::gemini_generate),
         )
-
         // ── Amp provider aliases /api/provider/{provider}/v1/... ─────────────
         .route(
             "/api/provider/{provider}/v1/models",
@@ -78,13 +78,22 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
             "/api/provider/{provider}/v1/messages",
             post(crate::proxy::handlers::amp_claude_messages),
         )
-
         // ── Management API ────────────────────────────────────────────────────
-        .nest("/v0/management", crate::proxy::management::router(state.clone()))
+        .nest(
+            "/v0/management",
+            crate::proxy::management::router(state.clone()),
+        )
+        // ── Dashboard read API ───────────────────────────────────────────────
+        .nest("/dashboard", crate::dashboard_api::router())
         // ── OAuth callbacks (top-level, no auth middleware) ──────────────────
         .route(
             "/antigravity/callback",
             get(crate::proxy::oauth::antigravity_callback),
+        )
+        // ── Frontend SPA fallback (after API routes) ──────────────────────────
+        .fallback_service(
+            ServeDir::new("frontend/dist")
+                .not_found_service(ServeFile::new("frontend/dist/index.html")),
         )
         .with_state(state)
 }

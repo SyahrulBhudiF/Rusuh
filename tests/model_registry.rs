@@ -34,10 +34,7 @@ async fn register_and_list_models() {
     reg.register_client("client_0", "openai", models).await;
 
     let available = reg.get_available_models("openai").await;
-    let ids: Vec<&str> = available
-        .iter()
-        .filter_map(|v| v["id"].as_str())
-        .collect();
+    let ids: Vec<&str> = available.iter().filter_map(|v| v["id"].as_str()).collect();
     assert!(ids.contains(&"gpt-4"));
     assert!(ids.contains(&"gpt-3.5"));
 }
@@ -51,12 +48,8 @@ async fn get_model_providers_multi() {
         vec![make_model("gemini-2.5-pro", "antigravity")],
     )
     .await;
-    reg.register_client(
-        "c2",
-        "gemini",
-        vec![make_model("gemini-2.5-pro", "gemini")],
-    )
-    .await;
+    reg.register_client("c2", "gemini", vec![make_model("gemini-2.5-pro", "gemini")])
+        .await;
 
     let providers = reg.get_model_providers("gemini-2.5-pro").await;
     assert!(providers.contains(&"antigravity".to_string()));
@@ -155,7 +148,10 @@ async fn reconcile_updates_models() {
     reg.register_client(
         "c1",
         "openai",
-        vec![make_model("gpt-4", "openai"), make_model("gpt-3.5", "openai")],
+        vec![
+            make_model("gpt-4", "openai"),
+            make_model("gpt-3.5", "openai"),
+        ],
     )
     .await;
 
@@ -166,7 +162,10 @@ async fn reconcile_updates_models() {
     reg.register_client(
         "c1",
         "openai",
-        vec![make_model("gpt-4", "openai"), make_model("gpt-4o", "openai")],
+        vec![
+            make_model("gpt-4", "openai"),
+            make_model("gpt-4o", "openai"),
+        ],
     )
     .await;
 

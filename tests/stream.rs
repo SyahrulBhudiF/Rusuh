@@ -27,10 +27,7 @@ fn fake_upstream(
 
 #[tokio::test]
 async fn complete_sse_lines() {
-    let upstream = fake_upstream(vec![
-        "data: {\"text\": \"hello\"}\n\n",
-        "data: [DONE]\n\n",
-    ]);
+    let upstream = fake_upstream(vec!["data: {\"text\": \"hello\"}\n\n", "data: [DONE]\n\n"]);
 
     let s = buffered_sse_stream(upstream, |data| Some(data.to_string()));
     let result = collect_stream(s).await;
@@ -51,9 +48,7 @@ async fn partial_lines_across_chunks() {
 
 #[tokio::test]
 async fn multiple_events_in_one_chunk() {
-    let upstream = fake_upstream(vec![
-        "data: first\ndata: second\ndata: [DONE]\n",
-    ]);
+    let upstream = fake_upstream(vec!["data: first\ndata: second\ndata: [DONE]\n"]);
 
     let s = buffered_sse_stream(upstream, |data| Some(data.to_string()));
     let result = collect_stream(s).await;
@@ -65,8 +60,7 @@ async fn multiple_events_in_one_chunk() {
 
 #[tokio::test]
 async fn transform_filters_events() {
-    let upstream =
-        fake_upstream(vec!["data: keep\n\ndata: skip\n\ndata: keep2\n\n"]);
+    let upstream = fake_upstream(vec!["data: keep\n\ndata: skip\n\ndata: keep2\n\n"]);
 
     let s = buffered_sse_stream(upstream, |data| {
         if data.contains("skip") {
@@ -84,8 +78,7 @@ async fn transform_filters_events() {
 
 #[tokio::test]
 async fn antigravity_transform_basic() {
-    let transform =
-        antigravity_to_openai_transform("test-id".into(), "test-model".into(), 1000);
+    let transform = antigravity_to_openai_transform("test-id".into(), "test-model".into(), 1000);
 
     let input = r#"{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}}"#;
     let result = transform(input).unwrap();
@@ -141,9 +134,7 @@ async fn done_sentinel_forwarded() {
 
 #[tokio::test]
 async fn non_data_lines_ignored() {
-    let upstream = fake_upstream(vec![
-        "event: ping\nid: 1\ndata: hello\n\n",
-    ]);
+    let upstream = fake_upstream(vec!["event: ping\nid: 1\ndata: hello\n\n"]);
     let s = buffered_sse_stream(upstream, |data| Some(data.to_string()));
     let result = collect_stream(s).await;
 

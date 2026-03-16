@@ -40,13 +40,7 @@ fn thinking_full(
     })
 }
 
-fn m(
-    id: &str,
-    created: i64,
-    owned_by: &str,
-    ptype: &str,
-    display: &str,
-) -> ExtModelInfo {
+fn m(id: &str, created: i64, owned_by: &str, ptype: &str, display: &str) -> ExtModelInfo {
     ExtModelInfo {
         id: id.into(),
         object: "model".into(),
@@ -72,16 +66,141 @@ fn m(
 
 pub fn claude_models() -> Vec<ExtModelInfo> {
     let models = vec![
-        { let mut m = m("claude-haiku-4-5-20251001", 1759276800, "anthropic", "claude", "Claude 4.5 Haiku"); m.context_length = 200000; m.max_completion_tokens = 64000; m.thinking = thinking(1024, 128000, true, false); m },
-        { let mut m = m("claude-sonnet-4-5-20250929", 1759104000, "anthropic", "claude", "Claude 4.5 Sonnet"); m.context_length = 200000; m.max_completion_tokens = 64000; m.thinking = thinking(1024, 128000, true, false); m },
-        { let mut m = m("claude-sonnet-4-6", 1771372800, "anthropic", "claude", "Claude 4.6 Sonnet"); m.context_length = 200000; m.max_completion_tokens = 64000; m.thinking = thinking(1024, 128000, true, false); m },
-        { let mut m = m("claude-opus-4-6", 1770318000, "anthropic", "claude", "Claude 4.6 Opus"); m.context_length = 1000000; m.max_completion_tokens = 128000; m.description = Some("Premium model combining maximum intelligence with practical performance".into()); m.thinking = thinking(1024, 128000, true, false); m },
-        { let mut m = m("claude-opus-4-5-20251101", 1761955200, "anthropic", "claude", "Claude 4.5 Opus"); m.context_length = 200000; m.max_completion_tokens = 64000; m.description = Some("Premium model combining maximum intelligence with practical performance".into()); m.thinking = thinking(1024, 128000, true, false); m },
-        { let mut m = m("claude-opus-4-1-20250805", 1722945600, "anthropic", "claude", "Claude 4.1 Opus"); m.context_length = 200000; m.max_completion_tokens = 32000; m.thinking = thinking(1024, 128000, false, false); m },
-        { let mut m = m("claude-opus-4-20250514", 1715644800, "anthropic", "claude", "Claude 4 Opus"); m.context_length = 200000; m.max_completion_tokens = 32000; m.thinking = thinking(1024, 128000, false, false); m },
-        { let mut m = m("claude-sonnet-4-20250514", 1715644800, "anthropic", "claude", "Claude 4 Sonnet"); m.context_length = 200000; m.max_completion_tokens = 64000; m.thinking = thinking(1024, 128000, false, false); m },
-        { let mut m = m("claude-3-7-sonnet-20250219", 1708300800, "anthropic", "claude", "Claude 3.7 Sonnet"); m.context_length = 128000; m.max_completion_tokens = 8192; m.thinking = thinking(1024, 128000, false, false); m },
-        { let mut m = m("claude-3-5-haiku-20241022", 1729555200, "anthropic", "claude", "Claude 3.5 Haiku"); m.context_length = 128000; m.max_completion_tokens = 8192; m },
+        {
+            let mut m = m(
+                "claude-haiku-4-5-20251001",
+                1759276800,
+                "anthropic",
+                "claude",
+                "Claude 4.5 Haiku",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 64000;
+            m.thinking = thinking(1024, 128000, true, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-sonnet-4-5-20250929",
+                1759104000,
+                "anthropic",
+                "claude",
+                "Claude 4.5 Sonnet",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 64000;
+            m.thinking = thinking(1024, 128000, true, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-sonnet-4-6",
+                1771372800,
+                "anthropic",
+                "claude",
+                "Claude 4.6 Sonnet",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 64000;
+            m.thinking = thinking(1024, 128000, true, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-opus-4-6",
+                1770318000,
+                "anthropic",
+                "claude",
+                "Claude 4.6 Opus",
+            );
+            m.context_length = 1000000;
+            m.max_completion_tokens = 128000;
+            m.description = Some(
+                "Premium model combining maximum intelligence with practical performance".into(),
+            );
+            m.thinking = thinking(1024, 128000, true, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-opus-4-5-20251101",
+                1761955200,
+                "anthropic",
+                "claude",
+                "Claude 4.5 Opus",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 64000;
+            m.description = Some(
+                "Premium model combining maximum intelligence with practical performance".into(),
+            );
+            m.thinking = thinking(1024, 128000, true, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-opus-4-1-20250805",
+                1722945600,
+                "anthropic",
+                "claude",
+                "Claude 4.1 Opus",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 32000;
+            m.thinking = thinking(1024, 128000, false, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-opus-4-20250514",
+                1715644800,
+                "anthropic",
+                "claude",
+                "Claude 4 Opus",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 32000;
+            m.thinking = thinking(1024, 128000, false, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-sonnet-4-20250514",
+                1715644800,
+                "anthropic",
+                "claude",
+                "Claude 4 Sonnet",
+            );
+            m.context_length = 200000;
+            m.max_completion_tokens = 64000;
+            m.thinking = thinking(1024, 128000, false, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-3-7-sonnet-20250219",
+                1708300800,
+                "anthropic",
+                "claude",
+                "Claude 3.7 Sonnet",
+            );
+            m.context_length = 128000;
+            m.max_completion_tokens = 8192;
+            m.thinking = thinking(1024, 128000, false, false);
+            m
+        },
+        {
+            let mut m = m(
+                "claude-3-5-haiku-20241022",
+                1729555200,
+                "anthropic",
+                "claude",
+                "Claude 3.5 Haiku",
+            );
+            m.context_length = 128000;
+            m.max_completion_tokens = 8192;
+            m
+        },
     ];
     models
 }
@@ -99,13 +218,125 @@ fn gemini_gen_methods() -> Vec<String> {
 
 pub fn gemini_models() -> Vec<ExtModelInfo> {
     vec![
-        { let mut m = m("gemini-2.5-pro", 1750118400, "google", "gemini", "Gemini 2.5 Pro"); m.name = Some("models/gemini-2.5-pro".into()); m.version = Some("2.5".into()); m.description = Some("Stable release (June 17th, 2025) of Gemini 2.5 Pro".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking(128, 32768, false, true); m },
-        { let mut m = m("gemini-2.5-flash", 1750118400, "google", "gemini", "Gemini 2.5 Flash"); m.name = Some("models/gemini-2.5-flash".into()); m.version = Some("001".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking(0, 24576, true, true); m },
-        { let mut m = m("gemini-2.5-flash-lite", 1753142400, "google", "gemini", "Gemini 2.5 Flash Lite"); m.name = Some("models/gemini-2.5-flash-lite".into()); m.version = Some("2.5".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking(0, 24576, true, true); m },
-        { let mut m = m("gemini-3-pro-preview", 1737158400, "google", "gemini", "Gemini 3 Pro Preview"); m.name = Some("models/gemini-3-pro-preview".into()); m.version = Some("3.0".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]); m },
-        { let mut m = m("gemini-3.1-pro-preview", 1771459200, "google", "gemini", "Gemini 3.1 Pro Preview"); m.name = Some("models/gemini-3.1-pro-preview".into()); m.version = Some("3.1".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]); m },
-        { let mut m = m("gemini-3-flash-preview", 1765929600, "google", "gemini", "Gemini 3 Flash Preview"); m.name = Some("models/gemini-3-flash-preview".into()); m.version = Some("3.0".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking_full(128, 32768, false, true, &["minimal", "low", "medium", "high"]); m },
-        { let mut m = m("gemini-3-pro-image-preview", 1737158400, "google", "gemini", "Gemini 3 Pro Image Preview"); m.name = Some("models/gemini-3-pro-image-preview".into()); m.version = Some("3.0".into()); m.input_token_limit = 1048576; m.output_token_limit = 65536; m.supported_generation_methods = gemini_gen_methods(); m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]); m },
+        {
+            let mut m = m(
+                "gemini-2.5-pro",
+                1750118400,
+                "google",
+                "gemini",
+                "Gemini 2.5 Pro",
+            );
+            m.name = Some("models/gemini-2.5-pro".into());
+            m.version = Some("2.5".into());
+            m.description = Some("Stable release (June 17th, 2025) of Gemini 2.5 Pro".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking(128, 32768, false, true);
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-2.5-flash",
+                1750118400,
+                "google",
+                "gemini",
+                "Gemini 2.5 Flash",
+            );
+            m.name = Some("models/gemini-2.5-flash".into());
+            m.version = Some("001".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking(0, 24576, true, true);
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-2.5-flash-lite",
+                1753142400,
+                "google",
+                "gemini",
+                "Gemini 2.5 Flash Lite",
+            );
+            m.name = Some("models/gemini-2.5-flash-lite".into());
+            m.version = Some("2.5".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking(0, 24576, true, true);
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-3-pro-preview",
+                1737158400,
+                "google",
+                "gemini",
+                "Gemini 3 Pro Preview",
+            );
+            m.name = Some("models/gemini-3-pro-preview".into());
+            m.version = Some("3.0".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]);
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-3.1-pro-preview",
+                1771459200,
+                "google",
+                "gemini",
+                "Gemini 3.1 Pro Preview",
+            );
+            m.name = Some("models/gemini-3.1-pro-preview".into());
+            m.version = Some("3.1".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]);
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-3-flash-preview",
+                1765929600,
+                "google",
+                "gemini",
+                "Gemini 3 Flash Preview",
+            );
+            m.name = Some("models/gemini-3-flash-preview".into());
+            m.version = Some("3.0".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking_full(
+                128,
+                32768,
+                false,
+                true,
+                &["minimal", "low", "medium", "high"],
+            );
+            m
+        },
+        {
+            let mut m = m(
+                "gemini-3-pro-image-preview",
+                1737158400,
+                "google",
+                "gemini",
+                "Gemini 3 Pro Image Preview",
+            );
+            m.name = Some("models/gemini-3-pro-image-preview".into());
+            m.version = Some("3.0".into());
+            m.input_token_limit = 1048576;
+            m.output_token_limit = 65536;
+            m.supported_generation_methods = gemini_gen_methods();
+            m.thinking = thinking_full(128, 32768, false, true, &["low", "high"]);
+            m
+        },
     ]
 }
 
@@ -113,12 +344,72 @@ pub fn gemini_models() -> Vec<ExtModelInfo> {
 
 pub fn openai_models() -> Vec<ExtModelInfo> {
     vec![
-        { let mut m = m("gpt-5", 1754524800, "openai", "openai", "GPT 5"); m.context_length = 400000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["minimal", "low", "medium", "high"]); m },
-        { let mut m = m("gpt-5-codex", 1757894400, "openai", "openai", "GPT 5 Codex"); m.context_length = 400000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["low", "medium", "high"]); m },
-        { let mut m = m("gpt-5.2", 1765440000, "openai", "openai", "GPT 5.2"); m.context_length = 400000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["none", "low", "medium", "high", "xhigh"]); m },
-        { let mut m = m("gpt-5.2-codex", 1765440000, "openai", "openai", "GPT 5.2 Codex"); m.context_length = 400000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]); m },
-        { let mut m = m("gpt-5.3-codex", 1770307200, "openai", "openai", "GPT 5.3 Codex"); m.context_length = 400000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]); m },
-        { let mut m = m("gpt-5.3-codex-spark", 1770912000, "openai", "openai", "GPT 5.3 Codex Spark"); m.context_length = 128000; m.max_completion_tokens = 128000; m.supported_parameters = vec!["tools".into()]; m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]); m },
+        {
+            let mut m = m("gpt-5", 1754524800, "openai", "openai", "GPT 5");
+            m.context_length = 400000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["minimal", "low", "medium", "high"]);
+            m
+        },
+        {
+            let mut m = m("gpt-5-codex", 1757894400, "openai", "openai", "GPT 5 Codex");
+            m.context_length = 400000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["low", "medium", "high"]);
+            m
+        },
+        {
+            let mut m = m("gpt-5.2", 1765440000, "openai", "openai", "GPT 5.2");
+            m.context_length = 400000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["none", "low", "medium", "high", "xhigh"]);
+            m
+        },
+        {
+            let mut m = m(
+                "gpt-5.2-codex",
+                1765440000,
+                "openai",
+                "openai",
+                "GPT 5.2 Codex",
+            );
+            m.context_length = 400000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]);
+            m
+        },
+        {
+            let mut m = m(
+                "gpt-5.3-codex",
+                1770307200,
+                "openai",
+                "openai",
+                "GPT 5.3 Codex",
+            );
+            m.context_length = 400000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]);
+            m
+        },
+        {
+            let mut m = m(
+                "gpt-5.3-codex-spark",
+                1770912000,
+                "openai",
+                "openai",
+                "GPT 5.3 Codex Spark",
+            );
+            m.context_length = 128000;
+            m.max_completion_tokens = 128000;
+            m.supported_parameters = vec!["tools".into()];
+            m.thinking = thinking_levels(&["low", "medium", "high", "xhigh"]);
+            m
+        },
     ]
 }
 
@@ -126,9 +417,36 @@ pub fn openai_models() -> Vec<ExtModelInfo> {
 
 pub fn qwen_models() -> Vec<ExtModelInfo> {
     vec![
-        { let mut m = m("qwen3-coder-plus", 1753228800, "qwen", "qwen", "Qwen3 Coder Plus"); m.context_length = 32768; m.max_completion_tokens = 8192; m },
-        { let mut m = m("qwen3-coder-flash", 1753228800, "qwen", "qwen", "Qwen3 Coder Flash"); m.context_length = 8192; m.max_completion_tokens = 2048; m },
-        { let mut m = m("coder-model", 1771171200, "qwen", "qwen", "Qwen 3.5 Plus"); m.context_length = 1048576; m.max_completion_tokens = 65536; m },
+        {
+            let mut m = m(
+                "qwen3-coder-plus",
+                1753228800,
+                "qwen",
+                "qwen",
+                "Qwen3 Coder Plus",
+            );
+            m.context_length = 32768;
+            m.max_completion_tokens = 8192;
+            m
+        },
+        {
+            let mut m = m(
+                "qwen3-coder-flash",
+                1753228800,
+                "qwen",
+                "qwen",
+                "Qwen3 Coder Flash",
+            );
+            m.context_length = 8192;
+            m.max_completion_tokens = 2048;
+            m
+        },
+        {
+            let mut m = m("coder-model", 1771171200, "qwen", "qwen", "Qwen 3.5 Plus");
+            m.context_length = 1048576;
+            m.max_completion_tokens = 65536;
+            m
+        },
     ]
 }
 
@@ -141,19 +459,103 @@ pub struct AntigravityModelConfig {
 
 pub fn antigravity_model_config() -> Vec<(&'static str, AntigravityModelConfig)> {
     vec![
-        ("gemini-2.5-flash", AntigravityModelConfig { thinking: thinking(0, 24576, true, true), max_completion_tokens: 0 }),
-        ("gemini-2.5-flash-lite", AntigravityModelConfig { thinking: thinking(0, 24576, true, true), max_completion_tokens: 0 }),
-        ("gemini-3-pro-high", AntigravityModelConfig { thinking: thinking_full(128, 32768, false, true, &["low", "high"]), max_completion_tokens: 0 }),
-        ("gemini-3-pro-image", AntigravityModelConfig { thinking: thinking_full(128, 32768, false, true, &["low", "high"]), max_completion_tokens: 0 }),
-        ("gemini-3.1-pro-high", AntigravityModelConfig { thinking: thinking_full(128, 32768, false, true, &["low", "high"]), max_completion_tokens: 0 }),
-        ("gemini-3.1-flash-image", AntigravityModelConfig { thinking: thinking_full(128, 32768, false, true, &["minimal", "high"]), max_completion_tokens: 0 }),
-        ("gemini-3-flash", AntigravityModelConfig { thinking: thinking_full(128, 32768, false, true, &["minimal", "low", "medium", "high"]), max_completion_tokens: 0 }),
-        ("claude-sonnet-4-5-thinking", AntigravityModelConfig { thinking: thinking(1024, 128000, true, true), max_completion_tokens: 64000 }),
-        ("claude-opus-4-5-thinking", AntigravityModelConfig { thinking: thinking(1024, 128000, true, true), max_completion_tokens: 64000 }),
-        ("claude-opus-4-6-thinking", AntigravityModelConfig { thinking: thinking(1024, 128000, true, true), max_completion_tokens: 64000 }),
-        ("claude-sonnet-4-5", AntigravityModelConfig { thinking: None, max_completion_tokens: 64000 }),
-        ("claude-sonnet-4-6", AntigravityModelConfig { thinking: None, max_completion_tokens: 64000 }),
-        ("claude-sonnet-4-6-thinking", AntigravityModelConfig { thinking: thinking(1024, 128000, true, true), max_completion_tokens: 64000 }),
+        (
+            "gemini-2.5-flash",
+            AntigravityModelConfig {
+                thinking: thinking(0, 24576, true, true),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-2.5-flash-lite",
+            AntigravityModelConfig {
+                thinking: thinking(0, 24576, true, true),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-3-pro-high",
+            AntigravityModelConfig {
+                thinking: thinking_full(128, 32768, false, true, &["low", "high"]),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-3-pro-image",
+            AntigravityModelConfig {
+                thinking: thinking_full(128, 32768, false, true, &["low", "high"]),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-3.1-pro-high",
+            AntigravityModelConfig {
+                thinking: thinking_full(128, 32768, false, true, &["low", "high"]),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-3.1-flash-image",
+            AntigravityModelConfig {
+                thinking: thinking_full(128, 32768, false, true, &["minimal", "high"]),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "gemini-3-flash",
+            AntigravityModelConfig {
+                thinking: thinking_full(
+                    128,
+                    32768,
+                    false,
+                    true,
+                    &["minimal", "low", "medium", "high"],
+                ),
+                max_completion_tokens: 0,
+            },
+        ),
+        (
+            "claude-sonnet-4-5-thinking",
+            AntigravityModelConfig {
+                thinking: thinking(1024, 128000, true, true),
+                max_completion_tokens: 64000,
+            },
+        ),
+        (
+            "claude-opus-4-5-thinking",
+            AntigravityModelConfig {
+                thinking: thinking(1024, 128000, true, true),
+                max_completion_tokens: 64000,
+            },
+        ),
+        (
+            "claude-opus-4-6-thinking",
+            AntigravityModelConfig {
+                thinking: thinking(1024, 128000, true, true),
+                max_completion_tokens: 64000,
+            },
+        ),
+        (
+            "claude-sonnet-4-5",
+            AntigravityModelConfig {
+                thinking: None,
+                max_completion_tokens: 64000,
+            },
+        ),
+        (
+            "claude-sonnet-4-6",
+            AntigravityModelConfig {
+                thinking: None,
+                max_completion_tokens: 64000,
+            },
+        ),
+        (
+            "claude-sonnet-4-6-thinking",
+            AntigravityModelConfig {
+                thinking: thinking(1024, 128000, true, true),
+                max_completion_tokens: 64000,
+            },
+        ),
     ]
 }
 
@@ -166,20 +568,18 @@ pub fn static_models_by_channel(channel: &str) -> Vec<ExtModelInfo> {
         "gemini" | "gemini-cli" | "aistudio" | "vertex" => gemini_models(),
         "codex" | "openai" => openai_models(),
         "qwen" => qwen_models(),
-        "antigravity" => {
-            antigravity_model_config()
-                .into_iter()
-                .filter_map(|(id, cfg)| {
-                    if cfg.thinking.is_none() && cfg.max_completion_tokens == 0 {
-                        return None;
-                    }
-                    let mut info = m(id, 0, "antigravity", "antigravity", id);
-                    info.thinking = cfg.thinking;
-                    info.max_completion_tokens = cfg.max_completion_tokens;
-                    Some(info)
-                })
-                .collect()
-        }
+        "antigravity" => antigravity_model_config()
+            .into_iter()
+            .filter_map(|(id, cfg)| {
+                if cfg.thinking.is_none() && cfg.max_completion_tokens == 0 {
+                    return None;
+                }
+                let mut info = m(id, 0, "antigravity", "antigravity", id);
+                info.thinking = cfg.thinking;
+                info.max_completion_tokens = cfg.max_completion_tokens;
+                Some(info)
+            })
+            .collect(),
         _ => vec![],
     }
 }

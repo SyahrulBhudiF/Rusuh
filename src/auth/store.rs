@@ -258,11 +258,7 @@ impl FileTokenStore {
 
     // ── Internal ─────────────────────────────────────────────────────────
 
-    async fn read_auth_file(
-        &self,
-        path: &Path,
-        base_dir: &Path,
-    ) -> AppResult<Option<AuthRecord>> {
+    async fn read_auth_file(&self, path: &Path, base_dir: &Path) -> AppResult<Option<AuthRecord>> {
         let data = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| AppError::Config(format!("read {}: {e}", path.display())))?;

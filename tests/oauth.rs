@@ -12,8 +12,8 @@ use tower::ServiceExt;
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::{Config, ManagementConfig};
 use rusuh::providers::model_registry::ModelRegistry;
-use rusuh::proxy::ProxyState;
 use rusuh::proxy::oauth::OAuthSessionStore;
+use rusuh::proxy::ProxyState;
 use rusuh::router::build_router;
 
 const SECRET: &str = "test-oauth-secret";
@@ -71,7 +71,10 @@ async fn session_store_complete() {
     store.complete("s2").await;
 
     let (_, status) = store.get_status("s2").await.unwrap();
-    assert!(matches!(status, rusuh::proxy::oauth::OAuthSessionStatus::Complete));
+    assert!(matches!(
+        status,
+        rusuh::proxy::oauth::OAuthSessionStatus::Complete
+    ));
 }
 
 #[tokio::test]
@@ -120,7 +123,10 @@ async fn antigravity_auth_url_returns_url_and_state() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ok");
-    assert!(body["url"].as_str().unwrap().contains("accounts.google.com"));
+    assert!(body["url"]
+        .as_str()
+        .unwrap()
+        .contains("accounts.google.com"));
     assert!(body["url"].as_str().unwrap().contains("redirect_uri="));
     assert!(!body["state"].as_str().unwrap().is_empty());
 }
@@ -167,9 +173,7 @@ async fn auth_status_unknown_state_returns_ok() {
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
     let resp = app
-        .oneshot(mgmt_request(
-            "/v0/management/auth-status?state=nonexistent",
-        ))
+        .oneshot(mgmt_request("/v0/management/auth-status?state=nonexistent"))
         .await
         .unwrap();
 

@@ -1,6 +1,5 @@
 //! Antigravity provider — translates OpenAI chat completions to/from Antigravity's Gemini-like API.
 
-
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -41,10 +40,7 @@ pub struct TokenState {
 
 impl TokenState {
     fn from_record(record: &AuthRecord) -> Self {
-        let access_token = record
-            .access_token()
-            .unwrap_or_default()
-            .to_string();
+        let access_token = record.access_token().unwrap_or_default().to_string();
 
         let refresh_token = record
             .metadata
@@ -146,7 +142,10 @@ impl AntigravityProvider {
         let new_token = state.access_token.clone();
 
         // Persist to disk (don't fail the request if persistence fails)
-        if let Err(e) = self.persist_token(&state, now, expires_in, expires_at).await {
+        if let Err(e) = self
+            .persist_token(&state, now, expires_in, expires_at)
+            .await
+        {
             warn!(
                 provider = "antigravity",
                 label = %self.record.label,
@@ -255,10 +254,7 @@ impl AntigravityProvider {
         }
 
         let model = &req.model;
-        let project = self
-            .project_id()
-            .unwrap_or("unknown-project")
-            .to_string();
+        let project = self.project_id().unwrap_or("unknown-project").to_string();
 
         let request_id = format!("agent-{}", uuid::Uuid::new_v4());
         let session_id = format!("-{}", rand::random::<u64>() & 0x7FFFFFFFFFFFFFFF);
@@ -432,8 +428,11 @@ impl Provider for AntigravityProvider {
                 }
                 // Skip known internal/duplicate models
                 match id {
-                    "chat_20706" | "chat_23310" | "gemini-2.5-flash-thinking"
-                    | "gemini-3-pro-low" | "gemini-2.5-pro" => continue,
+                    "chat_20706"
+                    | "chat_23310"
+                    | "gemini-2.5-flash-thinking"
+                    | "gemini-3-pro-low"
+                    | "gemini-2.5-pro" => continue,
                     _ => {}
                 }
                 models.push(ModelInfo {
@@ -502,10 +501,7 @@ impl Provider for AntigravityProvider {
         ))
     }
 
-    async fn chat_completion_stream(
-        &self,
-        req: &ChatCompletionRequest,
-    ) -> AppResult<BoxStream> {
+    async fn chat_completion_stream(&self, req: &ChatCompletionRequest) -> AppResult<BoxStream> {
         let token = self.ensure_access_token().await?;
         let payload = self.translate_request(req, true);
         let model = req.model.clone();
@@ -538,9 +534,8 @@ impl Provider for AntigravityProvider {
             }
             let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
             let created = chrono::Utc::now().timestamp();
-            let transform = crate::proxy::stream::antigravity_to_openai_transform(
-                id, model, created,
-            );
+            let transform =
+                crate::proxy::stream::antigravity_to_openai_transform(id, model, created);
             return Ok(crate::proxy::stream::buffered_sse_stream(
                 resp.bytes_stream(),
                 transform,
@@ -612,13 +607,11 @@ impl MessageContentExt for crate::models::MessageContent {
     fn as_text(&self) -> String {
         match self {
             crate::models::MessageContent::Text(t) => t.clone(),
-            crate::models::MessageContent::Parts(parts) => {
-                parts
-                    .iter()
-                    .filter_map(|p| p.text.as_deref())
-                    .collect::<Vec<_>>()
-                    .join("")
-            }
+            crate::models::MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| p.text.as_deref())
+                .collect::<Vec<_>>()
+                .join(""),
         }
     }
 
@@ -627,20 +620,18 @@ impl MessageContentExt for crate::models::MessageContent {
             crate::models::MessageContent::Text(t) => {
                 vec![json!({"text": t})]
             }
-            crate::models::MessageContent::Parts(parts) => {
-                parts
-                    .iter()
-                    .map(|p| {
-                        if let Some(ref text) = p.text {
-                            json!({"text": text})
-                        } else if let Some(ref img) = p.image_url {
-                            json!({"inlineData": {"url": img.url}})
-                        } else {
-                            json!({"text": ""})
-                        }
-                    })
-                    .collect()
-            }
+            crate::models::MessageContent::Parts(parts) => parts
+                .iter()
+                .map(|p| {
+                    if let Some(ref text) = p.text {
+                        json!({"text": text})
+                    } else if let Some(ref img) = p.image_url {
+                        json!({"inlineData": {"url": img.url}})
+                    } else {
+                        json!({"text": ""})
+                    }
+                })
+                .collect(),
         }
     }
 }

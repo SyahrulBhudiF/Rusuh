@@ -5,6 +5,6 @@ auths/
 *.token
 .claude
 .tldr
+node_modules/
 
-docs/kiro_event_stream.md
-docs/kiro_implementation_progress.md
+docs/

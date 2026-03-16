@@ -103,6 +103,85 @@ Run with a custom config:
 rusuh --config my-config.yaml
 ```
 
+## Dashboard UI
+
+Rusuh now includes a Bun-managed React dashboard served by Axum in production from `frontend/dist`. Read endpoints live under `/dashboard/*`.
+
+### Development workflow
+
+Run backend and frontend in separate terminals:
+
+```bash
+# Terminal 1 — Rust backend
+cargo run
+
+# Terminal 2 — frontend dev server
+cd frontend
+bun install
+bun run dev
+bun run lint        # oxlint
+bun run format      # oxfmt
+bun run check       # typecheck + oxlint + oxfmt check
+```
+
+Vite proxies these backend paths to the Rust server so frontend development stays same-origin and CORS-free:
+
+- `/dashboard`
+- `/v0`
+- `/v1`
+- `/v1beta`
+- `/api`
+- `/health`
+
+Dashboard pages currently cover:
+
+- Overview
+- Accounts
+- API Keys
+- Config
+
+Management mutations in the dashboard require `remote-management.secret-key`. The UI asks for this secret and keeps it in tab session storage.
+
+### Using the dashboard
+
+In development, open:
+- `http://localhost:5173` — Vite frontend
+- `http://localhost:8317` — Rust backend API
+
+When the dashboard loads:
+1. Enter `remote-management.secret-key` in the auth prompt.
+2. Use the dashboard tabs: Overview, Accounts, API Keys, Config.
+3. Read data comes from `/dashboard/*`.
+4. Mutations still go through `/v0/management/*`.
+
+In production, after building the frontend and starting Rusuh, open:
+- `http://localhost:8317`
+
+Axum serves the built SPA and mounts API routes before the frontend fallback.
+
+
+Frontend toolchain now uses Oxc-native tooling:
+- `oxlint` for linting
+- `oxfmt` for formatting via `frontend/.oxfmt.json`
+- no ESLint / Prettier runtime workflow
+
+
+### Production build workflow
+Build frontend first, then backend:
+```bash
+cd frontend
+bun install
+bun run build
+cd ..
+cargo build --release
+./target/release/rusuh
+```
+
+Open:
+- `http://localhost:8317`
+At runtime, Axum serves the built frontend from `frontend/dist`, with API routes mounted before the SPA fallback.
+
+
 ## Authentication
 
 ### API Key Auth
@@ -360,7 +439,7 @@ DELETE /v0/management/api-keys
 GET    /v0/management/auth-files
 POST   /v0/management/auth-files
 DELETE /v0/management/auth-files
-GET    /v0/management/auth-files/download?id=...
+GET    /v0/management/auth-files/download?name=...
 PATCH  /v0/management/auth-files/status
 PATCH  /v0/management/auth-files/fields
 ```
@@ -370,23 +449,23 @@ PATCH  /v0/management/auth-files/fields
 ```bash
 curl http://localhost:8317/v0/management/auth-files \
   -H "Authorization: Bearer <management-secret>"
-# → {"auth_files":[{"id":"antigravity-user@gmail.com.json","provider":"antigravity","label":"user@gmail.com","disabled":false,"status":"active","last_refreshed_at":"2026-03-16T05:30:00Z","updated_at":"2026-03-16T05:30:00Z"}]}
+# → {"auth-files":[{"id":"antigravity-user@gmail.com.json","type":"antigravity","status":"active","disabled":false,"updated_at":"2026-03-16T05:30:00Z","last_refreshed_at":"2026-03-16T05:30:00Z"}]}
 ```
 
 **Upload auth file:**
 
 ```bash
-curl -X POST http://localhost:8317/v0/management/auth-files \
+curl -X POST "http://localhost:8317/v0/management/auth-files?name=antigravity-user@gmail.com.json" \
   -H "Authorization: Bearer <management-secret>" \
   -H "Content-Type: application/json" \
-  -d @antigravity-backup.json
-# → {"status":"ok","id":"antigravity-user@gmail.com.json"}
+  --data-binary @antigravity-backup.json
+# → {"status":"ok","name":"antigravity-user@gmail.com.json"}
 ```
 
 **Download auth file:**
 
 ```bash
-curl "http://localhost:8317/v0/management/auth-files/download?id=antigravity-user@gmail.com.json" \
+curl "http://localhost:8317/v0/management/auth-files/download?name=antigravity-user@gmail.com.json" \
   -H "Authorization: Bearer <management-secret>" \
   -o backup.json
 ```
@@ -398,28 +477,28 @@ curl "http://localhost:8317/v0/management/auth-files/download?id=antigravity-use
 curl -X PATCH http://localhost:8317/v0/management/auth-files/status \
   -H "Authorization: Bearer <management-secret>" \
   -H "Content-Type: application/json" \
-  -d '{"id":"antigravity-user@gmail.com.json","disabled":true}'
+  -d '{"name":"antigravity-user@gmail.com.json","disabled":true}'
 
 # Enable
 curl -X PATCH http://localhost:8317/v0/management/auth-files/status \
   -H "Authorization: Bearer <management-secret>" \
   -H "Content-Type: application/json" \
-  -d '{"id":"antigravity-user@gmail.com.json","disabled":false}'
+  -d '{"name":"antigravity-user@gmail.com.json","disabled":false}'
 ```
 
-**Update account label:**
+**Update editable auth-file fields:**
 
 ```bash
 curl -X PATCH http://localhost:8317/v0/management/auth-files/fields \
   -H "Authorization: Bearer <management-secret>" \
   -H "Content-Type: application/json" \
-  -d '{"id":"antigravity-user@gmail.com.json","label":"Work Account"}'
+  -d '{"name":"antigravity-user@gmail.com.json","prefix":"work","proxy_url":"socks5://127.0.0.1:1080","priority":1}'
 ```
 
 **Delete auth file:**
 
 ```bash
-curl -X DELETE "http://localhost:8317/v0/management/auth-files?id=antigravity-user@gmail.com.json" \
+curl -X DELETE "http://localhost:8317/v0/management/auth-files?name=antigravity-user@gmail.com.json" \
   -H "Authorization: Bearer <management-secret>"
 ```
 
@@ -467,9 +546,9 @@ curl "http://localhost:8317/v0/management/oauth/status?state=<uuid>" \
 ```
 
 Workflow:
-1. Call `/oauth/start?provider=...` to get auth URL
-2. Open URL in browser (user authenticates)
-3. Poll `/oauth/status?state=...` until status is "ok" or "error"
+1. Call `/v0/management/oauth/start?provider=...` to get auth URL
+2. Open URL in browser or use the dashboard Accounts page
+3. Poll `/v0/management/oauth/status?state=...` until status is "ok" or "error"
 4. Server automatically saves credentials and reloads accounts
 
 ### Health
