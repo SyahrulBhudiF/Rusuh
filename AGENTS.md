@@ -17,6 +17,24 @@ cargo fmt --check              # format check
 
 No rustfmt.toml/clippy.toml — use defaults.
 
+## Frontend Tooling
+
+Frontend (`frontend/`) uses Oxc-native tooling:
+
+```bash
+cd frontend
+bun run lint         # oxlint
+bun run lint:fix     # oxlint --fix
+bun run format       # oxfmt
+bun run format:check # oxfmt --check
+bun run typecheck    # tsc -b
+bun run check        # typecheck + lint + format:check
+```
+
+- Use `frontend/.oxfmt.json` for formatter config.
+- Do not reintroduce ESLint/Prettier unless explicitly requested.
+
+
 ## Project Structure
 
 ```
