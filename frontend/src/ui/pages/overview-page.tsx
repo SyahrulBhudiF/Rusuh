@@ -3,7 +3,6 @@ import { useMemo } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 
 import { queryKeys, useOverviewQuery } from '../../lib/query'
 import { PageShell } from '../page-shell'
@@ -46,7 +45,7 @@ export function OverviewPage() {
           onClick={() => {
             void queryClient.invalidateQueries({ queryKey: queryKeys.overview })
           }}
-          className='h-11 rounded-xl px-4 text-white'
+          className='h-11 rounded-xl px-4'
         >
           Refresh
         </Button>
@@ -59,117 +58,116 @@ export function OverviewPage() {
       >
         {overview.data ? (
           <>
-            <div className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-              {overview.data.cards.map((card) => (
-                <Card
-                  key={card.label}
-                  className='dashboard-card rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-[0_8px_30px_rgba(0,0,0,0.25)]'
-                >
-                  <CardContent className='p-5'>
-                    <p className='text-sm text-[var(--muted-foreground)]'>{card.label}</p>
-                    <p className='mt-3 text-3xl font-semibold text-white'>{card.value}</p>
-                    <p className='mt-2 text-sm text-[var(--muted-foreground)]'>{card.hint}</p>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-
-            <div className='mt-6 grid gap-6 xl:grid-cols-[1.4fr_0.8fr]'>
-              <article className='rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6'>
-                <div className='flex flex-col gap-3 md:flex-row md:items-start md:justify-between'>
-                  <div>
-                    <h3 className='text-lg font-semibold'>Accounts overview</h3>
-                    <p className='text-sm text-[var(--muted-foreground)]'>
-                      Grouped auth records by provider and lifecycle state.
-                    </p>
-                  </div>
-                  <Badge
-                    variant='outline'
-                    className='dashboard-status rounded-full px-3 py-1 text-xs text-[var(--muted-foreground)]'
-                  >
-                    {accountSummaries?.length ?? 0} provider(s)
-                  </Badge>
-                </div>
-
-                {summaryRows.length > 0 ? (
-                  <div className='mt-5 overflow-hidden rounded-2xl border border-[var(--border)]'>
-                    <div className='grid grid-cols-[1.2fr_0.8fr_1.2fr] gap-3 border-b border-[var(--border)] bg-white/5 px-4 py-3 text-xs tracking-[0.2em] text-[var(--muted-foreground)] uppercase'>
-                      <span>Provider</span>
-                      <span>Total</span>
-                      <span>Status mix</span>
+            <div className='grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.85fr)]'>
+              <section className='space-y-4'>
+                <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
+                  {overview.data.cards.map((card) => (
+                    <div key={card.label} className='border-border rounded-2xl border p-4'>
+                      <p className='text-muted-foreground text-sm'>{card.label}</p>
+                      <p className='text-foreground mt-2 text-3xl font-semibold'>{card.value}</p>
+                      <p className='text-muted-foreground mt-2 text-sm leading-6'>{card.hint}</p>
                     </div>
-                    {summaryRows.map((summary) => (
-                      <div
-                        key={summary.provider}
-                        className='grid grid-cols-[1.2fr_0.8fr_1.2fr] gap-3 px-4 py-4 text-sm'
-                      >
-                        <span className='text-white'>{summary.provider}</span>
-                        <span className='text-[var(--muted-foreground)]'>{summary.total}</span>
-                        <div className='flex flex-wrap gap-2'>
-                          {summary.chips.length > 0 ? (
-                            summary.chips.map(([label, count]) => (
-                              <Badge
-                                key={String(label)}
-                                variant='outline'
-                                className={`dashboard-status rounded-full px-2.5 py-1 text-xs ${statusTone(String(label))}`}
-                              >
-                                {label}: {count}
-                              </Badge>
-                            ))
-                          ) : (
-                            <span className='text-[var(--muted-foreground)]'>No status data</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className='mt-5 rounded-2xl border border-dashed border-[var(--border)] bg-black/10 p-5 text-sm text-[var(--muted-foreground)]'>
-                    No account summaries available yet.
-                  </div>
-                )}
-              </article>
-
-              <article className='rounded-3xl border border-[var(--border)] bg-[var(--card)] p-6'>
-                <div className='flex items-start justify-between gap-4'>
-                  <div>
-                    <h3 className='text-lg font-semibold'>Runtime facts</h3>
-                    <p className='mt-1 text-sm text-[var(--muted-foreground)]'>
-                      Current service health, routing posture, and available model surface.
-                    </p>
-                  </div>
-                  <Badge
-                    variant='outline'
-                    className='dashboard-status rounded-full px-3 py-1 text-xs text-[var(--muted-foreground)]'
-                  >
-                    {hasProviders ? 'Providers online' : 'No providers'}
-                  </Badge>
+                  ))}
                 </div>
-                <ul className='mt-4 space-y-3 text-sm text-[var(--muted-foreground)]'>
-                  <li className='flex items-start justify-between gap-4'>
-                    <span>Health</span>
-                    <span className='text-white'>{overview.data.health.status}</span>
-                  </li>
-                  <li className='flex items-start justify-between gap-4'>
-                    <span>Service</span>
-                    <span className='text-white'>{overview.data.health.service}</span>
-                  </li>
-                  <li className='flex items-start justify-between gap-4'>
-                    <span>Routing strategy</span>
-                    <span className='text-white'>{overview.data.routing_strategy}</span>
-                  </li>
-                  <li className='flex items-start justify-between gap-4'>
-                    <span>Available models</span>
-                    <span className='text-white'>{overview.data.available_model_count}</span>
-                  </li>
-                  <li className='flex items-start justify-between gap-4'>
-                    <span>Providers</span>
-                    <span className='text-right text-white'>
+
+                <div className='space-y-3'>
+                  <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                    <div>
+                      <h3 className='text-lg font-semibold'>Accounts overview</h3>
+                      <p className='text-muted-foreground text-sm'>
+                        By provider and lifecycle state.
+                      </p>
+                    </div>
+                    <Badge
+                      variant='outline'
+                      className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
+                    >
+                      {accountSummaries?.length ?? 0} provider(s)
+                    </Badge>
+                  </div>
+                  {summaryRows.length > 0 ? (
+                    <div className='space-y-2'>
+                      {summaryRows.map((summary) => (
+                        <div
+                          key={summary.provider}
+                          className='border-border rounded-2xl border p-4'
+                        >
+                          <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+                            <div>
+                              <p className='text-foreground font-medium'>{summary.provider}</p>
+                              <p className='text-muted-foreground mt-1 text-sm'>
+                                Total {summary.total}
+                              </p>
+                            </div>
+                            <div className='flex flex-wrap gap-2'>
+                              {summary.chips.length > 0 ? (
+                                summary.chips.map(([label, count]) => (
+                                  <Badge
+                                    key={String(label)}
+                                    variant='outline'
+                                    className={`dashboard-status rounded-full px-2.5 py-1 text-xs ${statusTone(String(label))}`}
+                                  >
+                                    {label}: {count}
+                                  </Badge>
+                                ))
+                              ) : (
+                                <span className='text-muted-foreground text-sm'>
+                                  No status data
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className='bg-muted/40 text-muted-foreground rounded-2xl p-4 text-sm'>
+                      No account summaries available yet.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className='space-y-3'>
+                <div>
+                  <h3 className='text-lg font-semibold'>Runtime facts</h3>
+                  <p className='text-muted-foreground mt-1 text-sm leading-6'>
+                    Current service health, routing posture, and model surface.
+                  </p>
+                </div>
+                <Badge
+                  variant='outline'
+                  className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
+                >
+                  {hasProviders ? 'Providers online' : 'No providers'}
+                </Badge>
+                <dl className='space-y-2'>
+                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <dt className='text-muted-foreground'>Health</dt>
+                    <dd className='text-foreground text-right'>{overview.data.health.status}</dd>
+                  </div>
+                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <dt className='text-muted-foreground'>Service</dt>
+                    <dd className='text-foreground text-right'>{overview.data.health.service}</dd>
+                  </div>
+                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <dt className='text-muted-foreground'>Routing</dt>
+                    <dd className='text-foreground text-right'>{overview.data.routing_strategy}</dd>
+                  </div>
+                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <dt className='text-muted-foreground'>Models</dt>
+                    <dd className='text-foreground text-right'>
+                      {overview.data.available_model_count}
+                    </dd>
+                  </div>
+                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <dt className='text-muted-foreground'>Providers</dt>
+                    <dd className='text-foreground text-right'>
                       {hasProviders ? providerNames.join(', ') : 'None'}
-                    </span>
-                  </li>
-                </ul>
-              </article>
+                    </dd>
+                  </div>
+                </dl>
+              </section>
             </div>
           </>
         ) : null}

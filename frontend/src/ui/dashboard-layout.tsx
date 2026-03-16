@@ -1,10 +1,15 @@
 import { Link, useRouterState } from '@tanstack/react-router'
+import { LaptopMinimal, Moon, Sun } from 'lucide-react'
 import { useState, type PropsWithChildren } from 'react'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 
 import { useManagementStatusQuery } from '../lib/management-api'
 import { useManagementAuth } from '../lib/management-auth'
 import { useOverviewQuery } from '../lib/query'
 import { cn } from '../lib/utils'
+import { useThemeStore } from '../lib/theme'
 
 const navItems = [
   { to: '/', label: 'Overview' },
@@ -13,116 +18,82 @@ const navItems = [
   { to: '/config', label: 'Config' },
 ] as const
 
+type ThemeSegmentedControlProps = {
+  theme: 'light' | 'dark' | 'system'
+  onChange: (theme: 'light' | 'dark' | 'system') => void
+}
+
+function ThemeSegmentedControl({ theme, onChange }: ThemeSegmentedControlProps) {
+  const options = [
+    { value: 'light' as const, label: 'Light', icon: Sun },
+    { value: 'dark' as const, label: 'Dark', icon: Moon },
+    { value: 'system' as const, label: 'System', icon: LaptopMinimal },
+  ]
+
+  return (
+    <div className='bg-muted/60 ring-border/70 inline-flex w-fit max-w-full items-center gap-1 overflow-hidden rounded-2xl p-1 ring-1'>
+      {options.map((option) => {
+        const Icon = option.icon
+        const active = theme === option.value
+        return (
+          <Button
+            key={option.value}
+            type='button'
+            variant='ghost'
+            size='icon-sm'
+            onClick={() => onChange(option.value)}
+            className={cn(
+              'shrink rounded-xl',
+              active
+                ? 'bg-background text-foreground shadow-sm ring-border/70 ring-1'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Icon className='size-4 shrink-0' />
+            <span className='sr-only'>{option.label} mode</span>
+          </Button>
+        )
+      })}
+    </div>
+  )
+}
+
+
 export function DashboardLayout({ children }: PropsWithChildren<object>) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const overview = useOverviewQuery()
   const managementStatus = useManagementStatusQuery()
   const { clearSecret } = useManagementAuth()
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const theme = useThemeStore((state) => state.theme)
+  const resolvedTheme = useThemeStore((state) => state.resolvedTheme)
+  const setTheme = useThemeStore((state) => state.setTheme)
 
   const providerCount = overview.data?.provider_names.length ?? 0
   return (
-    <div className='min-h-screen text-[var(--foreground)]'>
-      <div className='border-b border-[var(--border)] bg-[color:rgba(40,30,34,0.78)] px-4 py-4 md:hidden'>
-        <div className='flex items-center justify-between gap-3'>
+    <div className='bg-background text-foreground min-h-screen'>
+      <div className='mx-auto flex min-h-screen max-w-[1440px] overflow-x-clip'>
+        <aside className='border-border/70 hidden w-72 flex-col border-r px-5 py-6 md:flex lg:w-80 lg:px-6 lg:py-7'>
           <div>
-            <p className='text-xs tracking-[0.24em] text-[var(--muted-foreground)] uppercase'>
+            <p className='text-muted-foreground text-xs tracking-[0.24em] uppercase'>
               Rusuh Dashboard
             </p>
-            <h1 className='mt-1 text-lg font-semibold text-white'>Management UI</h1>
-          </div>
-          <div className='flex items-center gap-2'>
-            <button
-              type='button'
-              onClick={clearSecret}
-              className='min-h-11 rounded-xl border border-[var(--border)] bg-white/5 px-4 text-sm text-white transition hover:bg-white/10'
-            >
-              Lock
-            </button>
-            <button
-              type='button'
-              onClick={() => setMobileNavOpen((value) => !value)}
-              aria-expanded={mobileNavOpen}
-              aria-controls='dashboard-mobile-nav'
-              className='min-h-11 rounded-xl border border-[var(--border)] bg-[color:rgba(210,138,54,0.16)] px-4 text-sm text-white transition hover:bg-[color:rgba(210,138,54,0.24)]'
-            >
-              {mobileNavOpen ? 'Close' : 'Menu'}
-            </button>
-          </div>
-        </div>
-        {mobileNavOpen ? (
-          <div
-            id='dashboard-mobile-nav'
-            className='dashboard-enter dashboard-enter-delay-1 mt-4 space-y-3'
-          >
-            <nav className='grid gap-2'>
-              {navItems.map((item) => {
-                const active = pathname === item.to
-
-                return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    onClick={() => setMobileNavOpen(false)}
-                    className={cn(
-                      'flex min-h-11 items-center rounded-xl border px-4 py-3 text-sm transition',
-                      active
-                        ? 'border-[color:rgba(210,138,54,0.28)] bg-[color:rgba(210,138,54,0.14)] text-white'
-                        : 'border-transparent bg-transparent text-[var(--muted-foreground)] hover:border-[var(--border)] hover:bg-white/5 hover:text-white',
-                    )}
-                    activeOptions={{ exact: item.to === '/' }}
-                  >
-                    {item.label}
-                  </Link>
-                )
-              })}
-            </nav>
-            <div className='dashboard-card rounded-[1.6rem] border border-[var(--border)] bg-[var(--card)] p-4 shadow-[0_16px_40px_rgba(0,0,0,0.18)]'>
-              <p className='text-xs tracking-[0.2em] text-[var(--muted-foreground)] uppercase'>
-                Status
-              </p>
-              <p className='mt-2 text-sm text-white'>
-                {overview.data
-                  ? `${overview.data.health.status} · ${overview.data.routing_strategy}`
-                  : 'Loading runtime status…'}
-              </p>
-              <p className='mt-1 text-xs text-[var(--muted-foreground)]'>
-                {managementStatus.data
-                  ? `Mgmt port ${managementStatus.data.port} · ${providerCount} provider${providerCount === 1 ? '' : 's'}`
-                  : managementStatus.isError
-                    ? 'Management auth failed'
-                    : 'Checking management access…'}
-              </p>
-            </div>
-          </div>
-        ) : null}
-      </div>
-      <div className='mx-auto flex min-h-screen max-w-7xl'>
-        <aside className='hidden w-72 flex-col border-r border-[var(--border)] bg-[color:rgba(34,27,31,0.68)] p-6 md:flex'>
-          <div>
-            <p className='text-xs tracking-[0.24em] text-[var(--muted-foreground)] uppercase'>
-              Rusuh Dashboard
-            </p>
-            <h1 className='mt-2 text-[1.95rem] font-semibold tracking-[-0.03em] text-white'>
+            <h1 className='mt-2 text-[1.75rem] font-semibold tracking-[-0.03em] lg:text-[1.9rem]'>
               Management UI
             </h1>
-            <p className='mt-3 text-sm text-[var(--muted-foreground)]'>
-              Accounts, OAuth, config, and API key operations from one place.
-            </p>
           </div>
-          <nav className='mt-10 space-y-2'>
+          <nav className='mt-10 space-y-1'>
             {navItems.map((item) => {
               const active = pathname === item.to
-
               return (
                 <Link
                   key={item.to}
                   to={item.to}
                   className={cn(
-                    'flex w-full items-center rounded-xl border px-4 py-3 text-left text-sm transition',
+                    'flex min-h-11 w-full items-center rounded-xl px-4 text-left text-sm font-medium transition-colors',
                     active
-                      ? 'border-[color:rgba(210,138,54,0.28)] bg-[color:rgba(210,138,54,0.14)] text-white'
-                      : 'border-transparent bg-transparent text-[var(--muted-foreground)] hover:border-[var(--border)] hover:bg-white/5 hover:text-white',
+                      ? 'bg-accent text-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   )}
                   activeOptions={{ exact: item.to === '/' }}
                 >
@@ -131,38 +102,111 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
               )
             })}
           </nav>
-          <div className='dashboard-card dashboard-enter dashboard-enter-delay-1 mt-auto space-y-3 rounded-[1.6rem] border border-[var(--border)] bg-[var(--card)] p-4 shadow-[0_16px_40px_rgba(0,0,0,0.18)]'>
-            <div>
-              <p className='text-xs tracking-[0.2em] text-[var(--muted-foreground)] uppercase'>
-                Status
-              </p>
-              <p className='mt-2 text-sm text-white'>
-                {overview.data
-                  ? `${overview.data.health.status} · ${overview.data.routing_strategy}`
-                  : 'Loading runtime status…'}
-              </p>
-              <p className='mt-1 text-xs text-[var(--muted-foreground)]'>
-                {managementStatus.data
-                  ? `Mgmt port ${managementStatus.data.port} · ${providerCount} provider${providerCount === 1 ? '' : 's'}`
-                  : managementStatus.isError
-                    ? 'Management auth failed'
-                    : 'Checking management access…'}
-              </p>
+          <div className='text-muted-foreground mt-auto space-y-2 text-sm'>
+            <p>
+              {overview.data
+                ? `${overview.data.health.status} · ${overview.data.routing_strategy}`
+                : 'Loading runtime status…'}
+            </p>
+            <p className='text-xs leading-5'>
+              {managementStatus.data
+                ? `Mgmt port ${managementStatus.data.port} · ${providerCount} provider${providerCount === 1 ? '' : 's'}`
+                : managementStatus.isError
+                  ? 'Management auth failed'
+                  : 'Checking management access…'}
+            </p>
+            <p className='text-xs leading-5'>Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}</p>
+            <div className='flex flex-col gap-2 pt-2 xl:flex-row xl:items-center xl:justify-between'>
+              <Badge variant='secondary' className='w-fit rounded-full'>
+                {providerCount} provider{providerCount === 1 ? '' : 's'}
+              </Badge>
+              <div className='flex flex-wrap items-center gap-2 xl:justify-end'>
+                <ThemeSegmentedControl theme={theme} onChange={setTheme} />
+                <Button type='button' variant='outline' onClick={clearSecret} className='w-fit rounded-xl'>
+                  Lock
+                </Button>
+              </div>
             </div>
-
-            <button
-              type='button'
-              onClick={clearSecret}
-              className='min-h-11 w-full rounded-xl border border-[var(--border)] bg-white/5 px-3 py-2 text-sm text-white transition hover:bg-white/10'
-            >
-              Lock dashboard
-            </button>
           </div>
         </aside>
+        <div className='flex min-h-screen flex-1 flex-col'>
+          <div className='border-border bg-background/90 sticky top-0 z-20 border-b px-4 py-3 backdrop-blur md:hidden'>
+            <div className='flex items-center justify-between gap-3'>
+              <div>
+                <p className='text-muted-foreground text-xs tracking-[0.24em] uppercase'>
+                  Rusuh Dashboard
+                </p>
+                <h1 className='mt-1 text-lg font-semibold'>Management UI</h1>
+              </div>
+              <div className='flex items-center justify-end gap-2'>
+                <ThemeSegmentedControl theme={theme} onChange={setTheme} />
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={clearSecret}
+                  className='rounded-xl px-3'
+                >
+                  Lock
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  onClick={() => setMobileNavOpen((value) => !value)}
+                  aria-expanded={mobileNavOpen}
+                  aria-controls='dashboard-mobile-nav'
+                  className='rounded-xl px-3'
+                >
+                  {mobileNavOpen ? 'Close' : 'Menu'}
+                </Button>
+              </div>
+            </div>
+            {mobileNavOpen ? (
+              <div id='dashboard-mobile-nav' className='dashboard-enter mt-4 space-y-2'>
+                <nav className='grid gap-2'>
+                  {navItems.map((item) => {
+                    const active = pathname === item.to
+                    return (
+                      <Link
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setMobileNavOpen(false)}
+                        className={cn(
+                          'flex min-h-11 items-center rounded-xl px-4 text-sm font-medium transition-colors',
+                          active
+                            ? 'bg-accent text-foreground'
+                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                        )}
+                        activeOptions={{ exact: item.to === '/' }}
+                      >
+                        {item.label}
+                      </Link>
+                    )
+                  })}
+                </nav>
+                <div className='text-muted-foreground space-y-1 px-1 text-sm'>
+                  <p>
+                    {overview.data
+                      ? `${overview.data.health.status} · ${overview.data.routing_strategy}`
+                      : 'Loading runtime status…'}
+                  </p>
+                  <p className='text-xs leading-5'>
+                    {managementStatus.data
+                      ? `Mgmt port ${managementStatus.data.port} · ${providerCount} provider${providerCount === 1 ? '' : 's'}`
+                      : managementStatus.isError
+                        ? 'Management auth failed'
+                        : 'Checking management access…'}
+                  </p>
+                  <p className='text-xs leading-5'>Theme: {theme === 'system' ? `system (${resolvedTheme})` : theme}</p>
+                </div>
+              </div>
+            ) : null}
+          </div>
 
-        <main className='dashboard-enter dashboard-enter-delay-1 flex-1 p-4 md:p-8'>
-          {children}
-        </main>
+          <main className='dashboard-enter dashboard-enter-delay-1 flex-1 p-4 md:p-5 xl:p-8'>
+            {children}
+          </main>
+        </div>
       </div>
     </div>
   )

@@ -1,10 +1,10 @@
-export const surfaceClass = 'rounded-3xl border border-[var(--border)] bg-[var(--card)]'
-export const cardClass = 'rounded-2xl border border-[var(--border)] bg-[var(--card)]'
+export const surfaceClass = 'rounded-3xl border border-border bg-card'
+export const cardClass = 'rounded-2xl border border-border bg-card'
 export const ghostButtonClass =
-  'min-h-11 rounded-xl border border-[var(--border)] bg-white/5 px-4 py-2 text-sm text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60'
+  'min-h-11 rounded-xl border border-border bg-background px-4 py-2 text-sm text-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60'
 export const primaryButtonClass =
-  'min-h-11 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60'
+  'min-h-11 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60'
 export const dangerButtonClass =
-  'min-h-11 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60'
+  'min-h-11 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-destructive-foreground'
 export const inputClass =
-  'min-h-11 rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 text-white outline-none placeholder:text-zinc-500'
+  'min-h-11 rounded-2xl border border-input bg-background px-4 py-3 text-foreground outline-none placeholder:text-muted-foreground'

@@ -286,7 +286,7 @@ impl SocialAuthClient {
     /// Generic social OAuth flow for any provider.
     async fn login_with_provider(
         &self,
-        provider_id: &str,
+        _provider_id: &str,
         provider_name: &str,
     ) -> AppResult<KiroTokenData> {
         info!("starting {} OAuth login flow", provider_name);
@@ -301,12 +301,12 @@ impl SocialAuthClient {
 
         // Build authorization URL
         let auth_url = format!(
-            "{}/oauth/authorize?response_type=code&client_id=kiro-ide&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&provider={}",
+            "{}/login?idp={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&prompt=select_account",
             KIRO_AUTH_ENDPOINT,
+            provider_name,
             urlencoding::encode(&redirect_uri),
-            urlencoding::encode(&state),
             urlencoding::encode(&code_challenge),
-            provider_id
+            urlencoding::encode(&state),
         );
 
         println!("\n┌─────────────────────────────────────────────────────────┐");
