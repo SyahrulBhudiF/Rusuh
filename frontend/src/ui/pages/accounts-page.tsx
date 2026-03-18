@@ -27,6 +27,7 @@ import {
   useImportKiroMutation,
   useImportKiroSocialMutation,
   useStartKiroBuilderIdMutation,
+  useCheckKiroQuotaMutation,
 } from '../../lib/management-kiro'
 import { useOAuthStatusQuery, useStartOAuthMutation } from '../../lib/management-oauth'
 import { PageShell } from '../page-shell'
@@ -93,11 +94,13 @@ export function AccountsPage() {
   const startKiroBuilderId = useStartKiroBuilderIdMutation()
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
+  const checkKiroQuota = useCheckKiroQuotaMutation()
 
   const [providerFilter, setProviderFilter] = useState(ALL_FILTER)
   const [statusFilter, setStatusFilter] = useState(ALL_FILTER)
   const [editName, setEditName] = useState<string | null>(null)
   const [editLabel, setEditLabel] = useState('')
+  const [quotaResults, setQuotaResults] = useState<Record<string, { status: string; remaining?: number; detail?: string; message?: string }>>({})
 
   const [antigravityLabel, setAntigravityLabel] = useState('')
   const [oauthState, setOauthState] = useState<string | null>(null)
@@ -647,6 +650,40 @@ export function AccountsPage() {
                                     {item.status_message}
                                   </p>
                                 ) : null}
+                                {item.provider_key === 'kiro' && quotaResults[item.id] ? (
+                                  <div className='mt-3 rounded-lg border border-border bg-muted/50 p-3'>
+                                    <p className='text-xs font-medium'>Quota Status:</p>
+                                    <div className='mt-1 flex items-center gap-2'>
+                                      <Badge
+                                        variant={
+                                          quotaResults[item.id].status === 'available'
+                                            ? 'default'
+                                            : quotaResults[item.id].status === 'exhausted'
+                                            ? 'destructive'
+                                            : 'outline'
+                                        }
+                                        className='rounded-full'
+                                      >
+                                        {quotaResults[item.id].status}
+                                      </Badge>
+                                      {quotaResults[item.id].remaining !== undefined && (
+                                        <span className='text-xs text-muted-foreground'>
+                                          {quotaResults[item.id].remaining} remaining
+                                        </span>
+                                      )}
+                                    </div>
+                                    {quotaResults[item.id].detail && (
+                                      <p className='mt-1 text-xs text-muted-foreground'>
+                                        {quotaResults[item.id].detail}
+                                      </p>
+                                    )}
+                                    {quotaResults[item.id].message && (
+                                      <p className='mt-1 text-xs text-muted-foreground'>
+                                        {quotaResults[item.id].message}
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : null}
                               </div>
 
                               <div className='text-muted-foreground text-sm xl:text-right'>
@@ -698,6 +735,24 @@ export function AccountsPage() {
                             ) : null}
 
                             <div className='grid gap-2 sm:grid-cols-2 xl:grid-cols-4'>
+                              {item.provider_key === 'kiro' && (
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  onClick={async () => {
+                                    try {
+                                      const result = await checkKiroQuota.mutateAsync({ name: item.id })
+                                      setQuotaResults((prev) => ({ ...prev, [item.id]: result }))
+                                    } catch (error) {
+                                      console.error('Quota check failed:', error)
+                                    }
+                                  }}
+                                  disabled={checkKiroQuota.isPending}
+                                  className='h-11 rounded-xl px-3'
+                                >
+                                  {checkKiroQuota.isPending ? 'Checking...' : 'Check Quota'}
+                                </Button>
+                              )}
                               <Button
                                 type='button'
                                 variant='outline'

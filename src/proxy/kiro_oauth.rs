@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, BUILDER_ID_START_URL, DEFAULT_REGION};
 use crate::auth::kiro_record::KiroRecordInput;
-use crate::auth::kiro_sso::SSOOIDCClient;
+use crate::auth::kiro_login::SSOOIDCClient;
 use crate::proxy::oauth::OAuthSessionStatus;
 use crate::proxy::ProxyState;
 
@@ -140,8 +140,8 @@ pub async fn build_builder_id_start_response(
     drop(cfg);
 
     let sso_client = SSOOIDCClient::new();
-    let code_verifier = crate::auth::kiro_social::generate_code_verifier();
-    let code_challenge = crate::auth::kiro_social::generate_code_challenge(&code_verifier);
+    let code_verifier = crate::auth::kiro_login::generate_code_verifier();
+    let code_challenge = crate::auth::kiro_login::generate_code_challenge(&code_verifier);
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let registration = sso_client
@@ -176,7 +176,7 @@ pub fn builder_id_redirect_uri(port: u16) -> String {
 }
 
 pub fn build_builder_id_session_context(
-    registration: &crate::auth::kiro_sso::RegisterClientResponse,
+    registration: &crate::auth::kiro_login::RegisterClientResponse,
     redirect_uri: &str,
     label: Option<String>,
 ) -> HashMap<String, Value> {
@@ -203,7 +203,7 @@ pub fn build_builder_id_session_context(
 
 pub fn build_builder_id_auth_record(
     context: &HashMap<String, Value>,
-    token_resp: crate::auth::kiro_sso::CreateTokenResponse,
+    token_resp: crate::auth::kiro_login::CreateTokenResponse,
     email: Option<String>,
 ) -> anyhow::Result<crate::auth::store::AuthRecord> {
     let client_id = required_context_string(context, "client_id")?;

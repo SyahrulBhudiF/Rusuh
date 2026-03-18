@@ -4,7 +4,8 @@
 //! Supports multiple auth methods: Builder ID, Social (Google/GitHub), Enterprise IDC.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,12 +14,18 @@ use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::auth::kiro::{KiroTokenData, BUILDER_ID_START_URL, REFRESH_SKEW_SECS};
-use crate::auth::kiro_sso::SSOOIDCClient;
-use crate::auth::kiro_social::SocialAuthClient;
+use crate::auth::kiro_runtime::{QuotaStatus, UsageCheckRequest};
+use crate::auth::kiro_login::{SSOOIDCClient, SocialAuthClient};
 use crate::auth::store::AuthRecord;
 use crate::error::{AppError, AppResult};
 use crate::models::{ChatCompletionRequest, ChatCompletionResponse, ModelInfo};
+use crate::providers::kiro_outcome::{
+    classify_kiro_response, cooldown_for_outcome, cooldown_reason_for_outcome,
+    registry_action_for_outcome, KiroRequestOutcome, RegistryAction,
+};
+use crate::providers::model_registry::ModelRegistry;
 use crate::providers::{BoxStream, Provider};
+use crate::proxy::KiroRuntimeState;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -126,6 +133,8 @@ impl TokenState {
 
 pub struct KiroProvider {
     account_name: String,
+    registry_client_id: String,
+    auth_key: String,
     token: RwLock<TokenState>,
     client: reqwest::Client,
     /// Path to auth file on disk for persisting refreshed tokens
@@ -134,12 +143,30 @@ pub struct KiroProvider {
     endpoint: String,
     /// Retry configuration
     retry_config: RetryConfig,
+    model_registry: Arc<ModelRegistry>,
+    kiro_runtime: KiroRuntimeState,
 }
 
 impl KiroProvider {
     pub fn new(record: AuthRecord) -> AppResult<Self> {
+        let client_id = record.id.clone();
+        Self::new_with_runtime(
+            record,
+            client_id,
+            Arc::new(ModelRegistry::new()),
+            KiroRuntimeState::default(),
+        )
+    }
+
+    pub fn new_with_runtime(
+        record: AuthRecord,
+        client_id: String,
+        model_registry: Arc<ModelRegistry>,
+        kiro_runtime: KiroRuntimeState,
+    ) -> AppResult<Self> {
         let auth_file_path = record.path.clone();
         let account_name = record.label.clone();
+        let auth_key = record.id.clone();
 
         // Extract KIRO token data from metadata
         let token_data = Self::extract_token_data(&record)?;
@@ -160,12 +187,76 @@ impl KiroProvider {
 
         Ok(Self {
             account_name,
+            registry_client_id: client_id,
+            auth_key,
             token: RwLock::new(token),
             client: reqwest::Client::new(),
             auth_file_path,
             endpoint: endpoint_url.to_string(),
             retry_config: RetryConfig::default(),
+            model_registry,
+            kiro_runtime,
         })
+    }
+
+    async fn pre_request_check(&self, model_id: &str, access_token: &str) -> AppResult<()> {
+        let now = Instant::now();
+
+        {
+            let mut cooldown = self.kiro_runtime.cooldown.write().await;
+            cooldown.purge_expired(now);
+            if cooldown.is_in_cooldown(&self.auth_key, model_id, now) {
+                let remaining = cooldown
+                    .remaining_cooldown(&self.auth_key, model_id, now)
+                    .unwrap_or_default();
+                let reason = cooldown
+                    .cooldown_reason(&self.auth_key, model_id, now)
+                    .unwrap_or("cooldown");
+                return Err(AppError::QuotaExceeded(format!(
+                    "kiro auth {} in cooldown for {}s: {}",
+                    self.registry_client_id,
+                    remaining.as_secs(),
+                    reason
+                )));
+            }
+        }
+
+        let rate_limiter_wait = {
+            let limiter = self.kiro_runtime.rate_limiter.read().await;
+            limiter.required_wait(&self.auth_key, now)
+        };
+        if let Some(wait) = rate_limiter_wait {
+            tokio::time::sleep(wait).await;
+        }
+
+        let state = self.token.read().await;
+        let quota = self
+            .kiro_runtime
+            .quota_checker
+            .check_quota(&UsageCheckRequest {
+                access_token: access_token.to_string(),
+                profile_arn: state.profile_arn.clone(),
+                client_id: state.client_id.clone(),
+                refresh_token: Some(state.refresh_token.clone()),
+            })
+            .await;
+        drop(state);
+
+        match quota {
+            QuotaStatus::Unknown => Ok(()),
+            QuotaStatus::Available { .. } => {
+                self.model_registry
+                    .clear_quota_exceeded(&self.registry_client_id, model_id)
+                    .await;
+                Ok(())
+            }
+            QuotaStatus::Exhausted { detail } => {
+                self.model_registry
+                    .set_quota_exceeded(&self.registry_client_id, model_id)
+                    .await;
+                Err(AppError::QuotaExceeded(detail))
+            }
+        }
     }
 
     /// Extract KiroTokenData from AuthRecord metadata
@@ -369,6 +460,81 @@ impl KiroProvider {
         Duration::from_millis(final_delay)
     }
 
+    /// Get endpoint candidates for fallback on quota exhaustion.
+    /// Returns both CodeWhisperer and AmazonQ endpoints.
+    /// For test endpoints (localhost/127.0.0.1), returns only the configured endpoint.
+    fn endpoint_candidates(&self) -> Vec<String> {
+        // If using a test/local endpoint, don't try fallback
+        if self.endpoint.contains("localhost") || self.endpoint.contains("127.0.0.1") {
+            return vec![self.endpoint.clone()];
+        }
+
+        // Try primary endpoint first, then alternate
+        if self.endpoint.contains("codewhisperer") {
+            vec![CODEWHISPERER_ENDPOINT.to_string(), AMAZONQ_ENDPOINT.to_string()]
+        } else {
+            vec![AMAZONQ_ENDPOINT.to_string(), CODEWHISPERER_ENDPOINT.to_string()]
+        }
+    }
+
+    async fn apply_request_outcome(
+        &self,
+        model_id: &str,
+        outcome: &KiroRequestOutcome,
+        now: Instant,
+    ) {
+        match registry_action_for_outcome(outcome) {
+            RegistryAction::None => {}
+            RegistryAction::ClearFailureState => {
+                self.model_registry
+                    .clear_quota_exceeded(&self.registry_client_id, model_id)
+                    .await;
+                self.model_registry
+                    .resume_client_model(&self.registry_client_id, model_id)
+                    .await;
+            }
+            RegistryAction::MarkQuotaExceeded => {
+                self.model_registry
+                    .set_quota_exceeded(&self.registry_client_id, model_id)
+                    .await;
+            }
+            RegistryAction::SuspendClient { reason } => {
+                self.model_registry
+                    .suspend_client_model(&self.registry_client_id, model_id, &reason)
+                    .await;
+            }
+        }
+
+        {
+            let mut limiter = self.kiro_runtime.rate_limiter.write().await;
+            match outcome {
+                KiroRequestOutcome::Success => limiter.mark_token_success(&self.auth_key),
+                KiroRequestOutcome::RateLimited { .. } | KiroRequestOutcome::QuotaExhausted => {
+                    limiter.mark_token_failed(&self.auth_key, now);
+                }
+                KiroRequestOutcome::Suspended => {
+                    limiter.check_and_mark_suspended(&self.auth_key, "SUSPENDED", now);
+                }
+                _ => {}
+            }
+        }
+
+        {
+            let mut cooldown = self.kiro_runtime.cooldown.write().await;
+            match outcome {
+                KiroRequestOutcome::Success => cooldown.clear_cooldown(&self.auth_key, model_id),
+                _ => {
+                    if let (Some(duration), Some(reason)) = (
+                        cooldown_for_outcome(outcome),
+                        cooldown_reason_for_outcome(outcome),
+                    ) {
+                        cooldown.set_cooldown(&self.auth_key, model_id, duration, reason, now);
+                    }
+                }
+            }
+        }
+    }
+
     async fn persist_token(&self, state: &TokenState) -> AppResult<()> {
         let refreshed_at = Utc::now().to_rfc3339();
         let data = tokio::fs::read_to_string(&self.auth_file_path)
@@ -487,17 +653,32 @@ impl Provider for KiroProvider {
         use std::io::Cursor;
 
         let token = self.ensure_access_token().await?;
+        self.pre_request_check(&req.model, &token).await?;
         let kiro_request = translate_request_to_kiro(req);
         let model = req.model.clone();
         let chat_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
         let created = chrono::Utc::now().timestamp();
 
-        // Build request URL
-        let url = format!("{}{}", self.endpoint, CONVERSATION_PATH);
-
-        // Make request with retry logic
+        // Get endpoint candidates for fallback
+        let endpoints = self.endpoint_candidates();
         let mut last_error = None;
-        for attempt in 0..=self.retry_config.max_retries {
+
+        // Try each endpoint
+        for (endpoint_idx, endpoint) in endpoints.iter().enumerate() {
+            let url = format!("{}{}", endpoint, CONVERSATION_PATH);
+            let is_fallback = endpoint_idx > 0;
+
+            if is_fallback {
+                debug!(
+                    provider = "kiro",
+                    account = %self.account_name,
+                    endpoint = endpoint,
+                    "trying fallback endpoint after 429"
+                );
+            }
+
+            // Make request with retry logic for this endpoint
+            for attempt in 0..=self.retry_config.max_retries {
             if attempt > 0 {
                 let delay = self.calculate_retry_delay(attempt - 1);
                 debug!(
@@ -537,13 +718,37 @@ impl Provider for KiroProvider {
             let status = resp.status();
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
+                let outcome = classify_kiro_response(status.as_u16(), &body, attempt);
+                self.apply_request_outcome(&req.model, &outcome, Instant::now())
+                    .await;
                 let err = AppError::Upstream(format!("kiro error ({}): {}", status, body));
+
+                // On 429, try alternate endpoint if available
+                if status == StatusCode::TOO_MANY_REQUESTS && endpoint_idx + 1 < endpoints.len() {
+                    debug!(
+                        provider = "kiro",
+                        account = %self.account_name,
+                        "429 from {}, will try alternate endpoint",
+                        endpoint
+                    );
+                    last_error = Some(err);
+                    break; // Break inner retry loop to try next endpoint
+                }
+
+                // On 403 suspension, don't try alternate endpoint
+                if status == StatusCode::FORBIDDEN {
+                    return Err(err);
+                }
+
                 if Self::is_retryable_status(status) && attempt < self.retry_config.max_retries {
                     last_error = Some(err);
                     continue;
                 }
                 return Err(err);
             }
+
+            self.apply_request_outcome(&req.model, &KiroRequestOutcome::Success, Instant::now())
+                .await;
 
             // Success - process stream
             let bytes = resp.bytes().await.map_err(|e| {
@@ -574,11 +779,578 @@ impl Provider for KiroProvider {
 
             let stream = stream::iter(sse_chunks);
             return Ok(Box::pin(stream));
+            }
         }
 
-        // All retries exhausted
+        // All endpoints and retries exhausted
         Err(last_error.unwrap_or_else(|| {
-            AppError::Upstream("kiro stream failed after all retries".into())
+            AppError::Upstream("kiro stream failed after trying all endpoints".into())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use axum::body::Body;
+    use axum::http::StatusCode as AxumStatusCode;
+    use axum::routing::post;
+    use axum::Router;
+    use crate::auth::kiro_runtime::{
+        CooldownManager, KiroRateLimiter, NoOpQuotaChecker, QuotaChecker, UsageCheckRequest,
+    };
+    use crate::auth::store::AuthStatus;
+    use crate::providers::model_registry::ModelRegistry;
+    use crate::proxy::KiroRuntimeState;
+    use serde_json::json;
+    use tokio::sync::oneshot;
+    use tokio::sync::RwLock;
+
+    struct FakeExhaustedChecker;
+
+    #[async_trait::async_trait]
+    impl QuotaChecker for FakeExhaustedChecker {
+        async fn check_quota(&self, _request: &UsageCheckRequest) -> crate::auth::kiro_runtime::QuotaStatus {
+            crate::auth::kiro_runtime::QuotaStatus::Exhausted {
+                detail: "test exhausted".into(),
+            }
+        }
+    }
+
+    struct FakeAvailableChecker;
+
+    #[async_trait::async_trait]
+    impl QuotaChecker for FakeAvailableChecker {
+        async fn check_quota(&self, _request: &UsageCheckRequest) -> crate::auth::kiro_runtime::QuotaStatus {
+            crate::auth::kiro_runtime::QuotaStatus::Available {
+                remaining: Some(10),
+                next_reset: None,
+                breakdown: None,
+            }
+        }
+    }
+
+    fn test_record() -> AuthRecord {
+        let metadata: HashMap<String, serde_json::Value> = serde_json::from_value(json!({
+            "type": "kiro",
+            "provider_key": "kiro",
+            "access_token": "test-access-token",
+            "refresh_token": "test-refresh-token",
+            "profile_arn": "arn:aws:iam::123456789012:role/test",
+            "expires_at": "2030-01-01T00:00:00Z",
+            "auth_method": "builder-id",
+            "provider": "AWS",
+            "region": "us-east-1",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret"
+        }))
+        .unwrap();
+
+        AuthRecord {
+            id: "kiro-test.json".into(),
+            provider: "kiro".into(),
+            provider_key: "kiro".into(),
+            label: "kiro test".into(),
+            disabled: false,
+            status: AuthStatus::Active,
+            status_message: None,
+            last_refreshed_at: None,
+            path: std::env::temp_dir().join("kiro-test.json"),
+            metadata,
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn runtime_with_checker(checker: Arc<dyn QuotaChecker>) -> KiroRuntimeState {
+        KiroRuntimeState {
+            cooldown: Arc::new(RwLock::new(CooldownManager::new())),
+            rate_limiter: Arc::new(RwLock::new(KiroRateLimiter::new())),
+            quota_checker: checker,
+        }
+    }
+
+    fn test_request(model_id: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: model_id.to_string(),
+            messages: vec![crate::models::ChatMessage {
+                role: "user".into(),
+                content: crate::models::MessageContent::Text("hello".into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            stream: Some(true),
+            max_tokens: Some(16),
+            temperature: None,
+            top_p: None,
+            tools: None,
+            tool_choice: None,
+            stop: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn create_event_stream_message(event_type: &str, payload: &[u8]) -> Vec<u8> {
+        let mut message = Vec::new();
+
+        let mut headers = Vec::new();
+        headers.push(11u8);
+        headers.extend_from_slice(b":event-type");
+        headers.push(7u8);
+        headers.push(0u8);
+        headers.push(event_type.len() as u8);
+        headers.extend_from_slice(event_type.as_bytes());
+
+        let headers_length = headers.len() as u32;
+        let payload_length = payload.len() as u32;
+        let total_length = 12 + headers_length + payload_length + 4;
+
+        message.extend_from_slice(&total_length.to_be_bytes());
+        message.extend_from_slice(&headers_length.to_be_bytes());
+        message.extend_from_slice(&[0u8; 4]);
+        message.extend_from_slice(&headers);
+        message.extend_from_slice(payload);
+        message.extend_from_slice(&[0u8; 4]);
+
+        message
+    }
+
+    fn success_stream_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&create_event_stream_message(
+            "messageStart",
+            br#"{}"#,
+        ));
+        bytes.extend_from_slice(&create_event_stream_message(
+            "assistantResponseEvent",
+            br#"{"content":"hello"}"#,
+        ));
+        bytes.extend_from_slice(&create_event_stream_message(
+            "messageStop",
+            br#"{"stopReason":"end_turn"}"#,
+        ));
+        bytes
+    }
+
+    async fn spawn_test_server(status: AxumStatusCode, body: Vec<u8>, content_type: &'static str) -> (String, oneshot::Sender<()>) {
+        async fn conversation_handler(
+            axum::extract::State(state): axum::extract::State<(AxumStatusCode, Vec<u8>, &'static str)>,
+        ) -> impl axum::response::IntoResponse {
+            let (status, body, content_type) = state;
+            (status, [("content-type", content_type)], Body::from(body))
+        }
+
+        let app = Router::new()
+            .route("/conversation", post(conversation_handler))
+            .with_state((status, body, content_type));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        (format!("http://{}", addr), shutdown_tx)
+    }
+
+    #[tokio::test]
+    async fn chat_completion_stream_success_clears_failure_state() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(FakeAvailableChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
+        registry.set_quota_exceeded(client_id, model_id).await;
+        registry
+            .suspend_client_model(client_id, model_id, "old failure")
+            .await;
+        runtime.cooldown.write().await.set_cooldown(
+            "kiro-test.json",
+            model_id,
+            Duration::from_secs(30),
+            "old cooldown",
+            Instant::now() - Duration::from_secs(31),
+        );
+        runtime.rate_limiter.write().await.mark_token_failed(
+            "kiro-test.json",
+            Instant::now() - Duration::from_secs(31),
+        );
+
+        let (endpoint, shutdown) =
+            spawn_test_server(AxumStatusCode::OK, success_stream_bytes(), "application/vnd.amazon.eventstream").await;
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.endpoint = endpoint;
+
+        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let _ = shutdown.send(());
+
+        let _stream = result.unwrap();
+        assert!(registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(runtime
+            .rate_limiter
+            .read()
+            .await
+            .is_token_available("kiro-test.json", Instant::now()));
+        assert!(!runtime
+            .cooldown
+            .read()
+            .await
+            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn chat_completion_stream_429_marks_quota_and_cooldown() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
+
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::TOO_MANY_REQUESTS,
+            br#"{"message":"quota exceeded"}"#.to_vec(),
+            "application/json",
+        )
+        .await;
+
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.endpoint = endpoint;
+
+        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error but got success"),
+        };
+        let _ = shutdown.send(());
+
+        assert!(matches!(err, AppError::Upstream(message) if message.contains("429")));
+        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(runtime
+            .cooldown
+            .read()
+            .await
+            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
+        assert_eq!(
+            runtime
+                .cooldown
+                .read()
+                .await
+                .cooldown_reason("kiro-test.json", model_id, Instant::now()),
+            Some("rate_limit_exceeded")
+        );
+        assert!(!runtime
+            .rate_limiter
+            .read()
+            .await
+            .is_token_available("kiro-test.json", Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn chat_completion_stream_suspended_marks_runtime_unavailable() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
+
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::FORBIDDEN,
+            b"TEMPORARILY_SUSPENDED".to_vec(),
+            "text/plain",
+        )
+        .await;
+
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.endpoint = endpoint;
+
+        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error but got success"),
+        };
+        let _ = shutdown.send(());
+
+        assert!(matches!(err, AppError::Upstream(message) if message.contains("403")));
+        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(runtime
+            .cooldown
+            .read()
+            .await
+            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
+        assert_eq!(
+            runtime
+                .cooldown
+                .read()
+                .await
+                .cooldown_reason("kiro-test.json", model_id, Instant::now()),
+            Some("account_suspended")
+        );
+        assert!(!runtime
+            .rate_limiter
+            .read()
+            .await
+            .is_token_available("kiro-test.json", Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn pre_request_check_blocks_auth_in_cooldown() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+        let record = test_record();
+        let auth_key = record.id.clone();
+
+        runtime.cooldown.write().await.set_cooldown(
+            &auth_key,
+            model_id,
+            Duration::from_secs(30),
+            "test cooldown",
+            Instant::now(),
+        );
+
+        let provider = KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
+            .unwrap();
+
+        let err = provider
+            .pre_request_check(model_id, "test-access-token")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::QuotaExceeded(message) if message.contains("cooldown")));
+    }
+
+    #[tokio::test]
+    async fn pre_request_check_waits_for_rate_limiter_before_continuing() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+        let record = test_record();
+        let auth_key = record.id.clone();
+
+        runtime.rate_limiter.write().await.mark_token_failed(
+            &auth_key,
+            Instant::now() - Duration::from_millis(29_700),
+        );
+
+        let provider = KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            provider.pre_request_check(model_id, "test-access-token"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn pre_request_check_marks_registry_on_exhausted_quota() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(FakeExhaustedChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
+
+        let provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime,
+        )
+        .unwrap();
+
+        let err = provider
+            .pre_request_check(model_id, "test-access-token")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::QuotaExceeded(_)));
+        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+    }
+
+    #[tokio::test]
+    async fn pre_request_check_clears_stale_quota_exceeded_on_available_quota() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(FakeAvailableChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
+        registry.set_quota_exceeded(client_id, model_id).await;
+
+        let provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime,
+        )
+        .unwrap();
+
+        provider
+            .pre_request_check(model_id, "test-access-token")
+            .await
+            .unwrap();
+
+        assert!(registry.client_is_effectively_available(client_id, model_id).await);
     }
 }

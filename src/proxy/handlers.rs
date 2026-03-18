@@ -224,6 +224,31 @@ async fn route_chat(
         )));
     }
 
+    // Step 3.5: Filter candidates by effective availability (quota/suspension)
+    let mut available_candidates = Vec::new();
+    for &idx in &candidates {
+        let provider = &state.providers[idx];
+        let client_id = format!("{}_{}", provider.name(), idx);
+
+        if state
+            .model_registry
+            .client_is_effectively_available(&client_id, &req.model)
+            .await
+        {
+            available_candidates.push(idx);
+        }
+    }
+
+    // Use only available candidates - if none are available, return error
+    let candidates = available_candidates;
+
+    if candidates.is_empty() {
+        return Err(AppError::QuotaExceeded(format!(
+            "All providers for model '{}' are currently unavailable (quota exceeded or suspended)",
+            req.model
+        )));
+    }
+
     // Step 4: Try candidates with retry logic
     // - Transient errors (5xx, timeout): retry same provider up to request-retry times
     // - Account errors (401, 429): skip to next provider immediately

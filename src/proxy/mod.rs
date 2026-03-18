@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, KiroUsageChecker, QuotaChecker};
 use crate::auth::manager::AccountManager;
 use crate::config::Config;
 use crate::providers::model_registry::ModelRegistry;
@@ -16,6 +17,24 @@ use crate::providers::Provider;
 
 use self::balancer::{Balancer, Strategy};
 use self::oauth::OAuthSessionStore;
+
+/// Kiro-specific runtime state owned by the proxy.
+#[derive(Clone)]
+pub struct KiroRuntimeState {
+    pub cooldown: Arc<RwLock<CooldownManager>>,
+    pub rate_limiter: Arc<RwLock<KiroRateLimiter>>,
+    pub quota_checker: Arc<dyn QuotaChecker>,
+}
+
+impl Default for KiroRuntimeState {
+    fn default() -> Self {
+        Self {
+            cooldown: Arc::new(RwLock::new(CooldownManager::new())),
+            rate_limiter: Arc::new(RwLock::new(KiroRateLimiter::new())),
+            quota_checker: Arc::new(KiroUsageChecker::new("https://codewhisperer.us-east-1.amazonaws.com")),
+        }
+    }
+}
 
 /// Shared application state — injected into all route handlers.
 pub struct ProxyState {
@@ -30,6 +49,8 @@ pub struct ProxyState {
     pub balancer: Balancer,
     /// In-memory OAuth session tracker for web-triggered flows
     pub oauth_sessions: OAuthSessionStore,
+    /// Kiro-specific cooldown, rate-limit, and quota probing state
+    pub kiro_runtime: KiroRuntimeState,
 }
 
 impl ProxyState {
@@ -47,6 +68,7 @@ impl ProxyState {
             model_registry,
             balancer: Balancer::new(strategy, provider_count),
             oauth_sessions: OAuthSessionStore::new(),
+            kiro_runtime: KiroRuntimeState::default(),
         }
     }
 }

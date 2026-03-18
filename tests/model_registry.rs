@@ -173,3 +173,132 @@ async fn reconcile_updates_models() {
     assert_eq!(reg.get_model_count("gpt-4o").await, 1);
     assert_eq!(reg.get_model_count("gpt-3.5").await, 0);
 }
+
+#[tokio::test]
+async fn available_clients_excludes_quota_exceeded() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+    reg.register_client("c2", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    reg.set_quota_exceeded("c1", "model-a").await;
+
+    let available = reg.available_clients_for_model("model-a").await;
+    assert!(available.contains(&"c2".to_string()));
+    assert!(!available.contains(&"c1".to_string()));
+}
+
+#[tokio::test]
+async fn available_clients_excludes_suspended() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+    reg.register_client("c2", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    reg.suspend_client_model("c1", "model-a", "auth error")
+        .await;
+
+    let available = reg.available_clients_for_model("model-a").await;
+    assert!(available.contains(&"c2".to_string()));
+    assert!(!available.contains(&"c1".to_string()));
+}
+
+#[tokio::test]
+async fn client_is_effectively_available_basic() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    assert!(reg.client_is_effectively_available("c1", "model-a").await);
+
+    // Unregistered client
+    assert!(
+        !reg.client_is_effectively_available("c99", "model-a")
+            .await
+    );
+
+    // Suspend and check
+    reg.suspend_client_model("c1", "model-a", "test").await;
+    assert!(
+        !reg.client_is_effectively_available("c1", "model-a")
+            .await
+    );
+
+    // Resume and check
+    reg.resume_client_model("c1", "model-a").await;
+    assert!(reg.client_is_effectively_available("c1", "model-a").await);
+}
+
+#[tokio::test]
+async fn client_is_effectively_available_quota_exceeded() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    reg.set_quota_exceeded("c1", "model-a").await;
+    assert!(
+        !reg.client_is_effectively_available("c1", "model-a")
+            .await
+    );
+
+    reg.clear_quota_exceeded("c1", "model-a").await;
+    assert!(reg.client_is_effectively_available("c1", "model-a").await);
+}
+
+#[tokio::test]
+async fn available_clients_with_one_suspended_other_remains() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+    reg.register_client("c2", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+    reg.register_client("c3", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    reg.suspend_client_model("c1", "model-a", "auth error")
+        .await;
+    reg.set_quota_exceeded("c2", "model-a").await;
+
+    let available = reg.available_clients_for_model("model-a").await;
+    assert_eq!(available.len(), 1);
+    assert!(available.contains(&"c3".to_string()));
+}
+
+#[tokio::test]
+async fn available_clients_empty_when_all_unavailable() {
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    reg.suspend_client_model("c1", "model-a", "broken").await;
+
+    let available = reg.available_clients_for_model("model-a").await;
+    assert!(available.is_empty());
+}
+
+#[tokio::test]
+async fn available_clients_for_nonexistent_model() {
+    let reg = ModelRegistry::new();
+    let available = reg.available_clients_for_model("nonexistent").await;
+    assert!(available.is_empty());
+}
+
+#[tokio::test]
+async fn quota_expired_readmits_client() {
+    use std::time::{Duration, Instant};
+
+    let reg = ModelRegistry::new();
+    reg.register_client("c1", "kiro", vec![make_model("model-a", "kiro")])
+        .await;
+
+    // Set quota exceeded at a time far in the past (beyond 5-min window)
+    let past = Instant::now() - Duration::from_secs(600);
+    reg.set_quota_exceeded_at("c1", "model-a", past).await;
+
+    // Should be available because the quota exceeded entry has expired
+    assert!(reg.client_is_effectively_available("c1", "model-a").await);
+    let available = reg.available_clients_for_model("model-a").await;
+    assert!(available.contains(&"c1".to_string()));
+}

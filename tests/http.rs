@@ -281,3 +281,375 @@ async fn spa_fallback_does_not_override_api_routes() {
     ));
     assert_ne!(spa_resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ── Kiro auth-aware load balancing tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn kiro_routing_skips_quota_exceeded_auth() {
+    use rusuh::providers::model_info::ExtModelInfo;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+
+    // Create two Kiro auth files
+    let auth1 = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token1",
+        "refresh_token": "refresh1",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-1",
+        "client_secret": "secret1"
+    });
+
+    let auth2 = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token2",
+        "refresh_token": "refresh2",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-2",
+        "client_secret": "secret2"
+    });
+
+    std::fs::write(
+        dir.path().join("kiro-1.json"),
+        serde_json::to_string_pretty(&auth1).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("kiro-2.json"),
+        serde_json::to_string_pretty(&auth2).unwrap(),
+    )
+    .unwrap();
+
+    // Load accounts and build providers
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+
+    let config = Config::default();
+    let registry = Arc::new(ModelRegistry::new());
+    let runtime = rusuh::proxy::KiroRuntimeState::default();
+    let providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        runtime.clone(),
+    )
+    .await;
+
+    // Register both providers with the same model
+    let test_model = "claude-sonnet-4";
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let client_id = format!("{}_{}", provider.name(), idx);
+        let models = vec![ExtModelInfo {
+            id: test_model.to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "kiro".to_string(),
+            provider_type: "kiro".to_string(),
+            display_name: None,
+            name: Some(test_model.to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }];
+        registry.register_client(&client_id, provider.name(), models).await;
+    }
+
+    // Mark first provider as quota-exceeded
+    registry.set_quota_exceeded("kiro_0", test_model).await;
+
+    // Verify only second provider is available
+    let available = registry.available_clients_for_model(test_model).await;
+    assert_eq!(available.len(), 1);
+    assert_eq!(available[0], "kiro_1");
+
+    // Build app state
+    let mut state = ProxyState::new(config, accounts, registry, providers.len());
+    state.kiro_runtime = runtime;
+    state.providers = providers;
+    let state = Arc::new(state);
+
+    // Make a request - should use kiro_1, not kiro_0
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "test"}]
+    });
+
+    let app = build_router(state.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should attempt request (will fail due to fake tokens, but that's OK)
+    // The key is that it should NOT return 429 "no providers available"
+    // because kiro_1 is still available
+    assert_ne!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "should not return 429 when one provider is still available"
+    );
+}
+
+#[tokio::test]
+async fn kiro_routing_skips_suspended_auth() {
+    use rusuh::providers::model_info::ExtModelInfo;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+
+    // Create two Kiro auth files
+    let auth1 = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token1",
+        "refresh_token": "refresh1",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-1",
+        "client_secret": "secret1"
+    });
+
+    let auth2 = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token2",
+        "refresh_token": "refresh2",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-2",
+        "client_secret": "secret2"
+    });
+
+    std::fs::write(
+        dir.path().join("kiro-1.json"),
+        serde_json::to_string_pretty(&auth1).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("kiro-2.json"),
+        serde_json::to_string_pretty(&auth2).unwrap(),
+    )
+    .unwrap();
+
+    // Load accounts and build providers
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+
+    let config = Config::default();
+    let registry = Arc::new(ModelRegistry::new());
+    let runtime = rusuh::proxy::KiroRuntimeState::default();
+    let providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        runtime.clone(),
+    )
+    .await;
+
+    // Register both providers with the same model
+    let test_model = "claude-sonnet-4";
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let client_id = format!("{}_{}", provider.name(), idx);
+        let models = vec![ExtModelInfo {
+            id: test_model.to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "kiro".to_string(),
+            provider_type: "kiro".to_string(),
+            display_name: None,
+            name: Some(test_model.to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }];
+        registry.register_client(&client_id, provider.name(), models).await;
+    }
+
+    // Suspend first provider
+    registry
+        .suspend_client_model("kiro_0", test_model, "test suspension")
+        .await;
+
+    // Verify only second provider is available
+    let available = registry.available_clients_for_model(test_model).await;
+    assert_eq!(available.len(), 1);
+    assert_eq!(available[0], "kiro_1");
+
+    // Build app state
+    let mut state = ProxyState::new(config, accounts, registry, providers.len());
+    state.kiro_runtime = runtime;
+    state.providers = providers;
+    let state = Arc::new(state);
+
+    // Make a request - should use kiro_1, not kiro_0
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "test"}]
+    });
+
+    let app = build_router(state.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should attempt request (will fail due to fake tokens, but that's OK)
+    assert_ne!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "should not return 429 when one provider is still available"
+    );
+}
+
+#[tokio::test]
+async fn kiro_routing_returns_error_when_all_unavailable() {
+    use rusuh::providers::model_info::ExtModelInfo;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+
+    // Create one Kiro auth file
+    let auth1 = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token1",
+        "refresh_token": "refresh1",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-1",
+        "client_secret": "secret1"
+    });
+
+    std::fs::write(
+        dir.path().join("kiro-1.json"),
+        serde_json::to_string_pretty(&auth1).unwrap(),
+    )
+    .unwrap();
+
+    // Load accounts and build providers
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+
+    let config = Config::default();
+    let registry = Arc::new(ModelRegistry::new());
+    let runtime = rusuh::proxy::KiroRuntimeState::default();
+    let providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        runtime.clone(),
+    )
+    .await;
+
+    // Register provider with a model
+    let test_model = "claude-sonnet-4";
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let client_id = format!("{}_{}", provider.name(), idx);
+        let models = vec![ExtModelInfo {
+            id: test_model.to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "kiro".to_string(),
+            provider_type: "kiro".to_string(),
+            display_name: None,
+            name: Some(test_model.to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }];
+        registry.register_client(&client_id, provider.name(), models).await;
+    }
+
+    // Mark provider as quota-exceeded
+    registry.set_quota_exceeded("kiro_0", test_model).await;
+
+    // Verify no providers are available
+    let available = registry.available_clients_for_model(test_model).await;
+    assert_eq!(available.len(), 0);
+
+    // Build app state
+    let mut state = ProxyState::new(config, accounts, registry, providers.len());
+    state.kiro_runtime = runtime;
+    state.providers = providers;
+    let state = Arc::new(state);
+
+    // Make a request - should return error
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "test"}]
+    });
+
+    let app = build_router(state.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 429 when all providers are unavailable
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}

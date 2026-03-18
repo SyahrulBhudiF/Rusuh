@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use rusuh::auth::kiro_sso::{CreateTokenResponse, RegisterClientResponse};
+use rusuh::auth::kiro_login::{CreateTokenResponse, RegisterClientResponse};
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::{Config, ManagementConfig};
 use rusuh::providers::model_registry::ModelRegistry;

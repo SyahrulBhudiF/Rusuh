@@ -3,17 +3,22 @@
 
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::auth::manager::AccountManager;
 use crate::config::Config;
 use crate::providers::antigravity::AntigravityProvider;
+use crate::providers::kiro::KiroProvider;
+use crate::providers::model_registry::ModelRegistry;
 use crate::providers::Provider;
+use crate::proxy::KiroRuntimeState;
 
 /// Build all providers from loaded accounts and config.
 pub async fn build_providers(
     _config: &Config,
     accounts: &AccountManager,
+    model_registry: Arc<ModelRegistry>,
+    kiro_runtime: KiroRuntimeState,
 ) -> Vec<Arc<dyn Provider>> {
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
 
@@ -24,6 +29,31 @@ pub async fn build_providers(
             record.label, record.id
         );
         providers.push(Arc::new(AntigravityProvider::new(record)));
+    }
+
+    // ── Kiro (AWS CodeWhisperer) ───────────────────────────────────────────
+    for record in accounts.accounts_for("kiro").await {
+        let client_id = format!("kiro_{}", providers.len());
+        match KiroProvider::new_with_runtime(
+            record.clone(),
+            client_id,
+            model_registry.clone(),
+            kiro_runtime.clone(),
+        ) {
+            Ok(provider) => {
+                info!(
+                    "registering kiro provider: {} ({})",
+                    record.label, record.id
+                );
+                providers.push(Arc::new(provider));
+            }
+            Err(e) => {
+                warn!(
+                    "skipping kiro account {} ({}): {e}",
+                    record.label, record.id
+                );
+            }
+        }
     }
 
     // ── Gemini CLI (OAuth) — future ──────────────────────────────────────

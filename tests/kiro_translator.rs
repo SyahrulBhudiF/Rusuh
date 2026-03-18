@@ -49,15 +49,15 @@ fn translate_simple_request() {
 #[test]
 fn event_type_parsing() {
     assert_eq!(
-        KiroEventType::from_str("message_start"),
+        KiroEventType::parse("message_start"),
         KiroEventType::MessageStart
     );
     assert_eq!(
-        KiroEventType::from_str("messageStart"),
+        KiroEventType::parse("messageStart"),
         KiroEventType::MessageStart
     );
     assert_eq!(
-        KiroEventType::from_str("assistantResponseEvent"),
+        KiroEventType::parse("assistantResponseEvent"),
         KiroEventType::AssistantResponseEvent
     );
 }

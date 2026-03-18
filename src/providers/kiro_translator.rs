@@ -99,23 +99,19 @@ fn translate_message_to_kiro(msg: &ChatMessage) -> Value {
             let kiro_parts: Vec<Value> = parts
                 .iter()
                 .filter_map(|part| {
-                    if let Some(text) = &part.text {
-                        Some(json!({
-                            "type": "text",
-                            "text": text
-                        }))
-                    } else if let Some(img) = &part.image_url {
+                    part.text.as_ref().map(|text| json!({
+                        "type": "text",
+                        "text": text
+                    })).or_else(|| part.image_url.as_ref().map(|img| {
                         // KIRO supports image content
-                        Some(json!({
+                        json!({
                             "type": "image",
                             "source": {
                                 "type": "url",
                                 "url": img.url
                             }
-                        }))
-                    } else {
-                        None
-                    }
+                        })
+                    }))
                 })
                 .collect();
 
@@ -199,7 +195,7 @@ pub enum KiroEventType {
 }
 
 impl KiroEventType {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "message_start" | "messageStart" => Self::MessageStart,
             "content_block_start" | "contentBlockStart" => Self::ContentBlockStart,
@@ -237,7 +233,7 @@ pub fn translate_kiro_event_to_openai_sse(
     model: &str,
     created: i64,
 ) -> Option<Bytes> {
-    let event = KiroEventType::from_str(event_type);
+    let event = KiroEventType::parse(event_type);
 
     // Filter out UI-specific events
     if event.should_filter() {
