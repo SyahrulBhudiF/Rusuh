@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use rusuh::auth::kiro_sso::{CreateTokenResponse, RegisterClientResponse};
+use rusuh::auth::kiro_login::{CreateTokenResponse, RegisterClientResponse};
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::{Config, ManagementConfig};
 use rusuh::providers::model_registry::ModelRegistry;
@@ -366,12 +366,12 @@ async fn builder_id_callback_marks_error_when_code_missing() {
 
 #[test]
 fn builder_id_redirect_uri_matches_mounted_callback_route() {
-    let redirect_uri = rusuh::proxy::kiro_oauth::builder_id_redirect_uri(8317);
+    let redirect_uri = rusuh::proxy::oauth::builder_id_redirect_uri(8317);
     assert_eq!(
         redirect_uri,
         format!(
             "http://localhost:8317{}",
-            rusuh::proxy::kiro_oauth::BUILDER_ID_CALLBACK_PATH
+            rusuh::proxy::oauth::BUILDER_ID_CALLBACK_PATH
         )
     );
 }
@@ -385,7 +385,7 @@ fn builder_id_session_context_contains_persistence_critical_fields() {
         client_secret_expires_at: 2,
     };
 
-    let context = rusuh::proxy::kiro_oauth::build_builder_id_session_context(
+    let context = rusuh::proxy::oauth::build_builder_id_session_context(
         &registration,
         "http://localhost:8317/kiro/builder-id/callback",
         Some("  Main Kiro  ".into()),
@@ -421,7 +421,7 @@ fn builder_id_auth_record_uses_callback_context_and_token_response() {
         client_id_issued_at: 1,
         client_secret_expires_at: 2,
     };
-    let context = rusuh::proxy::kiro_oauth::build_builder_id_session_context(
+    let context = rusuh::proxy::oauth::build_builder_id_session_context(
         &registration,
         "http://localhost:8317/kiro/builder-id/callback",
         Some("Main Kiro".into()),
@@ -433,7 +433,7 @@ fn builder_id_auth_record_uses_callback_context_and_token_response() {
         refresh_token: Some("refresh-token".into()),
     };
 
-    let record = rusuh::proxy::kiro_oauth::build_builder_id_auth_record(
+    let record = rusuh::proxy::oauth::build_builder_id_auth_record(
         &context,
         token_resp,
         Some("user@example.com".into()),
@@ -477,7 +477,7 @@ fn builder_id_auth_record_rejects_empty_access_token() {
         client_id_issued_at: 1,
         client_secret_expires_at: 2,
     };
-    let context = rusuh::proxy::kiro_oauth::build_builder_id_session_context(
+    let context = rusuh::proxy::oauth::build_builder_id_session_context(
         &registration,
         "http://localhost:8317/kiro/builder-id/callback",
         None,
@@ -489,7 +489,7 @@ fn builder_id_auth_record_rejects_empty_access_token() {
         refresh_token: Some("refresh-token".into()),
     };
 
-    let error = rusuh::proxy::kiro_oauth::build_builder_id_auth_record(&context, token_resp, None)
+    let error = rusuh::proxy::oauth::build_builder_id_auth_record(&context, token_resp, None)
         .unwrap_err();
     assert!(error.to_string().contains("empty access token"));
 }

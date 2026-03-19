@@ -357,6 +357,73 @@ impl ModelRegistry {
             .unwrap_or(false)
     }
 
+    /// Mark model as quota exceeded for client at a specific instant (for testability).
+    pub async fn set_quota_exceeded_at(&self, client_id: &str, model_id: &str, at: Instant) {
+        if let Some(reg) = self.models.write().await.get_mut(model_id) {
+            reg.quota_exceeded_clients
+                .insert(client_id.to_string(), at);
+        }
+    }
+
+    /// Get list of client IDs that support a model and are effectively available
+    /// (not quota-exceeded, not suspended).
+    pub async fn available_clients_for_model(&self, model_id: &str) -> Vec<String> {
+        let client_models = self.client_models.read().await;
+        let reg = self.models.read().await;
+
+        let Some(registration) = reg.get(model_id) else {
+            return vec![];
+        };
+
+        let mut result = Vec::new();
+        for (client_id, models) in client_models.iter() {
+            if !models.iter().any(|m| m.eq_ignore_ascii_case(model_id)) {
+                continue;
+            }
+            // Check quota-exceeded
+            if let Some(t) = registration.quota_exceeded_clients.get(client_id) {
+                if t.elapsed() < QUOTA_EXPIRED_DURATION {
+                    continue;
+                }
+            }
+            // Check suspended
+            if registration.suspended_clients.contains_key(client_id) {
+                continue;
+            }
+            result.push(client_id.clone());
+        }
+        result
+    }
+
+    /// Check if a specific client is effectively available for a model
+    /// (registered, not quota-exceeded, not suspended).
+    pub async fn client_is_effectively_available(&self, client_id: &str, model_id: &str) -> bool {
+        let client_models = self.client_models.read().await;
+        let has_model = client_models
+            .get(client_id)
+            .map(|ids| ids.iter().any(|id| id.eq_ignore_ascii_case(model_id)))
+            .unwrap_or(false);
+
+        if !has_model {
+            return false;
+        }
+
+        let reg = self.models.read().await;
+        let Some(registration) = reg.get(model_id) else {
+            return false;
+        };
+
+        // Check quota-exceeded
+        if let Some(t) = registration.quota_exceeded_clients.get(client_id) {
+            if t.elapsed() < QUOTA_EXPIRED_DURATION {
+                return false;
+            }
+        }
+
+        // Check suspended
+        !registration.suspended_clients.contains_key(client_id)
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────
 
     fn add_registration(

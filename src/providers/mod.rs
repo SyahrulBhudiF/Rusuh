@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod kiro;
+pub mod kiro_outcome;
 pub mod kiro_stream;
 pub mod kiro_translator;
 pub mod model_info;

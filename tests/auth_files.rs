@@ -333,6 +333,23 @@ async fn patch_fields_updates_label_and_priority() {
 
 #[tokio::test]
 async fn patch_fields_no_fields_returns_400() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("nf.json"), r#"{"type": "test"}"#).unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "PATCH",
+            "/v0/management/auth-files/fields",
+            json!({"name": "nf.json"}),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("label, prefix, proxy_url, or priority"));
+}
 
 #[tokio::test]
 async fn patch_fields_still_supports_prefix() {
@@ -357,23 +374,6 @@ async fn patch_fields_still_supports_prefix() {
     )
     .unwrap();
     assert_eq!(data["prefix"], "us-");
-}
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("nf.json"), r#"{"type": "test"}"#).unwrap();
-    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
-    let resp = app
-        .oneshot(mgmt_request_json(
-            "PATCH",
-            "/v0/management/auth-files/fields",
-            json!({"name": "nf.json"}),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert!(body["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("label, prefix, proxy_url, or priority"));
 }
 
 // ── Auth required ────────────────────────────────────────────────────────────

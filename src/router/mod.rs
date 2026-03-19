@@ -92,7 +92,7 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
         )
         .route(
             "/kiro/builder-id/callback",
-            get(crate::proxy::kiro_oauth::builder_id_callback),
+            get(crate::proxy::oauth::builder_id_callback),
         )
         // ── Frontend SPA fallback (after API routes) ──────────────────────────
         .fallback_service(

@@ -46,10 +46,10 @@ async fn main() -> anyhow::Result<()> {
             let store = auth::store::FileTokenStore::new(&auth_dir);
 
             match provider.as_str() {
-                "google" | "github" => auth::kiro_social::login(&store, &provider).await?,
+                "google" | "github" => auth::kiro_login::login(&store, &provider).await?,
                 "sso" => {
                     if let Some(url) = start_url {
-                        auth::kiro_sso::login_sso(&store, &url).await?
+                        auth::kiro_login::login_sso(&store, &url).await?
                     } else {
                         eprintln!("Error: --start-url is required for SSO login");
                         std::process::exit(1);
@@ -146,10 +146,22 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
         tracing::warn!("failed to load accounts: {e}");
     }
 
-    // Build providers from loaded accounts + config
-    let providers = providers::registry::build_providers(&cfg, &account_mgr).await;
-    // Build model registry and register all provider models
+    // Build model registry and Kiro runtime before providers so providers can share them.
     let model_registry = Arc::new(providers::model_registry::ModelRegistry::new());
+    let mut kiro_runtime = proxy::KiroRuntimeState::default();
+    kiro_runtime.quota_checker = Arc::new(auth::kiro_runtime::KiroUsageChecker::new(
+        "https://codewhisperer.us-east-1.amazonaws.com",
+    ));
+
+    // Build providers from loaded accounts + config
+    let providers = providers::registry::build_providers(
+        &cfg,
+        &account_mgr,
+        model_registry.clone(),
+        kiro_runtime.clone(),
+    )
+    .await;
+    // Register all provider models
     for (idx, provider) in providers.iter().enumerate() {
         let client_id = format!("{}_{}", provider.name(), idx);
         match provider.list_models().await {
@@ -188,6 +200,7 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
 
     let provider_count = providers.len();
     let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, provider_count);
+    state.kiro_runtime = kiro_runtime;
     state.providers = providers;
     let state = Arc::new(state);
 

@@ -1,6 +1,6 @@
 use rusuh::models::{ChatCompletionRequest, ChatMessage, MessageContent};
 use rusuh::providers::kiro_translator::{
-    translate_kiro_event_to_openai_sse, translate_request_to_kiro, KiroEventType,
+    build_native_kiro_request, translate_kiro_event_to_openai_sse, KiroEventType,
 };
 
 #[test]
@@ -33,31 +33,29 @@ fn translate_simple_request() {
         extra: std::collections::HashMap::new(),
     };
 
-    let kiro_req = translate_request_to_kiro(&req);
+    let kiro_req = build_native_kiro_request(&req, None);
 
-    assert_eq!(kiro_req["system"], "You are helpful");
-    assert_eq!(kiro_req["max_tokens"], 1024);
-    assert_eq!(kiro_req["messages"].as_array().map(Vec::len), Some(1));
-    assert_eq!(kiro_req["messages"][0]["role"], "user");
-    assert_eq!(kiro_req["messages"][0]["content"], "Hello");
-    let temp = kiro_req["temperature"]
-        .as_f64()
-        .expect("temperature should be f64");
-    assert!((temp - 0.7).abs() < 0.01);
+    // Verify native Kiro structure
+    assert_eq!(kiro_req.conversation_state.current_message.user_input_message.model_id, "claude-3-5-sonnet");
+    assert!(kiro_req.conversation_state.current_message.user_input_message.content.contains("You are helpful"));
+    assert!(kiro_req.conversation_state.current_message.user_input_message.content.contains("Hello"));
+    assert_eq!(kiro_req.conversation_state.agent_task_type, Some("vibe".to_string()));
+    assert_eq!(kiro_req.conversation_state.chat_trigger_type, Some("MANUAL".to_string()));
+    assert_eq!(kiro_req.conversation_state.current_message.user_input_message.origin, Some("AI_EDITOR".to_string()));
 }
 
 #[test]
 fn event_type_parsing() {
     assert_eq!(
-        KiroEventType::from_str("message_start"),
+        KiroEventType::parse("message_start"),
         KiroEventType::MessageStart
     );
     assert_eq!(
-        KiroEventType::from_str("messageStart"),
+        KiroEventType::parse("messageStart"),
         KiroEventType::MessageStart
     );
     assert_eq!(
-        KiroEventType::from_str("assistantResponseEvent"),
+        KiroEventType::parse("assistantResponseEvent"),
         KiroEventType::AssistantResponseEvent
     );
 }

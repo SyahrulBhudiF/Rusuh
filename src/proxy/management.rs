@@ -1,6 +1,6 @@
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, DEFAULT_REGION};
 use crate::auth::kiro_record::KiroRecordInput;
-use crate::auth::kiro_social::SocialAuthClient;
+use crate::auth::kiro_login::SocialAuthClient;
 use crate::auth::store::AuthStatus;
 use crate::proxy::ProxyState;
 use axum::{
@@ -49,7 +49,7 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/oauth/status", get(crate::proxy::oauth::get_auth_status))
         .route(
             "/kiro/builder-id/start",
-            axum::routing::post(crate::proxy::kiro_oauth::start_builder_id_login),
+            axum::routing::post(crate::proxy::oauth::start_builder_id_login),
         )
         .route(
             "/kiro/import",
@@ -58,6 +58,10 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route(
             "/kiro/social/import",
             axum::routing::post(import_kiro_social_refresh_token),
+        )
+        .route(
+            "/kiro/check-quota",
+            axum::routing::post(check_kiro_quota),
         )
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
@@ -847,6 +851,241 @@ async fn import_kiro_auth_file(
             "provider": provider,
         })),
     )
+}
+
+// ── Kiro quota check ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CheckKiroQuotaBody {
+    name: Option<String>,
+}
+
+/// `POST /v0/management/kiro/check-quota` — check quota for a Kiro auth file.
+async fn check_kiro_quota(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckKiroQuotaBody>,
+) -> impl IntoResponse {
+
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Find the auth record
+    let accounts = state.accounts.accounts_for("kiro").await;
+    let record = accounts.iter().find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+
+    let Some(mut record) = record.cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Kiro auth file not found"})),
+        );
+    };
+
+    // Try quota check with current token
+    let status = check_quota_with_refresh(&state, &mut record).await;
+
+    let response = match status {
+        crate::auth::kiro_runtime::QuotaStatus::Unknown => json!({
+            "status": "unknown"
+        }),
+        crate::auth::kiro_runtime::QuotaStatus::Available { remaining, next_reset, breakdown } => {
+            let mut resp = json!({
+                "status": "available",
+                "remaining": remaining,
+                "next_reset": next_reset,
+            });
+            if let Some(bd) = breakdown {
+                resp["breakdown"] = json!({
+                    "base_remaining": bd.base_remaining,
+                    "free_trial_remaining": bd.free_trial_remaining,
+                });
+                if let Some(title) = bd.subscription_title {
+                    resp["subscription_title"] = json!(title);
+                }
+            }
+            resp
+        },
+        crate::auth::kiro_runtime::QuotaStatus::Exhausted { detail } => json!({
+            "status": "exhausted",
+            "detail": detail,
+        }),
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+/// Check quota with automatic token refresh on 403 errors.
+async fn check_quota_with_refresh(
+    state: &Arc<ProxyState>,
+    record: &mut crate::auth::store::AuthRecord,
+) -> crate::auth::kiro_runtime::QuotaStatus {
+    use crate::auth::kiro_runtime::UsageCheckRequest;
+
+    let access_token = record
+        .metadata
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let profile_arn = record
+        .metadata
+        .get("profile_arn")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if access_token.is_empty() {
+        return crate::auth::kiro_runtime::QuotaStatus::Unknown;
+    }
+
+    let client_id = record.metadata.get("client_id").and_then(|v| v.as_str()).map(String::from);
+    let refresh_token = record.metadata.get("refresh_token").and_then(|v| v.as_str()).map(String::from);
+
+    let request = UsageCheckRequest {
+        access_token: access_token.clone(),
+        profile_arn: profile_arn.clone(),
+        client_id: client_id.clone(),
+        refresh_token: refresh_token.clone(),
+    };
+
+    // First attempt
+    let status = state.kiro_runtime.quota_checker.check_quota(&request).await;
+
+    // If Unknown (likely 403), attempt token refresh and retry once
+    if matches!(status, crate::auth::kiro_runtime::QuotaStatus::Unknown) {
+        if let Some(refreshed) = attempt_token_refresh(record).await {
+            // Update record with refreshed token
+            record.metadata.insert("access_token".to_string(), serde_json::json!(refreshed.access_token));
+            if !refreshed.refresh_token.is_empty() {
+                record.metadata.insert("refresh_token".to_string(), serde_json::json!(refreshed.refresh_token));
+            }
+            record.metadata.insert("expires_at".to_string(), serde_json::json!(refreshed.expires_at));
+
+            // Save to disk
+            if let Err(e) = state.accounts.store().save(record).await {
+                tracing::warn!("failed to save refreshed token: {}", e);
+            } else {
+                tracing::info!("refreshed Kiro token for {}", record.id);
+            }
+
+            // Retry quota check with new token
+            let retry_request = UsageCheckRequest {
+                access_token: refreshed.access_token,
+                profile_arn,
+                client_id,
+                refresh_token: Some(refreshed.refresh_token),
+            };
+            return state.kiro_runtime.quota_checker.check_quota(&retry_request).await;
+        }
+    }
+
+    status
+}
+
+/// Attempt to refresh a Kiro token based on its auth method.
+async fn attempt_token_refresh(
+    record: &crate::auth::store::AuthRecord,
+) -> Option<RefreshedToken> {
+    use crate::auth::kiro_login::{SocialAuthClient, SSOOIDCClient};
+
+    let auth_method = record
+        .metadata
+        .get("auth_method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let refresh_token = record
+        .metadata
+        .get("refresh_token")
+        .and_then(|v| v.as_str())?;
+
+    let client_id = record
+        .metadata
+        .get("client_id")
+        .and_then(|v| v.as_str());
+
+    let client_secret = record
+        .metadata
+        .get("client_secret")
+        .and_then(|v| v.as_str());
+
+    let region = record
+        .metadata
+        .get("region")
+        .and_then(|v| v.as_str())
+        .unwrap_or("us-east-1");
+
+    match auth_method.to_lowercase().as_str() {
+        "builder-id" => {
+            // Builder ID uses SSO OIDC with default region and Builder ID start URL
+            if let (Some(cid), Some(secret)) = (client_id, client_secret) {
+                let client = SSOOIDCClient::new();
+                let start_url = "https://view.awsapps.com/start";
+                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                    Ok(response) => {
+                        return Some(RefreshedToken {
+                            access_token: response.access_token,
+                            refresh_token: response.refresh_token,
+                            expires_at: response.expires_at,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("Builder ID token refresh failed: {}", e);
+                    }
+                }
+            }
+        }
+        "idc" => {
+            // IDC uses SSO OIDC with region and start_url
+            if let (Some(cid), Some(secret)) = (client_id, client_secret) {
+                let start_url = record
+                    .metadata
+                    .get("start_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let client = SSOOIDCClient::new();
+                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                    Ok(response) => {
+                        return Some(RefreshedToken {
+                            access_token: response.access_token,
+                            refresh_token: response.refresh_token,
+                            expires_at: response.expires_at,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("IDC token refresh failed: {}", e);
+                    }
+                }
+            }
+        }
+        _ => {
+            // Social auth (Google/GitHub) or legacy
+            let client = SocialAuthClient::new();
+            match client.refresh_social_token(refresh_token).await {
+                Ok(token_data) => {
+                    return Some(RefreshedToken {
+                        access_token: token_data.access_token,
+                        refresh_token: token_data.refresh_token,
+                        expires_at: token_data.expires_at,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Social token refresh failed: {}", e);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+struct RefreshedToken {
+    access_token: String,
+    refresh_token: String,
+    expires_at: String,
 }
 
 /// `DELETE /v0/management/auth-files` — delete auth file(s).

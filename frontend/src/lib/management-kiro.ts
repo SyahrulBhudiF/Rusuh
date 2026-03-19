@@ -95,3 +95,23 @@ export function useImportKiroSocialMutation() {
     },
   })
 }
+
+export function useCheckKiroQuotaMutation() {
+  const { secret } = useManagementAuth()
+
+  return useMutation({
+    mutationFn: ({ name }: { name: string }) =>
+      managementRequest<{
+        status: 'unknown' | 'available' | 'exhausted'
+        remaining?: number
+        detail?: string
+        message?: string
+      }>('/v0/management/kiro/check-quota', secret, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name }),
+      }),
+  })
+}
