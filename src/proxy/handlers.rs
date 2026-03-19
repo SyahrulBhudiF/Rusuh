@@ -158,7 +158,38 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
             }
         }
     }
-    model.to_string()
+
+    // Built-in Kiro aliases (generic model names → Kiro-specific)
+    let normalized = model.to_ascii_lowercase();
+    let resolved = match normalized.as_str() {
+        // Claude base models
+        "claude-opus-4.6" => Some("kiro-claude-opus-4-6"),
+        "claude-sonnet-4.6" => Some("kiro-claude-sonnet-4-6"),
+        "claude-opus-4.5" => Some("kiro-claude-opus-4-5"),
+        "claude-sonnet-4.5" => Some("kiro-claude-sonnet-4-5"),
+        "claude-sonnet-4" => Some("kiro-claude-sonnet-4"),
+        "claude-haiku-4.5" => Some("kiro-claude-haiku-4-5"),
+
+        // Claude thinking/agentic models
+        "claude-opus-4.6-thinking" => Some("kiro-claude-opus-4-6-agentic"),
+        "claude-sonnet-4.6-thinking" => Some("kiro-claude-sonnet-4-6-agentic"),
+        "claude-opus-4.5-thinking" => Some("kiro-claude-opus-4-5-agentic"),
+        "claude-sonnet-4.5-thinking" => Some("kiro-claude-sonnet-4-5-agentic"),
+        "claude-sonnet-4-thinking" => Some("kiro-claude-sonnet-4-agentic"),
+        "claude-haiku-4.5-thinking" => Some("kiro-claude-haiku-4-5-agentic"),
+
+        // Third-party models
+        "deepseek-3.2" => Some("kiro-deepseek-3-2"),
+        "deepseek-3.2-thinking" => Some("kiro-deepseek-3-2-agentic"),
+        "minimax-m2.1" => Some("kiro-minimax-m2-1"),
+        "minimax-m2.1-thinking" => Some("kiro-minimax-m2-1-agentic"),
+        "qwen3-coder-next" => Some("kiro-qwen3-coder-next"),
+        "qwen3-coder-next-thinking" => Some("kiro-qwen3-coder-next-agentic"),
+
+        _ => None,
+    };
+
+    resolved.unwrap_or(model).to_string()
 }
 
 /// Core routing: model name → provider → execute.
@@ -169,6 +200,7 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
 /// 3. If provider_hint is set, filter to that provider
 /// 4. Try providers in order (round-robin comes in PRD #9)
 /// 5. On stream requests, return SSE body; otherwise JSON
+/// 6. If aliased model fails (all providers unavailable), retry with original model
 async fn route_chat(
     state: Arc<ProxyState>,
     mut req: ChatCompletionRequest,
@@ -176,15 +208,48 @@ async fn route_chat(
 ) -> Result<Response, AppError> {
     let is_stream = req.stream.unwrap_or(false);
 
-    // Step 1: Apply OAuth model alias
-    {
+    // Step 1: Apply OAuth model alias and track original for fallback
+    let original_model = req.model.clone();
+    let aliased_model = {
         let config = state.config.read().await;
         let resolved = resolve_oauth_model_alias(&config, &req.model);
         if resolved != req.model {
             tracing::debug!("model alias: {} → {}", req.model, resolved);
-            req.model = resolved;
+            Some(resolved)
+        } else {
+            None
+        }
+    };
+
+    // Try aliased model first if alias was applied
+    if let Some(ref aliased) = aliased_model {
+        req.model = aliased.clone();
+        match try_route_with_model(state.clone(), &req, &provider_hint, is_stream).await {
+            Ok(response) => return Ok(response),
+            Err(e) if e.is_quota_or_unavailable() => {
+                tracing::info!(
+                    "aliased model '{}' unavailable, falling back to original model '{}'",
+                    aliased,
+                    original_model
+                );
+                // Fall through to try original model
+            }
+            Err(e) => return Err(e),
         }
     }
+
+    // Try original model (either no alias was applied, or aliased model failed)
+    req.model = original_model;
+    try_route_with_model(state, &req, &provider_hint, is_stream).await
+}
+
+/// Internal helper: attempt routing with a specific model name.
+async fn try_route_with_model(
+    state: Arc<ProxyState>,
+    req: &ChatCompletionRequest,
+    provider_hint: &Option<String>,
+    is_stream: bool,
+) -> Result<Response, AppError> {
 
     // Step 2: Get providers for this model from registry
     let model_providers = state.model_registry.get_model_providers(&req.model).await;

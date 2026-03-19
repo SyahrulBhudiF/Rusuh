@@ -49,7 +49,7 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/oauth/status", get(crate::proxy::oauth::get_auth_status))
         .route(
             "/kiro/builder-id/start",
-            axum::routing::post(crate::proxy::kiro_oauth::start_builder_id_login),
+            axum::routing::post(crate::proxy::oauth::start_builder_id_login),
         )
         .route(
             "/kiro/import",
@@ -968,9 +968,6 @@ async fn check_quota_with_refresh(
                 tracing::warn!("failed to save refreshed token: {}", e);
             } else {
                 tracing::info!("refreshed Kiro token for {}", record.id);
-
-                // Reload accounts to pick up the new token
-                let _ = state.accounts.reload().await;
             }
 
             // Retry quota check with new token

@@ -304,9 +304,17 @@ impl KiroRateLimiter {
     }
 
     /// Checks common suspension-like keywords and applies a long cooldown when matched.
-    pub fn check_and_mark_suspended(&mut self, token_key: &str, error_msg: &str, now: Instant) -> bool {
+    pub fn check_and_mark_suspended(
+        &mut self,
+        token_key: &str,
+        error_msg: &str,
+        now: Instant,
+    ) -> bool {
         let lower = error_msg.to_lowercase();
-        if !SUSPEND_KEYWORDS.iter().any(|keyword| lower.contains(keyword)) {
+        if !SUSPEND_KEYWORDS
+            .iter()
+            .any(|keyword| lower.contains(keyword))
+        {
             return false;
         }
 
@@ -322,7 +330,9 @@ fn calculate_backoff(fail_count: usize) -> Duration {
         return Duration::ZERO;
     }
 
-    let multiplier = 1u64.checked_shl((fail_count - 1) as u32).unwrap_or(u64::MAX);
+    let multiplier = 1u64
+        .checked_shl((fail_count - 1) as u32)
+        .unwrap_or(u64::MAX);
     let secs = DEFAULT_BACKOFF_BASE
         .as_secs()
         .saturating_mul(multiplier)
@@ -389,6 +399,7 @@ impl KiroUsageChecker {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                // .connect_timeout(std::time::Duration::from_secs(5))
                 .build()
                 .unwrap_or_default(),
         }
@@ -438,6 +449,12 @@ impl KiroUsageChecker {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+
+            // Parse suspension errors and return as Exhausted status
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains("TEMPORARILY_SUSPENDED") {
+                return Ok(QuotaStatus::Exhausted { detail: body });
+            }
+
             return Err(format!("HTTP error {}: {}", status, body).into());
         }
 
@@ -464,15 +481,15 @@ fn compute_quota_status(usage: &UsageQuotaResponse) -> QuotaStatus {
     let mut free_trial_remaining: f64 = 0.0;
 
     for breakdown in &usage.usage_breakdown_list {
-        let main_remaining = breakdown.usage_limit_with_precision
-            - breakdown.current_usage_with_precision;
+        let main_remaining =
+            breakdown.usage_limit_with_precision - breakdown.current_usage_with_precision;
         if main_remaining > 0.0 {
             base_remaining += main_remaining;
         }
 
         if let Some(free_trial) = &breakdown.free_trial_info {
-            let free_remaining = free_trial.usage_limit_with_precision
-                - free_trial.current_usage_with_precision;
+            let free_remaining =
+                free_trial.usage_limit_with_precision - free_trial.current_usage_with_precision;
             if free_remaining > 0.0 {
                 free_trial_remaining += free_remaining;
             }
@@ -522,9 +539,7 @@ fn get_account_key(client_id: Option<&str>, refresh_token: Option<&str>) -> Stri
     // Return first 16 hex chars (8 bytes)
     format!(
         "{:x}",
-        &hash[..8]
-            .iter()
-            .fold(0u64, |acc, &b| (acc << 8) | b as u64)
+        &hash[..8].iter().fold(0u64, |acc, &b| (acc << 8) | b as u64)
     )
 }
 
@@ -589,7 +604,10 @@ impl KiroRefreshManager {
 
         tokio::spawn(async move {
             let mut ticker = interval(interval_duration);
-            info!("kiro refresh manager: started with interval {:?}", interval_duration);
+            info!(
+                "kiro refresh manager: started with interval {:?}",
+                interval_duration
+            );
 
             loop {
                 tokio::select! {
@@ -614,7 +632,10 @@ impl KiroRefreshManager {
     }
 
     /// Refreshes a batch of tokens.
-    async fn refresh_batch(account_manager: &Arc<AccountManager>, callback: &Option<RefreshCallback>) {
+    async fn refresh_batch(
+        account_manager: &Arc<AccountManager>,
+        callback: &Option<RefreshCallback>,
+    ) {
         // Reload accounts to get latest state
         if let Err(e) = account_manager.reload().await {
             warn!("kiro refresh manager: failed to reload accounts: {}", e);
@@ -627,7 +648,10 @@ impl KiroRefreshManager {
         for (_provider, records) in accounts_by_provider {
             for record in records {
                 // Only refresh Kiro records
-                if record.metadata.get("type").and_then(|v: &serde_json::Value| v.as_str())
+                if record
+                    .metadata
+                    .get("type")
+                    .and_then(|v: &serde_json::Value| v.as_str())
                     != Some("kiro")
                 {
                     continue;
@@ -644,7 +668,10 @@ impl KiroRefreshManager {
                         let time_until_expiry = expiry.signed_duration_since(now);
 
                         if time_until_expiry > chrono::Duration::minutes(20) {
-                            debug!("kiro refresh manager: {} not due for refresh yet", record.id);
+                            debug!(
+                                "kiro refresh manager: {} not due for refresh yet",
+                                record.id
+                            );
                             continue;
                         }
                     } else {
@@ -798,7 +825,10 @@ mod tests {
     fn test_get_account_key_different_inputs_different_keys() {
         let key1 = get_account_key(Some("client-123"), None);
         let key2 = get_account_key(Some("client-456"), None);
-        assert_ne!(key1, key2, "Different client_ids should produce different keys");
+        assert_ne!(
+            key1, key2,
+            "Different client_ids should produce different keys"
+        );
     }
 
     #[tokio::test]
@@ -832,7 +862,11 @@ mod tests {
         });
 
         let auth_path = dir.path().join("kiro-test.json");
-        std::fs::write(&auth_path, serde_json::to_string_pretty(&auth_json).unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            serde_json::to_string_pretty(&auth_json).unwrap(),
+        )
+        .unwrap();
 
         // Reload accounts
         account_manager.reload().await.unwrap();

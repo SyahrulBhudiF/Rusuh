@@ -91,6 +91,12 @@ impl AppError {
             _ => false,
         }
     }
+
+    /// Whether this error indicates quota exhaustion or provider unavailability,
+    /// which should trigger cross-provider fallback.
+    pub fn is_quota_or_unavailable(&self) -> bool {
+        matches!(self, AppError::QuotaExceeded(_) | AppError::NoAccounts(_))
+    }
 }
 
 pub type AppResult<T> = Result<T, AppError>;

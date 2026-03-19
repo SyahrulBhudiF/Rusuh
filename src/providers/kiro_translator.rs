@@ -1,152 +1,225 @@
-//! KIRO request/response translator — OpenAI ↔ KIRO (Claude format) conversion.
+//! KIRO request/response translator — OpenAI ↔ Native KIRO conversion.
 //!
-//! KIRO uses Claude-compatible request/response format internally.
-//! This module translates between OpenAI and KIRO formats.
+//! KIRO uses native conversationState protocol (not Claude format).
+//! This module translates between OpenAI and native KIRO formats.
 
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::models::{ChatCompletionRequest, ChatMessage, MessageContent};
 
-// ── Request Translation ──────────────────────────────────────────────────────
+// ── Native Kiro Request Structures ──────────────────────────────────────────
 
-/// Translate OpenAI ChatCompletionRequest to KIRO (Claude) format.
-///
-/// KIRO expects:
-/// ```json
-/// {
-///   "messages": [
-///     {"role": "user", "content": "..."},
-///     {"role": "assistant", "content": "..."}
-///   ],
-///   "system": "system prompt",
-///   "max_tokens": 4096,
-///   "temperature": 0.7,
-///   "anthropic_version": "bedrock-2023-05-31"
-/// }
-/// ```
-pub fn translate_request_to_kiro(req: &ChatCompletionRequest) -> Value {
-    let mut messages = Vec::new();
-    let mut system_prompt = String::new();
-
-    // Separate system messages from conversation
-    for msg in &req.messages {
-        match msg.role.as_str() {
-            "system" => {
-                let text = extract_text_content(&msg.content);
-                if !text.is_empty() {
-                    if !system_prompt.is_empty() {
-                        system_prompt.push_str("\n\n");
-                    }
-                    system_prompt.push_str(&text);
-                }
-            }
-            "user" | "assistant" => {
-                messages.push(translate_message_to_kiro(msg));
-            }
-            _ => {
-                // Skip unknown roles
-            }
-        }
-    }
-
-    let mut request = json!({
-        "messages": messages,
-        "anthropic_version": "bedrock-2023-05-31",
-    });
-
-    // Add system prompt if present
-    if !system_prompt.is_empty() {
-        request["system"] = json!(system_prompt);
-    }
-
-    // Add generation parameters
-    if let Some(max_tokens) = req.max_tokens {
-        request["max_tokens"] = json!(max_tokens);
-    } else {
-        // KIRO requires max_tokens
-        request["max_tokens"] = json!(4096);
-    }
-
-    if let Some(temp) = req.temperature {
-        request["temperature"] = json!(temp);
-    }
-
-    if let Some(top_p) = req.top_p {
-        request["top_p"] = json!(top_p);
-    }
-
-    if let Some(stop) = &req.stop {
-        request["stop_sequences"] = json!(stop);
-    }
-
-    // Add tools if present
-    if let Some(tools) = &req.tools {
-        let kiro_tools = translate_tools_to_kiro(tools);
-        if !kiro_tools.is_empty() {
-            request["tools"] = json!(kiro_tools);
-        }
-    }
-
-    request
+/// Native Kiro API request wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KiroRequest {
+    /// Conversation state containing the message and history
+    pub conversation_state: ConversationState,
+    /// Profile ARN (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_arn: Option<String>,
 }
 
-/// Translate a single message to KIRO format
-fn translate_message_to_kiro(msg: &ChatMessage) -> Value {
-    let content = match &msg.content {
-        MessageContent::Text(text) => json!(text),
-        MessageContent::Parts(parts) => {
-            let kiro_parts: Vec<Value> = parts
-                .iter()
-                .filter_map(|part| {
-                    part.text.as_ref().map(|text| json!({
-                        "type": "text",
-                        "text": text
-                    })).or_else(|| part.image_url.as_ref().map(|img| {
-                        // KIRO supports image content
-                        json!({
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "url": img.url
-                            }
-                        })
-                    }))
-                })
-                .collect();
+/// Conversation state - core structure for Kiro requests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationState {
+    /// Conversation ID (UUID)
+    pub conversation_id: String,
+    /// Current message being sent
+    pub current_message: CurrentMessage,
+    /// Agent task type (usually "vibe")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_task_type: Option<String>,
+    /// Chat trigger type ("MANUAL" or "AUTO")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_trigger_type: Option<String>,
+    /// Message history
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryMessage>,
+}
 
-            if kiro_parts.len() == 1 {
-                // Single part - unwrap
-                kiro_parts[0]["text"].clone()
-            } else {
-                json!(kiro_parts)
-            }
-        }
+/// Current message container
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentMessage {
+    /// User input message
+    pub user_input_message: UserInputMessage,
+}
+
+/// User input message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputMessage {
+    /// Message content
+    pub content: String,
+    /// Model ID
+    pub model_id: String,
+    /// Message origin (usually "AI_EDITOR")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// User input message context (tools, tool results)
+    #[serde(default)]
+    pub user_input_message_context: UserInputMessageContext,
+}
+
+/// User input message context
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputMessageContext {
+    /// Available tools
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Value>,
+    /// Tool execution results
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<Value>,
+}
+
+/// History message (user or assistant)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HistoryMessage {
+    /// User message
+    User(HistoryUserMessage),
+    /// Assistant message
+    Assistant(HistoryAssistantMessage),
+}
+
+/// History user message wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryUserMessage {
+    /// User input message
+    pub user_input_message: HistoryUserContent,
+}
+
+/// History user message content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryUserContent {
+    /// Message content
+    pub content: String,
+    /// Model ID
+    pub model_id: String,
+    /// Message origin
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// History assistant message wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAssistantMessage {
+    /// Assistant response message
+    pub assistant_response_message: HistoryAssistantContent,
+}
+
+/// History assistant message content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAssistantContent {
+    /// Response content
+    pub content: String,
+}
+
+// ── Request Builder ─────────────────────────────────────────────────────────
+
+/// Build native Kiro request from OpenAI ChatCompletionRequest
+pub fn build_native_kiro_request(
+    req: &ChatCompletionRequest,
+    profile_arn: Option<String>,
+) -> KiroRequest {
+    let conversation_id = Uuid::new_v4().to_string();
+    let model_id = req.model.clone();
+
+    // Separate current message from history
+    let (current_content, history) = extract_messages_and_history(&req.messages, &model_id);
+
+    // Build current message
+    let user_input_message = UserInputMessage {
+        content: current_content,
+        model_id,
+        origin: Some("AI_EDITOR".to_string()),
+        user_input_message_context: UserInputMessageContext::default(),
     };
 
-    json!({
-        "role": msg.role,
-        "content": content
-    })
+    let current_message = CurrentMessage { user_input_message };
+
+    // Build conversation state
+    let conversation_state = ConversationState {
+        conversation_id,
+        current_message,
+        agent_task_type: Some("vibe".to_string()),
+        chat_trigger_type: Some("MANUAL".to_string()),
+        history,
+    };
+
+    KiroRequest {
+        conversation_state,
+        profile_arn,
+    }
 }
 
-/// Translate OpenAI tools to KIRO format
-fn translate_tools_to_kiro(tools: &[Value]) -> Vec<Value> {
-    tools
-        .iter()
-        .filter_map(|tool| {
-            if tool["type"].as_str() == Some("function") {
-                let func = &tool["function"];
-                Some(json!({
-                    "name": func["name"],
-                    "description": func.get("description").unwrap_or(&json!("")),
-                    "input_schema": func.get("parameters").unwrap_or(&json!({}))
-                }))
-            } else {
-                None
+/// Extract current message and history from OpenAI messages
+fn extract_messages_and_history(
+    messages: &[ChatMessage],
+    model_id: &str,
+) -> (String, Vec<HistoryMessage>) {
+    if messages.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    // Last user message becomes current message
+    // Everything before becomes history
+    let mut history = Vec::new();
+    let mut current_content = String::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        let is_last = idx == messages.len() - 1;
+        let content = extract_text_content(&msg.content);
+
+        match msg.role.as_str() {
+            "system" => {
+                // System messages go into current content as prefix
+                if !content.is_empty() {
+                    if !current_content.is_empty() {
+                        current_content.push_str("\n\n");
+                    }
+                    current_content.push_str(&content);
+                }
             }
-        })
-        .collect()
+            "user" => {
+                if is_last {
+                    // Last user message is current
+                    if !current_content.is_empty() {
+                        current_content.push_str("\n\n");
+                    }
+                    current_content.push_str(&content);
+                } else {
+                    // Previous user messages go to history
+                    history.push(HistoryMessage::User(HistoryUserMessage {
+                        user_input_message: HistoryUserContent {
+                            content,
+                            model_id: model_id.to_string(),
+                            origin: Some("AI_EDITOR".to_string()),
+                        },
+                    }));
+                }
+            }
+            "assistant" => {
+                // Assistant messages go to history
+                history.push(HistoryMessage::Assistant(HistoryAssistantMessage {
+                    assistant_response_message: HistoryAssistantContent { content },
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    (current_content, history)
 }
 
 /// Extract text content from MessageContent

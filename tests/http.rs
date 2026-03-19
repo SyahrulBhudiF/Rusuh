@@ -186,6 +186,96 @@ async fn models_returns_list() {
 }
 
 #[tokio::test]
+async fn kiro_builtin_alias_routes_to_supported_model() {
+    use rusuh::providers::model_info::ExtModelInfo;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+
+    let auth = serde_json::json!({
+        "type": "kiro",
+        "provider_key": "kiro",
+        "access_token": "token1",
+        "refresh_token": "refresh1",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-1",
+        "client_secret": "secret1"
+    });
+
+    std::fs::write(
+        dir.path().join("kiro-1.json"),
+        serde_json::to_string_pretty(&auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+
+    let config = Config::default();
+    let registry = Arc::new(ModelRegistry::new());
+    let runtime = rusuh::proxy::KiroRuntimeState::default();
+    let providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        runtime.clone(),
+    )
+    .await;
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let client_id = format!("{}_{}", provider.name(), idx);
+        let models = vec![ExtModelInfo {
+            id: "kiro-claude-sonnet-4-6".to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "kiro".to_string(),
+            provider_type: "kiro".to_string(),
+            display_name: None,
+            name: Some("kiro-claude-sonnet-4-6".to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }];
+        registry.register_client(&client_id, provider.name(), models).await;
+    }
+
+    let mut state = ProxyState::new(config, accounts, registry, providers.len());
+    state.kiro_runtime = runtime;
+    state.providers = providers;
+    let state = Arc::new(state);
+
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4.6",
+        "messages": [{"role": "user", "content": "test"}]
+    });
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn chat_completions_no_providers_returns_error() {
     let app = test_app(Config::default());
 
@@ -225,6 +315,99 @@ async fn gemini_models_endpoint() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn generic_claude_model_routes_to_kiro_with_fallback() {
+    use rusuh::providers::model_info::ExtModelInfo;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let auth = serde_json::json!({
+        "type": "kiro",
+        "access_token": "test-token",
+        "expires_at": "2030-01-01T00:00:00Z",
+        "auth_method": "builder-id",
+        "provider": "AWS",
+        "region": "us-east-1",
+        "client_id": "test-client-1",
+        "client_secret": "secret1"
+    });
+
+    std::fs::write(
+        dir.path().join("kiro-1.json"),
+        serde_json::to_string_pretty(&auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+
+    let config = Config::default();
+    let registry = Arc::new(ModelRegistry::new());
+    let runtime = rusuh::proxy::KiroRuntimeState::default();
+    let providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        runtime.clone(),
+    )
+    .await;
+
+    // Register Kiro provider with claude-sonnet-4-6
+    for (idx, provider) in providers.iter().enumerate() {
+        let client_id = format!("{}_{}", provider.name(), idx);
+        let models = vec![ExtModelInfo {
+            id: "kiro-claude-sonnet-4-6".to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "kiro".to_string(),
+            provider_type: "kiro".to_string(),
+            display_name: None,
+            name: Some("kiro-claude-sonnet-4-6".to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }];
+        registry.register_client(&client_id, provider.name(), models).await;
+
+        // Mark Kiro provider as quota exceeded to trigger fallback
+        registry.set_quota_exceeded(&client_id, "kiro-claude-sonnet-4-6").await;
+    }
+
+    let mut state = ProxyState::new(config, accounts, registry, providers.len());
+    state.kiro_runtime = runtime;
+    state.providers = providers;
+    let state = Arc::new(state);
+
+    // Request with generic "claude-sonnet-4.6" name
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4.6",
+        "messages": [{"role": "user", "content": "test"}]
+    });
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should get quota exceeded error since Kiro is unavailable and no other provider configured
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
