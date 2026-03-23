@@ -345,6 +345,19 @@ impl FileTokenStore {
     }
 
     fn extract_label(metadata: &HashMap<String, Value>) -> String {
+        // Prefer Zed metadata first: if user_id + credential_json exist and parse as strings,
+        // label should be user_id
+        if let (Some(Value::String(user_id)), Some(Value::String(_credential_json))) = (
+            metadata.get("user_id"),
+            metadata.get("credential_json"),
+        ) {
+            let trimmed = user_id.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+
+        // Fallback to standard label extraction
         for key in &["label", "email", "project_id"] {
             if let Some(Value::String(s)) = metadata.get(*key) {
                 let trimmed = s.trim();

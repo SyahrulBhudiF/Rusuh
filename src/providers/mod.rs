@@ -7,6 +7,10 @@ pub mod model_info;
 pub mod model_registry;
 pub mod registry;
 pub mod static_models;
+pub mod zed;
+pub mod zed_anthropic;
+pub mod zed_request;
+pub mod zed_response;
 
 use crate::{
     error::AppResult,

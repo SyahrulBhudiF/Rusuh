@@ -3,12 +3,14 @@ pub mod handlers;
 pub mod management;
 pub mod oauth;
 pub mod stream;
+pub mod zed_import;
 
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
 use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, KiroUsageChecker, QuotaChecker};
+use crate::auth::zed_session::{new_session_store, ZedLoginSessionStore};
 use crate::auth::manager::AccountManager;
 use crate::config::Config;
 use crate::providers::model_registry::ModelRegistry;
@@ -48,6 +50,8 @@ pub struct ProxyState {
     pub balancer: Balancer,
     /// In-memory OAuth session tracker for web-triggered flows
     pub oauth_sessions: OAuthSessionStore,
+    /// In-memory Zed native login session tracker
+    pub zed_login_sessions: ZedLoginSessionStore,
     /// Kiro-specific cooldown, rate-limit, and quota probing state
     pub kiro_runtime: KiroRuntimeState,
 }
@@ -67,6 +71,7 @@ impl ProxyState {
             model_registry,
             balancer: Balancer::new(strategy, provider_count),
             oauth_sessions: OAuthSessionStore::new(),
+            zed_login_sessions: new_session_store(),
             kiro_runtime: KiroRuntimeState::default(),
         }
     }

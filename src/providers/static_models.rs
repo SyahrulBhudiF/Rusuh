@@ -559,6 +559,37 @@ pub fn antigravity_model_config() -> Vec<(&'static str, AntigravityModelConfig)>
     ]
 }
 
+// ── Zed ───────────────────────────────────────────────────────────────────────
+
+pub fn zed_models() -> Vec<ExtModelInfo> {
+    vec![
+        m("claude-sonnet-4-6", 0, "zed", "zed", "Claude Sonnet 4.6"),
+        m("claude-sonnet-4-5", 0, "zed", "zed", "Claude Sonnet 4.5"),
+        m("claude-haiku-4-5", 0, "zed", "zed", "Claude Haiku 4.5"),
+        m("gpt-5.4", 0, "zed", "zed", "GPT 5.4"),
+        m("gpt-5.3-codex", 0, "zed", "zed", "GPT 5.3 Codex"),
+        m("gpt-5.2", 0, "zed", "zed", "GPT 5.2"),
+        m("gpt-5.2-codex", 0, "zed", "zed", "GPT 5.2 Codex"),
+        m("gpt-5-mini", 0, "zed", "zed", "GPT 5 Mini"),
+        m("gpt-5-nano", 0, "zed", "zed", "GPT 5 Nano"),
+        m(
+            "gemini-3.1-pro-preview",
+            0,
+            "zed",
+            "zed",
+            "Gemini 3.1 Pro Preview",
+        ),
+        m(
+            "gemini-3-pro-preview",
+            0,
+            "zed",
+            "zed",
+            "Gemini 3 Pro Preview",
+        ),
+        m("gemini-3-flash", 0, "zed", "zed", "Gemini 3 Flash"),
+    ]
+}
+
 // ── Lookup ────────────────────────────────────────────────────────────────────
 
 /// Get static model definitions for a given provider channel.
@@ -568,6 +599,7 @@ pub fn static_models_by_channel(channel: &str) -> Vec<ExtModelInfo> {
         "gemini" | "gemini-cli" | "aistudio" | "vertex" => gemini_models(),
         "codex" | "openai" => openai_models(),
         "qwen" => qwen_models(),
+        "zed" => zed_models(),
         "antigravity" => antigravity_model_config()
             .into_iter()
             .filter_map(|(id, cfg)| {

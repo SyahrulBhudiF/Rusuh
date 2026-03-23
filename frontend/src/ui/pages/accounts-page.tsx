@@ -30,6 +30,14 @@ import {
   useCheckKiroQuotaMutation,
 } from '../../lib/management-kiro'
 import { useOAuthStatusQuery, useStartOAuthMutation } from '../../lib/management-oauth'
+import {
+  type ZedModelsResponse,
+  type ZedQuotaResponse,
+  useCheckZedQuotaMutation,
+  useFetchZedModelsMutation,
+  useStartZedLoginMutation,
+  useZedLoginStatusQuery,
+} from '../../lib/management-zed'
 import { PageShell } from '../page-shell'
 import { QueryState } from '../query-state'
 import { statusTone } from '../status-tone'
@@ -50,6 +58,7 @@ type ProviderGroup = {
 function providerLabel(key: string) {
   if (key === 'kiro') return 'Kiro'
   if (key === 'antigravity') return 'Antigravity'
+  if (key === 'zed') return 'Zed'
   return key
 }
 
@@ -92,19 +101,30 @@ export function AccountsPage() {
   const uploadAuthFile = useUploadAuthFileMutation()
   const startOAuth = useStartOAuthMutation()
   const startKiroBuilderId = useStartKiroBuilderIdMutation()
+  const startZedLogin = useStartZedLoginMutation()
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
   const checkKiroQuota = useCheckKiroQuotaMutation()
+  const checkZedQuota = useCheckZedQuotaMutation()
+  const fetchZedModels = useFetchZedModelsMutation()
 
   const [providerFilter, setProviderFilter] = useState(ALL_FILTER)
   const [statusFilter, setStatusFilter] = useState(ALL_FILTER)
   const [editName, setEditName] = useState<string | null>(null)
   const [editLabel, setEditLabel] = useState('')
-  const [quotaResults, setQuotaResults] = useState<Record<string, { status: string; remaining?: number; detail?: string; message?: string }>>({})
+  const [quotaResults, setQuotaResults] = useState<
+    Record<string, { status: string; remaining?: number; detail?: string; message?: string }>
+  >({})
+  const [zedQuotaResults, setZedQuotaResults] = useState<Record<string, ZedQuotaResponse>>({})
+  const [zedModelsResults, setZedModelsResults] = useState<Record<string, ZedModelsResponse>>({})
 
   const [antigravityLabel, setAntigravityLabel] = useState('')
   const [oauthState, setOauthState] = useState<string | null>(null)
-  const [onboardingProvider, setOnboardingProvider] = useState<'kiro' | 'antigravity'>('kiro')
+  const [zedLabel, setZedLabel] = useState('')
+  const [zedSessionId, setZedSessionId] = useState<string | null>(null)
+  const [onboardingProvider, setOnboardingProvider] = useState<'kiro' | 'antigravity' | 'zed'>(
+    'kiro',
+  )
 
   const [kiroLabel, setKiroLabel] = useState('')
   const [kiroImportMode, setKiroImportMode] = useState<'structured' | 'json'>('structured')
@@ -130,6 +150,11 @@ export function AccountsPage() {
   const oauthStatusSummary = oauthState
     ? (oauthStatusData?.status ?? (oauthStatus.isFetching ? 'wait' : 'idle'))
     : 'idle'
+  const zedLoginStatus = useZedLoginStatusQuery(zedSessionId, Boolean(zedSessionId))
+  const zedLoginStatusData = zedLoginStatus.data
+  const zedLoginStatusSummary = zedSessionId
+    ? (zedLoginStatusData?.status ?? (zedLoginStatus.isFetching ? 'waiting' : 'idle'))
+    : 'idle'
 
   const mutationError = [
     toggleStatus,
@@ -138,8 +163,11 @@ export function AccountsPage() {
     uploadAuthFile,
     startOAuth,
     startKiroBuilderId,
+    startZedLogin,
     importKiro,
     importKiroSocial,
+    checkZedQuota,
+    fetchZedModels,
   ].find((mutation) => mutation.isError)?.error as Error | undefined
 
   const items = useMemo(() => {
@@ -233,14 +261,19 @@ export function AccountsPage() {
 
               <Tabs
                 value={onboardingProvider}
-                onValueChange={(value) => setOnboardingProvider(value as 'kiro' | 'antigravity')}
+                onValueChange={(value) =>
+                  setOnboardingProvider(value as 'kiro' | 'antigravity' | 'zed')
+                }
               >
-                <TabsList className='grid w-full grid-cols-2 rounded-3xl p-2'>
+                <TabsList className='grid w-full grid-cols-3 rounded-3xl p-2'>
                   <TabsTrigger value='kiro' className='rounded-2xl'>
                     Kiro
                   </TabsTrigger>
                   <TabsTrigger value='antigravity' className='rounded-2xl'>
                     Antigravity
+                  </TabsTrigger>
+                  <TabsTrigger value='zed' className='rounded-2xl'>
+                    Zed
                   </TabsTrigger>
                 </TabsList>
 
@@ -531,6 +564,90 @@ export function AccountsPage() {
                     </CardContent>
                   </Card>
                 </TabsContent>
+
+                <TabsContent value='zed'>
+                  <Card className='border-border rounded-3xl border'>
+                    <CardContent className='space-y-4 p-5'>
+                      <div>
+                        <div className='flex items-center gap-2'>
+                          <h4 className='text-base font-semibold'>Zed</h4>
+                          <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                            native login
+                          </Badge>
+                        </div>
+                        <p className='text-muted-foreground mt-1 text-sm'>
+                          Launch the Zed native-app sign-in flow, then wait for the localhost
+                          callback to finish.
+                        </p>
+                      </div>
+
+                      <Input
+                        type='text'
+                        value={zedLabel}
+                        onChange={(event) => setZedLabel(event.target.value)}
+                        className='h-11 rounded-2xl'
+                        placeholder='Optional label'
+                        maxLength={MAX_LABEL_LENGTH}
+                      />
+
+                      <div className='flex justify-end'>
+                        <Button
+                          type='button'
+                          onClick={() =>
+                            startZedLogin.mutate(
+                              {
+                                name: zedLabel.trim() || undefined,
+                              },
+                              {
+                                onSuccess: (data) => {
+                                  setZedSessionId(data.session_id)
+                                  window.open(data.login_url, '_blank', 'noopener,noreferrer')
+                                },
+                              },
+                            )
+                          }
+                          disabled={startZedLogin.isPending}
+                          className='h-11 rounded-xl px-4'
+                        >
+                          {startZedLogin.isPending ? 'Launching…' : 'Launch Zed login'}
+                        </Button>
+                      </div>
+
+                      <div className='text-muted-foreground text-sm leading-6'>
+                        {zedSessionId ? (
+                          <>
+                            <p>
+                              Current session:{' '}
+                              <span className='text-foreground break-all'>{zedSessionId}</span>
+                            </p>
+                            <p className='mt-1'>
+                              Status:{' '}
+                              <span className='text-foreground'>{zedLoginStatusSummary}</span>
+                            </p>
+                            {zedLoginStatusData?.filename ? (
+                              <p className='mt-1'>
+                                Saved file:{' '}
+                                <span className='text-foreground break-all'>
+                                  {zedLoginStatusData.filename}
+                                </span>
+                              </p>
+                            ) : null}
+                            {zedLoginStatusData?.user_id ? (
+                              <p className='mt-1'>
+                                User ID:{' '}
+                                <span className='text-foreground break-all'>
+                                  {zedLoginStatusData.user_id}
+                                </span>
+                              </p>
+                            ) : null}
+                          </>
+                        ) : (
+                          <p>No Zed login session started yet.</p>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
               </Tabs>
 
               {mutationError ? (
@@ -651,7 +768,7 @@ export function AccountsPage() {
                                   </p>
                                 ) : null}
                                 {item.provider_key === 'kiro' && quotaResults[item.id] ? (
-                                  <div className='mt-3 rounded-lg border border-border bg-muted/50 p-3'>
+                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
                                     <p className='text-xs font-medium'>Quota Status:</p>
                                     <div className='mt-1 flex items-center gap-2'>
                                       <Badge
@@ -659,27 +776,85 @@ export function AccountsPage() {
                                           quotaResults[item.id].status === 'available'
                                             ? 'default'
                                             : quotaResults[item.id].status === 'exhausted'
-                                            ? 'destructive'
-                                            : 'outline'
+                                              ? 'destructive'
+                                              : 'outline'
                                         }
                                         className='rounded-full'
                                       >
                                         {quotaResults[item.id].status}
                                       </Badge>
                                       {quotaResults[item.id].remaining !== undefined && (
-                                        <span className='text-xs text-muted-foreground'>
+                                        <span className='text-muted-foreground text-xs'>
                                           {quotaResults[item.id].remaining} remaining
                                         </span>
                                       )}
                                     </div>
                                     {quotaResults[item.id].detail && (
-                                      <p className='mt-1 text-xs text-muted-foreground'>
+                                      <p className='text-muted-foreground mt-1 text-xs'>
                                         {quotaResults[item.id].detail}
                                       </p>
                                     )}
                                     {quotaResults[item.id].message && (
-                                      <p className='mt-1 text-xs text-muted-foreground'>
+                                      <p className='text-muted-foreground mt-1 text-xs'>
                                         {quotaResults[item.id].message}
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : null}
+                                {item.provider_key === 'zed' && zedQuotaResults[item.id] ? (
+                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
+                                    <p className='text-xs font-medium'>Quota Status:</p>
+                                    <div className='mt-1 flex items-center gap-2'>
+                                      <Badge
+                                        variant={
+                                          zedQuotaResults[item.id].status === 'available'
+                                            ? 'default'
+                                            : 'destructive'
+                                        }
+                                        className='rounded-full'
+                                      >
+                                        {zedQuotaResults[item.id].status}
+                                      </Badge>
+                                      {zedQuotaResults[item.id].model_requests_used !== undefined &&
+                                      zedQuotaResults[item.id].model_requests_limit !==
+                                        undefined ? (
+                                        <span className='text-muted-foreground text-xs'>
+                                          {zedQuotaResults[item.id].model_requests_used}/
+                                          {String(zedQuotaResults[item.id].model_requests_limit)}{' '}
+                                          used
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {zedQuotaResults[item.id].plan ? (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        Plan: {zedQuotaResults[item.id].plan}
+                                      </p>
+                                    ) : null}
+                                    {zedQuotaResults[item.id].error ? (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        {zedQuotaResults[item.id].error}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {zedModelsResults[item.id] ? (
+                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
+                                    <p className='text-xs font-medium'>Available Models:</p>
+                                    {zedModelsResults[item.id].models.length > 0 ? (
+                                      <div className='mt-2 flex flex-wrap gap-2'>
+                                        {zedModelsResults[item.id].models.map((model) => (
+                                          <Badge
+                                            key={`${item.id}-${model}`}
+                                            variant='outline'
+                                            className='rounded-full px-2.5 py-1 text-xs'
+                                          >
+                                            {model}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        No models reported for this account.
                                       </p>
                                     )}
                                   </div>
@@ -735,13 +910,38 @@ export function AccountsPage() {
                             ) : null}
 
                             <div className='grid gap-2 sm:grid-cols-2 xl:grid-cols-4'>
+                              {item.provider_key === 'zed' && (
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  onClick={async () => {
+                                    try {
+                                      const result = await fetchZedModels.mutateAsync({
+                                        name: item.id,
+                                      })
+                                      setZedModelsResults((prev) => ({
+                                        ...prev,
+                                        [item.id]: result,
+                                      }))
+                                    } catch (error) {
+                                      console.error('Zed models fetch failed:', error)
+                                    }
+                                  }}
+                                  disabled={fetchZedModels.isPending}
+                                  className='h-11 rounded-xl px-3'
+                                >
+                                  {fetchZedModels.isPending ? 'Loading...' : 'Get Models'}
+                                </Button>
+                              )}
                               {item.provider_key === 'kiro' && (
                                 <Button
                                   type='button'
                                   variant='outline'
                                   onClick={async () => {
                                     try {
-                                      const result = await checkKiroQuota.mutateAsync({ name: item.id })
+                                      const result = await checkKiroQuota.mutateAsync({
+                                        name: item.id,
+                                      })
                                       setQuotaResults((prev) => ({ ...prev, [item.id]: result }))
                                     } catch (error) {
                                       console.error('Quota check failed:', error)
@@ -751,6 +951,26 @@ export function AccountsPage() {
                                   className='h-11 rounded-xl px-3'
                                 >
                                   {checkKiroQuota.isPending ? 'Checking...' : 'Check Quota'}
+                                </Button>
+                              )}
+                              {item.provider_key === 'zed' && (
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  onClick={async () => {
+                                    try {
+                                      const result = await checkZedQuota.mutateAsync({
+                                        name: item.id,
+                                      })
+                                      setZedQuotaResults((prev) => ({ ...prev, [item.id]: result }))
+                                    } catch (error) {
+                                      console.error('Zed quota check failed:', error)
+                                    }
+                                  }}
+                                  disabled={checkZedQuota.isPending}
+                                  className='h-11 rounded-xl px-3'
+                                >
+                                  {checkZedQuota.isPending ? 'Checking...' : 'Check Quota'}
                                 </Button>
                               )}
                               <Button
