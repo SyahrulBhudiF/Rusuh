@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 
+import { AddAccountPage } from './ui/pages/add-account-page'
 import { AccountsPage } from './ui/pages/accounts-page'
 import { ApiKeysPage } from './ui/pages/api-keys-page'
 import { ConfigPage } from './ui/pages/config-page'
@@ -22,6 +23,12 @@ const accountsRoute = createRoute({
   component: AccountsPage,
 })
 
+const addAccountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/accounts/add',
+  component: AddAccountPage,
+})
+
 const apiKeysRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/api-keys',
@@ -34,7 +41,13 @@ const configRoute = createRoute({
   component: ConfigPage,
 })
 
-const routeTree = rootRoute.addChildren([overviewRoute, accountsRoute, apiKeysRoute, configRoute])
+const routeTree = rootRoute.addChildren([
+  overviewRoute,
+  addAccountRoute,
+  accountsRoute,
+  apiKeysRoute,
+  configRoute,
+])
 
 export const router = createRouter({
   routeTree,

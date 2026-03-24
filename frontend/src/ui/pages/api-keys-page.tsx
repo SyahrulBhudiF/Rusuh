@@ -103,7 +103,7 @@ export function ApiKeysPage() {
     <PageShell
       eyebrow='API Keys'
       title='Management access keys'
-      description='Read from `/dashboard`, mutate through existing management REST endpoints.'
+      description='Create and rotate the keys that clients use to access the proxy API.'
       actions={
         <div className='flex flex-col gap-3 sm:flex-row sm:flex-wrap'>
           <Button
@@ -180,9 +180,9 @@ export function ApiKeysPage() {
                 <section className='space-y-3'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
                     <div>
-                      <h3 className='text-lg font-semibold'>Current keys</h3>
+                      <h3 className='text-lg font-semibold'>Active API keys</h3>
                       <p className='text-muted-foreground mt-1 text-sm'>
-                        Rotate, replace, or remove keys.
+                        Most teams start by generating one key, then copy it into their client.
                       </p>
                     </div>
                     <Badge variant='outline' className='w-fit rounded-full px-3 py-1 text-xs'>
@@ -191,7 +191,7 @@ export function ApiKeysPage() {
                   </div>
                   {!hasKeys ? (
                     <div className='bg-muted/40 text-muted-foreground rounded-2xl p-4 text-sm'>
-                      Generate a key for this session or add one manually to unlock the dashboard.
+                      No API keys yet. Generate one key to let clients connect to the proxy.
                     </div>
                   ) : null}
 

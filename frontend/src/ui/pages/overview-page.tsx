@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useMemo } from 'react'
 
 import { Badge } from '@/components/ui/badge'
@@ -58,6 +59,20 @@ export function OverviewPage() {
       >
         {overview.data ? (
           <>
+            {!hasProviders ? (
+              <section className='mb-4 rounded-3xl border border-border bg-muted/30 p-5'>
+                <p className='text-sm font-medium'>Start here</p>
+                <p className='text-muted-foreground mt-2 text-sm'>
+                  Add an account, then come back here to confirm the runtime is healthy.
+                </p>
+                <div className='mt-4 flex flex-wrap gap-2'>
+                  <Button asChild className='rounded-xl'>
+                    <Link to='/accounts/add'>Add Account</Link>
+                  </Button>
+                </div>
+              </section>
+            ) : null}
+
             <div className='grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.85fr)]'>
               <section className='space-y-4'>
                 <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
@@ -73,7 +88,7 @@ export function OverviewPage() {
                 <div className='space-y-3'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                     <div>
-                      <h3 className='text-lg font-semibold'>Accounts overview</h3>
+                      <h3 className='text-lg font-semibold'>Accounts by provider</h3>
                       <p className='text-muted-foreground text-sm'>
                         By provider and lifecycle state.
                       </p>
@@ -122,7 +137,7 @@ export function OverviewPage() {
                     </div>
                   ) : (
                     <div className='bg-muted/40 text-muted-foreground rounded-2xl p-4 text-sm'>
-                      No account summaries available yet.
+                      No connected accounts yet. Add an account to start routing requests.
                     </div>
                   )}
                 </div>
@@ -130,7 +145,7 @@ export function OverviewPage() {
 
               <section className='space-y-3'>
                 <div>
-                  <h3 className='text-lg font-semibold'>Runtime facts</h3>
+                  <h3 className='text-lg font-semibold'>Runtime status</h3>
                   <p className='text-muted-foreground mt-1 text-sm leading-6'>
                     Current service health, routing posture, and model surface.
                   </p>
