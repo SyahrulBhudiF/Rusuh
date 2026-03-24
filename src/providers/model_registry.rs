@@ -347,6 +347,11 @@ impl ModelRegistry {
         }
     }
 
+    /// Check whether a client is registered.
+    pub async fn has_client(&self, client_id: &str) -> bool {
+        self.client_models.read().await.contains_key(client_id)
+    }
+
     /// Check if client supports a model.
     pub async fn client_supports_model(&self, client_id: &str, model_id: &str) -> bool {
         self.client_models

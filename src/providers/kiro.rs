@@ -99,38 +99,6 @@ fn sha256_hex(input: &str) -> String {
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Convert Kiro model name to user-friendly alias.
-/// Returns None if the model name doesn't have a known alias.
-fn kiro_model_to_alias(kiro_model: &str) -> Option<String> {
-    match kiro_model {
-        // Claude base models
-        "kiro-claude-opus-4-6" => Some("claude-opus-4.6".to_string()),
-        "kiro-claude-sonnet-4-6" => Some("claude-sonnet-4.6".to_string()),
-        "kiro-claude-opus-4-5" => Some("claude-opus-4.5".to_string()),
-        "kiro-claude-sonnet-4-5" => Some("claude-sonnet-4.5".to_string()),
-        "kiro-claude-sonnet-4" => Some("claude-sonnet-4".to_string()),
-        "kiro-claude-haiku-4-5" => Some("claude-haiku-4.5".to_string()),
-
-        // Claude thinking/agentic models
-        "kiro-claude-opus-4-6-agentic" => Some("claude-opus-4.6-thinking".to_string()),
-        "kiro-claude-sonnet-4-6-agentic" => Some("claude-sonnet-4.6-thinking".to_string()),
-        "kiro-claude-opus-4-5-agentic" => Some("claude-opus-4.5-thinking".to_string()),
-        "kiro-claude-sonnet-4-5-agentic" => Some("claude-sonnet-4.5-thinking".to_string()),
-        "kiro-claude-sonnet-4-agentic" => Some("claude-sonnet-4-thinking".to_string()),
-        "kiro-claude-haiku-4-5-agentic" => Some("claude-haiku-4.5-thinking".to_string()),
-
-        // Third-party models
-        "kiro-deepseek-3-2" => Some("deepseek-3.2".to_string()),
-        "kiro-deepseek-3-2-agentic" => Some("deepseek-3.2-thinking".to_string()),
-        "kiro-minimax-m2-1" => Some("minimax-m2.1".to_string()),
-        "kiro-minimax-m2-1-agentic" => Some("minimax-m2.1-thinking".to_string()),
-        "kiro-qwen3-coder-next" => Some("qwen3-coder-next".to_string()),
-        "kiro-qwen3-coder-next-agentic" => Some("qwen3-coder-next-thinking".to_string()),
-
-        _ => None,
-    }
-}
-
 // ── Retry Configuration ──────────────────────────────────────────────────────
 
 /// Retry configuration for socket errors and transient failures
@@ -729,26 +697,38 @@ impl Provider for KiroProvider {
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         let now = chrono::Utc::now().timestamp();
+
+        if !self
+            .model_registry
+            .has_client(&self.registry_client_id)
+            .await
+        {
+            return Ok(KIRO_MODEL_IDS
+                .iter()
+                .map(|kiro_model| ModelInfo {
+                    id: (*kiro_model).to_string(),
+                    object: "model".into(),
+                    created: now,
+                    owned_by: "kiro".into(),
+                })
+                .collect());
+        }
+
         let mut available_models = Vec::new();
 
-        // Check each model for availability and convert to alias
         for kiro_model in KIRO_MODEL_IDS {
-            // Check if this model is effectively available (not quota exceeded or suspended)
             let is_available = self
                 .model_registry
                 .client_is_effectively_available(&self.registry_client_id, kiro_model)
                 .await;
 
             if is_available {
-                // Convert to user-friendly alias
-                if let Some(alias) = kiro_model_to_alias(kiro_model) {
-                    available_models.push(ModelInfo {
-                        id: alias,
-                        object: "model".into(),
-                        created: now,
-                        owned_by: "kiro".into(),
-                    });
-                }
+                available_models.push(ModelInfo {
+                    id: (*kiro_model).to_string(),
+                    object: "model".into(),
+                    created: now,
+                    owned_by: "kiro".into(),
+                });
             }
         }
 
@@ -1451,72 +1431,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_models_exposes_supported_kiro_catalog() {
-        use crate::providers::model_info::ExtModelInfo;
-
+    async fn list_models_exposes_raw_kiro_catalog_before_registry_registration() {
         let registry = Arc::new(ModelRegistry::new());
         let provider = KiroProvider::new_with_runtime(
             test_record(),
             "kiro_0".to_string(),
-            registry.clone(),
+            registry,
             runtime_with_checker(Arc::new(NoOpQuotaChecker)),
         )
         .unwrap();
 
-        // Register all Kiro models in the registry so they're marked as available
-        let kiro_models: Vec<ExtModelInfo> = KIRO_MODEL_IDS
-            .iter()
-            .map(|id| ExtModelInfo {
-                id: (*id).to_string(),
-                object: "model".to_string(),
-                created: 0,
-                owned_by: "kiro".to_string(),
-                provider_type: "kiro".to_string(),
-                display_name: None,
-                name: Some((*id).to_string()),
-                version: None,
-                description: None,
-                input_token_limit: 0,
-                output_token_limit: 0,
-                supported_generation_methods: vec![],
-                context_length: 0,
-                max_completion_tokens: 0,
-                supported_parameters: vec![],
-                thinking: None,
-                user_defined: false,
-            })
-            .collect();
-        registry.register_client("kiro_0", "kiro", kiro_models).await;
-
         let models = provider.list_models().await.unwrap();
         let ids: std::collections::HashSet<String> = models.into_iter().map(|m| m.id).collect();
 
-        // Check for user-friendly aliases (not Kiro-prefixed names)
-        assert!(ids.contains("claude-opus-4.6"));
-        assert!(ids.contains("claude-sonnet-4.6"));
-        assert!(ids.contains("claude-opus-4.5"));
-        assert!(ids.contains("claude-sonnet-4.5"));
-        assert!(ids.contains("claude-sonnet-4"));
-        assert!(ids.contains("claude-haiku-4.5"));
+        assert!(ids.contains("kiro-claude-opus-4-6"));
+        assert!(ids.contains("kiro-claude-sonnet-4-6"));
+        assert!(ids.contains("kiro-claude-opus-4-5"));
+        assert!(ids.contains("kiro-claude-sonnet-4-5"));
+        assert!(ids.contains("kiro-claude-sonnet-4"));
+        assert!(ids.contains("kiro-claude-haiku-4-5"));
 
-        assert!(ids.contains("claude-opus-4.6-thinking"));
-        assert!(ids.contains("claude-sonnet-4.6-thinking"));
-        assert!(ids.contains("claude-opus-4.5-thinking"));
-        assert!(ids.contains("claude-sonnet-4.5-thinking"));
-        assert!(ids.contains("claude-sonnet-4-thinking"));
-        assert!(ids.contains("claude-haiku-4.5-thinking"));
+        assert!(ids.contains("kiro-claude-opus-4-6-agentic"));
+        assert!(ids.contains("kiro-claude-sonnet-4-6-agentic"));
+        assert!(ids.contains("kiro-claude-opus-4-5-agentic"));
+        assert!(ids.contains("kiro-claude-sonnet-4-5-agentic"));
+        assert!(ids.contains("kiro-claude-sonnet-4-agentic"));
+        assert!(ids.contains("kiro-claude-haiku-4-5-agentic"));
 
-        assert!(ids.contains("deepseek-3.2"));
-        assert!(ids.contains("minimax-m2.1"));
-        assert!(ids.contains("qwen3-coder-next"));
+        assert!(ids.contains("kiro-deepseek-3-2"));
+        assert!(ids.contains("kiro-minimax-m2-1"));
+        assert!(ids.contains("kiro-qwen3-coder-next"));
 
-        assert!(ids.contains("deepseek-3.2-thinking"));
-        assert!(ids.contains("minimax-m2.1-thinking"));
-        assert!(ids.contains("qwen3-coder-next-thinking"));
+        assert!(ids.contains("kiro-deepseek-3-2-agentic"));
+        assert!(ids.contains("kiro-minimax-m2-1-agentic"));
+        assert!(ids.contains("kiro-qwen3-coder-next-agentic"));
 
-        // Verify Kiro-prefixed names are NOT exposed
-        assert!(!ids.contains("kiro-claude-opus-4-6"));
-        assert!(!ids.contains("kiro-gpt-4o"));
-        assert!(!ids.contains("kiro-gpt-4"));
+        assert_eq!(ids.len(), KIRO_MODEL_IDS.len());
+        assert!(!ids.contains("claude-sonnet-4.5"));
+        assert!(!ids.contains("claude-sonnet-4.5-thinking"));
+        assert!(!ids.contains("deepseek-3.2"));
     }
 }

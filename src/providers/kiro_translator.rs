@@ -133,7 +133,7 @@ pub fn build_native_kiro_request(
     profile_arn: Option<String>,
 ) -> KiroRequest {
     let conversation_id = Uuid::new_v4().to_string();
-    let model_id = req.model.clone();
+    let model_id = upstream_kiro_model_id(&req.model);
 
     // Separate current message from history
     let (current_content, history) = extract_messages_and_history(&req.messages, &model_id);
@@ -160,6 +160,53 @@ pub fn build_native_kiro_request(
     KiroRequest {
         conversation_state,
         profile_arn,
+    }
+}
+
+fn upstream_kiro_model_id(model: &str) -> String {
+    match model {
+        "amazonq-auto" | "kiro-auto" | "auto" => "auto".to_string(),
+        "amazonq-claude-opus-4-6"
+        | "kiro-claude-opus-4-6"
+        | "claude-opus-4-6"
+        | "claude-opus-4.6"
+        | "claude-opus-4.6-agentic"
+        | "kiro-claude-opus-4-6-agentic" => "claude-opus-4.6".to_string(),
+        "amazonq-claude-sonnet-4-6"
+        | "kiro-claude-sonnet-4-6"
+        | "claude-sonnet-4-6"
+        | "claude-sonnet-4.6"
+        | "claude-sonnet-4.6-agentic"
+        | "kiro-claude-sonnet-4-6-agentic" => "claude-sonnet-4.6".to_string(),
+        "amazonq-claude-opus-4-5"
+        | "kiro-claude-opus-4-5"
+        | "claude-opus-4-5"
+        | "claude-opus-4.5"
+        | "claude-opus-4.5-agentic"
+        | "kiro-claude-opus-4-5-agentic" => "claude-opus-4.5".to_string(),
+        "amazonq-claude-sonnet-4-5"
+        | "amazonq-claude-sonnet-4-5-20250929"
+        | "kiro-claude-sonnet-4-5"
+        | "kiro-claude-sonnet-4-5-20250929"
+        | "claude-sonnet-4-5"
+        | "claude-sonnet-4.5"
+        | "claude-sonnet-4.5-agentic"
+        | "kiro-claude-sonnet-4-5-agentic"
+        | "claude-sonnet-4.5-thinking" => "claude-sonnet-4.5".to_string(),
+        "amazonq-claude-sonnet-4"
+        | "amazonq-claude-sonnet-4-20250514"
+        | "kiro-claude-sonnet-4"
+        | "kiro-claude-sonnet-4-20250514"
+        | "claude-sonnet-4"
+        | "claude-sonnet-4-agentic"
+        | "kiro-claude-sonnet-4-agentic" => "claude-sonnet-4".to_string(),
+        "amazonq-claude-haiku-4-5"
+        | "kiro-claude-haiku-4-5"
+        | "claude-haiku-4-5"
+        | "claude-haiku-4.5"
+        | "claude-haiku-4.5-agentic"
+        | "kiro-claude-haiku-4-5-agentic" => "claude-haiku-4.5".to_string(),
+        _ => model.to_string(),
     }
 }
 

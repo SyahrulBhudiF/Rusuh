@@ -1,6 +1,6 @@
 use rusuh::models::{ChatCompletionRequest, ChatMessage, MessageContent};
 use rusuh::providers::kiro_translator::{
-    build_native_kiro_request, translate_kiro_event_to_openai_sse, KiroEventType,
+    build_native_kiro_request, translate_kiro_event_to_openai_sse, HistoryMessage, KiroEventType,
 };
 
 #[test]
@@ -112,4 +112,84 @@ fn filtered_event_returns_none() {
         123,
     );
     assert!(result.is_none());
+}
+
+#[test]
+fn provider_pinned_kiro_model_ids_are_mapped_to_upstream_ids() {
+    let req = ChatCompletionRequest {
+        model: "kiro-claude-sonnet-4-5".to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Earlier".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: MessageContent::Text("Reply".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Latest".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ],
+        temperature: None,
+        max_tokens: None,
+        top_p: None,
+        stop: None,
+        stream: Some(true),
+        tools: None,
+        tool_choice: None,
+        extra: std::collections::HashMap::new(),
+    };
+
+    let kiro_req = build_native_kiro_request(&req, None);
+
+    assert_eq!(
+        kiro_req.conversation_state.current_message.user_input_message.model_id,
+        "claude-sonnet-4.5"
+    );
+    let [HistoryMessage::User(history_user), HistoryMessage::Assistant(_)] =
+        kiro_req.conversation_state.history.as_slice()
+    else {
+        panic!("expected user and assistant history messages");
+    };
+    assert_eq!(history_user.user_input_message.model_id, "claude-sonnet-4.5");
+}
+
+#[test]
+fn agentic_kiro_model_ids_use_base_upstream_model_id() {
+    let req = ChatCompletionRequest {
+        model: "kiro-claude-sonnet-4-5-agentic".to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        temperature: None,
+        max_tokens: None,
+        top_p: None,
+        stop: None,
+        stream: Some(true),
+        tools: None,
+        tool_choice: None,
+        extra: std::collections::HashMap::new(),
+    };
+
+    let kiro_req = build_native_kiro_request(&req, None);
+
+    assert_eq!(
+        kiro_req.conversation_state.current_message.user_input_message.model_id,
+        "claude-sonnet-4.5"
+    );
 }
