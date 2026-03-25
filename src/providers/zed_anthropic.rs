@@ -183,7 +183,24 @@ pub fn convert_openai_to_anthropic(openai_request: &Value) -> Result<Value> {
         anthropic_request["top_p"] = top_p.clone();
     }
     if let Some(stop) = obj.get("stop") {
-        anthropic_request["stop_sequences"] = stop.clone();
+        let stop_sequences = match stop {
+            Value::String(text) => vec![Value::String(text.clone())],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::String(text) => Some(Value::String(text.clone())),
+                    Value::Number(_) | Value::Bool(_) | Value::Null => {
+                        Some(Value::String(item.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            Value::Number(_) | Value::Bool(_) | Value::Null => {
+                vec![Value::String(stop.to_string())]
+            }
+            _ => Vec::new(),
+        };
+        anthropic_request["stop_sequences"] = Value::Array(stop_sequences);
     }
 
     Ok(anthropic_request)
@@ -315,5 +332,35 @@ mod tests {
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
         assert!(err.to_string().contains("max_tokens must be greater than 0"));
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_normalizes_string_stop() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "max_tokens": 1000,
+            "stop": "END"
+        });
+
+        let result = convert_openai_to_anthropic(&request).unwrap();
+        assert_eq!(result["stop_sequences"], json!(["END"]));
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_normalizes_array_stop_with_scalars() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "max_tokens": 1000,
+            "stop": ["END", 42, true, null, {"ignored": true}]
+        });
+
+        let result = convert_openai_to_anthropic(&request).unwrap();
+        assert_eq!(result["stop_sequences"], json!(["END", "42", "true", "null"]));
     }
 }
