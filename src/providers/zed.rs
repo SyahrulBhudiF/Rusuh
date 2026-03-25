@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::TryStreamExt;
+use futures::StreamExt;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -16,9 +16,7 @@ use crate::auth::zed::parse_zed_credential;
 use crate::error::{AppError, AppResult};
 use crate::models::{ChatCompletionRequest, ChatCompletionResponse, ModelInfo};
 use crate::providers::zed_request::translate_to_zed_request;
-use crate::providers::zed_response::{
-    format_sse_event, parse_jsonlines_chunk, parse_zed_response_with_model,
-};
+use crate::providers::zed_response::{format_sse_event, parse_zed_response_with_model};
 use crate::providers::{BoxStream, Provider};
 
 /// Token refresh buffer in seconds (refresh when less than this remains)
@@ -522,20 +520,38 @@ impl Provider for ZedProvider {
                 )));
             }
 
-            let stream = response
-                .bytes_stream()
-                .map_err(|e| AppError::Upstream(format!("stream error: {e}")))
-                .map_ok(|chunk| {
-                    let text = String::from_utf8_lossy(&chunk);
-                    let json_lines = parse_jsonlines_chunk(&text);
-                    let sse_events: Vec<Bytes> = json_lines
-                        .into_iter()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(|line| Bytes::from(format_sse_event(&line)))
-                        .collect();
-                    futures::stream::iter(sse_events.into_iter().map(Ok))
-                })
-                .try_flatten();
+            let upstream = response.bytes_stream();
+            let stream = async_stream::try_stream! {
+                let mut buffer = String::new();
+                futures::pin_mut!(upstream);
+
+                while let Some(chunk_result) = upstream.next().await {
+                    let chunk = chunk_result
+                        .map_err(|e| AppError::Upstream(format!("stream error: {e}")))?;
+
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
+                        buffer = buffer[newline_pos + 1..].to_string();
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        if serde_json::from_str::<serde_json::Value>(&line).is_err() {
+                            continue;
+                        }
+
+                        yield Bytes::from(format_sse_event(&line));
+                    }
+                }
+
+                let trailing = buffer.trim();
+                if !trailing.is_empty() && serde_json::from_str::<serde_json::Value>(trailing).is_ok() {
+                    yield Bytes::from(format_sse_event(trailing));
+                }
+            };
 
             return Ok(Box::pin(stream));
         }
