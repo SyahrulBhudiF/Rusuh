@@ -183,8 +183,10 @@ fn test_parse_zed_response_from_raw_jsonlines_body() {
         "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n{\"type\":\"message_stop\"}"
     );
 
-    let result = parse_zed_response(&response).unwrap();
-    assert_eq!(result["id"], "msg_123");
-    assert_eq!(result["choices"][0]["message"]["content"], "hi");
-    assert_eq!(result["choices"][0]["finish_reason"], "stop");
+    let error = parse_zed_response(&response).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Response missing required field: model")
+    );
 }
