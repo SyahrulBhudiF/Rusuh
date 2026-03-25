@@ -302,25 +302,6 @@ impl ZedProvider {
     pub async fn refresh_models(&self) -> AppResult<()> {
         debug!("refreshing zed models for user {}", self.user_id);
 
-        let headers = self.build_headers().await?;
-
-        let response = self
-            .http_client
-            .get(self.client.models_endpoint())
-            .headers(headers)
-            .send()
-            .await
-            .map_err(|e| AppError::Upstream(format!("models fetch failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = format_non_success_response_body(response.text().await);
-            return Err(AppError::Upstream(format!(
-                "models fetch failed: {} - {}",
-                status, body
-            )));
-        }
-
         #[derive(Deserialize)]
         struct ModelItem {
             id: String,
@@ -331,18 +312,64 @@ impl ZedProvider {
             models: Vec<ModelItem>,
         }
 
-        let models_resp: ModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Upstream(format!("parse models response: {e}")))?;
+        for attempt in 0..2 {
+            let headers = self.build_headers().await?;
 
-        let model_ids: Vec<String> = models_resp.models.into_iter().map(|m| m.id).collect();
+            let response = self
+                .http_client
+                .get(self.client.models_endpoint())
+                .headers(headers)
+                .send()
+                .await
+                .map_err(|e| AppError::Upstream(format!("models fetch failed: {e}")))?;
 
-        let mut cache = self.models_cache.lock().await;
-        *cache = Some(model_ids);
+            if !response.status().is_success() {
+                let status = response.status();
+                let is_stale = self
+                    .client
+                    .is_stale_token_response(status.as_u16(), response.headers());
 
-        debug!("zed models refreshed for user {}", self.user_id);
-        Ok(())
+                if is_stale && attempt == 0 {
+                    debug!(
+                        "stale zed token detected while fetching models for user {}; refreshing and retrying",
+                        self.user_id
+                    );
+                    self.force_refresh_token().await?;
+                    continue;
+                }
+
+                let body = format_non_success_response_body(response.text().await);
+                return Err(AppError::Upstream(format!(
+                    "models fetch failed: {} - {}",
+                    status, body
+                )));
+            }
+
+            let models_resp: ModelsResponse = response
+                .json()
+                .await
+                .map_err(|e| AppError::Upstream(format!("parse models response: {e}")))?;
+
+            let model_ids: Vec<String> = models_resp.models.into_iter().map(|m| m.id).collect();
+
+            let mut cache = self.models_cache.lock().await;
+            *cache = Some(model_ids);
+
+            debug!("zed models refreshed for user {}", self.user_id);
+            return Ok(());
+        }
+
+        Err(AppError::Upstream(
+            "models fetch failed after stale-token retry".into(),
+        ))
+    }
+
+    async fn force_refresh_token(&self) -> AppResult<()> {
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        self.refresh_token().await
     }
 
     /// Ensure we have a valid token, refreshing if needed.
@@ -395,40 +422,59 @@ impl Provider for ZedProvider {
         let zed_req = translate_to_zed_request(&req_json)
             .map_err(|e| AppError::BadRequest(format!("translate request: {e}")))?;
 
-        let headers = self.build_headers().await?;
+        for attempt in 0..2 {
+            let headers = self.build_headers().await?;
 
-        let response = self
-            .http_client
-            .post(self.client.completions_endpoint())
-            .headers(headers)
-            .json(&zed_req)
-            .send()
-            .await
-            .map_err(|e| AppError::Upstream(format!("completions request failed: {e}")))?;
+            let response = self
+                .http_client
+                .post(self.client.completions_endpoint())
+                .headers(headers)
+                .json(&zed_req)
+                .send()
+                .await
+                .map_err(|e| AppError::Upstream(format!("completions request failed: {e}")))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = format_non_success_response_body(response.text().await);
-            return Err(AppError::Upstream(format!(
-                "completions failed: {} - {}",
-                status, body
-            )));
+            if !response.status().is_success() {
+                let status = response.status();
+                let is_stale = self
+                    .client
+                    .is_stale_token_response(status.as_u16(), response.headers());
+
+                if is_stale && attempt == 0 {
+                    debug!(
+                        "stale zed token detected for completion request user {}; refreshing and retrying",
+                        self.user_id
+                    );
+                    self.force_refresh_token().await?;
+                    continue;
+                }
+
+                let body = format_non_success_response_body(response.text().await);
+                return Err(AppError::Upstream(format!(
+                    "completions failed: {} - {}",
+                    status, body
+                )));
+            }
+
+            let zed_resp_text = response
+                .text()
+                .await
+                .map_err(|e| AppError::Upstream(format!("read completions response: {e}")))?;
+            let zed_resp: serde_json::Value = match serde_json::from_str(&zed_resp_text) {
+                Ok(value) => value,
+                Err(_) => serde_json::Value::String(zed_resp_text),
+            };
+
+            let validated = parse_zed_response_with_model(&zed_resp, Some(&req.model))
+                .map_err(|e| AppError::Upstream(format!("validate response: {e}")))?;
+
+            return serde_json::from_value(validated)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("deserialize response: {e}")));
         }
 
-        let zed_resp_text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Upstream(format!("read completions response: {e}")))?;
-        let zed_resp: serde_json::Value = match serde_json::from_str(&zed_resp_text) {
-            Ok(value) => value,
-            Err(_) => serde_json::Value::String(zed_resp_text),
-        };
-
-        let validated = parse_zed_response_with_model(&zed_resp, Some(&req.model))
-            .map_err(|e| AppError::Upstream(format!("validate response: {e}")))?;
-
-        serde_json::from_value(validated)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("deserialize response: {e}")))
+        Err(AppError::Upstream(
+            "completions failed after stale-token retry".into(),
+        ))
     }
 
     async fn chat_completion_stream(&self, req: &ChatCompletionRequest) -> AppResult<BoxStream> {
@@ -442,42 +488,61 @@ impl Provider for ZedProvider {
         let zed_req = translate_to_zed_request(&req_json)
             .map_err(|e| AppError::BadRequest(format!("translate request: {e}")))?;
 
-        let headers = self.build_headers().await?;
+        for attempt in 0..2 {
+            let headers = self.build_headers().await?;
 
-        let response = self
-            .http_client
-            .post(self.client.completions_endpoint())
-            .headers(headers)
-            .json(&zed_req)
-            .send()
-            .await
-            .map_err(|e| AppError::Upstream(format!("streaming request failed: {e}")))?;
+            let response = self
+                .http_client
+                .post(self.client.completions_endpoint())
+                .headers(headers)
+                .json(&zed_req)
+                .send()
+                .await
+                .map_err(|e| AppError::Upstream(format!("streaming request failed: {e}")))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = format_non_success_response_body(response.text().await);
-            return Err(AppError::Upstream(format!(
-                "streaming failed: {} - {}",
-                status, body
-            )));
+            if !response.status().is_success() {
+                let status = response.status();
+                let is_stale = self
+                    .client
+                    .is_stale_token_response(status.as_u16(), response.headers());
+
+                if is_stale && attempt == 0 {
+                    debug!(
+                        "stale zed token detected for streaming request user {}; refreshing and retrying",
+                        self.user_id
+                    );
+                    self.force_refresh_token().await?;
+                    continue;
+                }
+
+                let body = format_non_success_response_body(response.text().await);
+                return Err(AppError::Upstream(format!(
+                    "streaming failed: {} - {}",
+                    status, body
+                )));
+            }
+
+            let stream = response
+                .bytes_stream()
+                .map_err(|e| AppError::Upstream(format!("stream error: {e}")))
+                .map_ok(|chunk| {
+                    let text = String::from_utf8_lossy(&chunk);
+                    let json_lines = parse_jsonlines_chunk(&text);
+                    let sse_events: Vec<Bytes> = json_lines
+                        .into_iter()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| Bytes::from(format_sse_event(&line)))
+                        .collect();
+                    futures::stream::iter(sse_events.into_iter().map(Ok))
+                })
+                .try_flatten();
+
+            return Ok(Box::pin(stream));
         }
 
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| AppError::Upstream(format!("stream error: {e}")))
-            .map_ok(|chunk| {
-                let text = String::from_utf8_lossy(&chunk);
-                let json_lines = parse_jsonlines_chunk(&text);
-                let sse_events: Vec<Bytes> = json_lines
-                    .into_iter()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| Bytes::from(format_sse_event(&line)))
-                    .collect();
-                futures::stream::iter(sse_events.into_iter().map(Ok))
-            })
-            .try_flatten();
-
-        Ok(Box::pin(stream))
+        Err(AppError::Upstream(
+            "streaming failed after stale-token retry".into(),
+        ))
     }
 }
 
