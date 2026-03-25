@@ -128,18 +128,29 @@ pub fn convert_openai_to_anthropic(openai_request: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("Missing or invalid messages field"))?;
 
     let mut anthropic_messages = Vec::new();
-    let mut system_message = None;
+    let mut leading_system_messages = Vec::new();
+    let mut seen_non_system = false;
 
-    // Separate system messages from conversation messages
+    // Collect leading system messages, then preserve conversation order.
     for msg in messages {
         if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
             if role == "system" {
-                if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                    system_message = Some(content.to_string());
+                if seen_non_system {
+                    return Err(anyhow!(
+                        "System messages are only supported at the start of the conversation"
+                    ));
                 }
-            } else {
-                anthropic_messages.push(msg.clone());
+
+                let content = msg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("System message content must be a string"))?;
+                leading_system_messages.push(content.to_string());
+                continue;
             }
+
+            seen_non_system = true;
+            anthropic_messages.push(msg.clone());
         }
     }
 
@@ -148,9 +159,8 @@ pub fn convert_openai_to_anthropic(openai_request: &Value) -> Result<Value> {
         "messages": anthropic_messages
     });
 
-    // Add system message if present
-    if let Some(system) = system_message {
-        anthropic_request["system"] = Value::String(system);
+    if !leading_system_messages.is_empty() {
+        anthropic_request["system"] = Value::String(leading_system_messages.join("\n\n"));
     }
 
     // Copy optional fields
@@ -211,5 +221,41 @@ mod tests {
         let result = convert_openai_to_anthropic(&request).unwrap();
         assert_eq!(result["model"], "claude-3-5-sonnet-20241022");
         assert_eq!(result["max_tokens"], 1000);
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_with_multiple_leading_system_messages() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "system", "content": "Instruction 1"},
+                {"role": "system", "content": "Instruction 2"},
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Hi"}
+            ]
+        });
+
+        let result = convert_openai_to_anthropic(&request).unwrap();
+        assert_eq!(result["system"], "Instruction 1\n\nInstruction 2");
+        assert_eq!(result["messages"][0]["role"], "user");
+        assert_eq!(result["messages"][1]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_rejects_late_system_messages() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "system", "content": "Instruction 1"},
+                {"role": "user", "content": "Hello!"},
+                {"role": "system", "content": "Late instruction"}
+            ]
+        });
+
+        let err = convert_openai_to_anthropic(&request).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("System messages are only supported at the start of the conversation")
+        );
     }
 }
