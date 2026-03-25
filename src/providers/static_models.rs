@@ -621,7 +621,7 @@ pub fn lookup_static_model(model_id: &str) -> Option<ExtModelInfo> {
     if model_id.is_empty() {
         return None;
     }
-    let all_channels = ["claude", "gemini", "codex", "qwen"];
+    let all_channels = ["claude", "gemini", "codex", "qwen", "zed"];
     for channel in all_channels {
         for model in static_models_by_channel(channel) {
             if model.id == model_id {
