@@ -304,7 +304,7 @@ async fn try_route_with_targets(
 
         match execute_candidates(state.clone(), &upstream_req, candidates, is_stream).await {
             Ok(response) => return Ok(response),
-            Err(e) if e.is_quota_or_unavailable() => {
+            Err(e) if e.is_quota_or_unavailable() || e.is_account_error() => {
                 last_error = Some(e);
                 continue;
             }
