@@ -50,6 +50,9 @@ fn convert_events_to_openai(response: &Value, fallback_model: Option<&str>) -> R
         .get("events")
         .and_then(|value| value.as_array())
         .ok_or_else(|| anyhow!("Response missing required field: events"))?;
+    if events.is_empty() {
+        return Err(anyhow!("Response missing required field: events"));
+    }
 
     let mut model = obj
         .get("model")
@@ -57,6 +60,9 @@ fn convert_events_to_openai(response: &Value, fallback_model: Option<&str>) -> R
         .map(str::to_string)
         .or_else(|| fallback_model.map(str::to_string))
         .unwrap_or_default();
+    if model.is_empty() {
+        return Err(anyhow!("Response missing required field: model"));
+    }
 
     let mut id = String::from("chatcmpl-zed");
     let mut text = String::new();
@@ -369,5 +375,53 @@ mod tests {
 
         let result = parse_zed_response(&response);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_events_response_rejects_empty_events() {
+        let response = json!({
+            "model": "claude-sonnet-4-5",
+            "events": []
+        });
+
+        let result = parse_zed_response(&response);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Response missing required field: events"));
+    }
+
+    #[test]
+    fn test_events_response_rejects_missing_model_without_fallback() {
+        let response = json!({
+            "events": [
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "Hello"
+                }
+            ]
+        });
+
+        let result = parse_zed_response(&response);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Response missing required field: model"));
+    }
+
+    #[test]
+    fn test_jsonlines_response_rejects_missing_model_without_fallback() {
+        let response = Value::String(
+            r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
+        );
+
+        let result = parse_zed_response(&response);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Response missing required field: model"));
     }
 }
