@@ -1667,12 +1667,52 @@ async fn get_zed_login_status(
     };
 
     let existing_accounts = state.accounts.accounts_for("zed").await;
-    let filename = match find_existing_zed_filename(&existing_accounts, &user_id) {
-        Some(filename) => filename,
-        None => canonical_zed_login_filename(&user_id),
+    let existing_filename = find_existing_zed_filename(&existing_accounts, &user_id);
+    let filename = existing_filename
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| canonical_zed_login_filename(&user_id));
+
+    let existing_record = if let Some(existing_filename) = existing_filename {
+        let stored_records = match state.accounts.store().list().await {
+            Ok(records) => records,
+            Err(error) => {
+                let error_msg = format!("load auth files: {error}");
+                let mut sessions = state.zed_login_sessions.lock().await;
+                if let Some(session) = sessions.get_mut(session_id) {
+                    session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                    session.server_handle.abort();
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error_msg})),
+                );
+            }
+        };
+
+        match stored_records.into_iter().find(|record| {
+            record.id == existing_filename
+                || record.path.file_name().and_then(|f| f.to_str()) == Some(existing_filename.as_str())
+        }) {
+            Some(record) => Some(record),
+            None => {
+                let error_msg = format!("existing zed auth file not found: {existing_filename}");
+                let mut sessions = state.zed_login_sessions.lock().await;
+                if let Some(session) = sessions.get_mut(session_id) {
+                    session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                    session.server_handle.abort();
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error_msg})),
+                );
+            }
+        }
+    } else {
+        None
     };
 
-    let record = build_zed_login_record(&filename, &user_id, &credential_json);
+    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json);
     if let Err(error) = state.accounts.store().save(&record).await {
         let error_msg = format!("save auth file: {error}");
         let mut sessions = state.zed_login_sessions.lock().await;
@@ -1727,12 +1767,34 @@ fn find_existing_zed_filename(accounts: &[AuthRecord], user_id: &str) -> Option<
     })
 }
 
-fn build_zed_login_record(filename: &str, user_id: &str, credential_json: &str) -> AuthRecord {
+fn build_zed_login_record(
+    existing_record: Option<AuthRecord>,
+    filename: &str,
+    user_id: &str,
+    credential_json: &str,
+) -> AuthRecord {
     let now = chrono::Utc::now();
+
+    if let Some(mut record) = existing_record {
+        record.metadata.insert("type".to_string(), json!("zed"));
+        record
+            .metadata
+            .insert("user_id".to_string(), json!(user_id));
+        record
+            .metadata
+            .insert("credential_json".to_string(), json!(credential_json));
+        record
+            .metadata
+            .insert("last_refreshed_at".to_string(), json!(now.to_rfc3339()));
+
+        return record;
+    }
+
     let metadata = HashMap::from([
         ("type".to_string(), json!("zed")),
         ("user_id".to_string(), json!(user_id)),
         ("credential_json".to_string(), json!(credential_json)),
+        ("last_refreshed_at".to_string(), json!(now.to_rfc3339())),
     ]);
 
     AuthRecord {
@@ -1743,7 +1805,7 @@ fn build_zed_login_record(filename: &str, user_id: &str, credential_json: &str) 
         disabled: false,
         status: AuthStatus::Active,
         status_message: None,
-        last_refreshed_at: None,
+        last_refreshed_at: Some(now),
         path: std::path::PathBuf::from(filename),
         metadata,
         updated_at: now,
