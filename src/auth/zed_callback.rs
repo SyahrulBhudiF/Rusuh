@@ -79,6 +79,10 @@ async fn handle_callback(
     State(state): State<CallbackState>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
+    if state.is_completed() {
+        return (StatusCode::CONFLICT, "callback already completed").into_response();
+    }
+
     let Some(user_id) = query
         .user_id
         .map(|value| value.trim().to_string())
@@ -99,9 +103,16 @@ async fn handle_callback(
             .into_response();
     };
 
+    if state
+        .completed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return (StatusCode::CONFLICT, "callback already completed").into_response();
+    }
+
     *state.user_id.lock().await = Some(user_id);
     *state.access_token.lock().await = Some(access_token);
-    state.completed.store(true, Ordering::SeqCst);
 
     Redirect::temporary(ZED_SIGNIN_SUCCESS_REDIRECT).into_response()
 }
