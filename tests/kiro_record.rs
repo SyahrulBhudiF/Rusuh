@@ -1,6 +1,9 @@
-use rusuh::auth::kiro::{KiroTokenData, KiroTokenSource};
+use std::collections::HashMap;
+
+use chrono::DateTime;
+use rusuh::auth::kiro::{parse_expiry, KiroTokenData, KiroTokenSource};
 use rusuh::auth::kiro_record::{build_kiro_metadata, KIRO_PROVIDER_KEY};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn sample_token_data() -> KiroTokenData {
     KiroTokenData {
@@ -102,3 +105,30 @@ fn legacy_social_records_keep_social_metadata_shape() {
     assert!(!metadata.contains_key("start_url"));
 }
 
+#[test]
+fn parse_expiry_returns_unix_epoch_when_missing() {
+    let metadata = HashMap::new();
+
+    assert_eq!(parse_expiry(&metadata), DateTime::UNIX_EPOCH);
+}
+
+#[test]
+fn parse_expiry_returns_unix_epoch_when_invalid() {
+    let mut metadata = HashMap::new();
+    metadata.insert("expires_at".to_string(), json!("not-a-date"));
+
+    assert_eq!(parse_expiry(&metadata), DateTime::UNIX_EPOCH);
+}
+
+#[test]
+fn parse_expiry_uses_valid_rfc3339_value() {
+    let mut metadata = HashMap::new();
+    metadata.insert("expires_at".to_string(), json!("2026-05-01T12:34:56Z"));
+
+    assert_eq!(
+        parse_expiry(&metadata),
+        DateTime::parse_from_rfc3339("2026-05-01T12:34:56Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    );
+}

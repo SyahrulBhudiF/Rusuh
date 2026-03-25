@@ -394,15 +394,16 @@ impl KiroUsageChecker {
     ///
     /// In production, the base URL should be derived from the profile ARN region.
     /// For testing, it can point to a local mock server.
-    pub fn new(base_url: &str) -> Self {
-        Self {
+    pub fn new(base_url: &str) -> Result<Self, reqwest::Error> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            // .connect_timeout(std::time::Duration::from_secs(5))
+            .build()?;
+
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                // .connect_timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_default(),
-        }
+            client,
+        })
     }
 
     /// Check quota for the given request metadata.
@@ -448,7 +449,10 @@ impl KiroUsageChecker {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = match response.text().await {
+                Ok(body) => body,
+                Err(error) => format!("<failed to read response body: {error}>"),
+            };
 
             // Parse suspension errors and return as Exhausted status
             if status == reqwest::StatusCode::FORBIDDEN && body.contains("TEMPORARILY_SUSPENDED") {

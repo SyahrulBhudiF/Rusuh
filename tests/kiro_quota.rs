@@ -66,7 +66,10 @@ struct FakeExhaustedChecker;
 
 #[async_trait::async_trait]
 impl QuotaChecker for FakeExhaustedChecker {
-    async fn check_quota(&self, _request: &rusuh::auth::kiro_runtime::UsageCheckRequest) -> QuotaStatus {
+    async fn check_quota(
+        &self,
+        _request: &rusuh::auth::kiro_runtime::UsageCheckRequest,
+    ) -> QuotaStatus {
         QuotaStatus::Exhausted {
             detail: "test exhausted".into(),
         }
@@ -94,7 +97,10 @@ struct FakeAvailableChecker {
 
 #[async_trait::async_trait]
 impl QuotaChecker for FakeAvailableChecker {
-    async fn check_quota(&self, _request: &rusuh::auth::kiro_runtime::UsageCheckRequest) -> QuotaStatus {
+    async fn check_quota(
+        &self,
+        _request: &rusuh::auth::kiro_runtime::UsageCheckRequest,
+    ) -> QuotaStatus {
         QuotaStatus::Available {
             remaining: self.remaining,
             next_reset: None,
@@ -154,7 +160,11 @@ async fn exhausted_checker_marks_quota_exceeded_in_registry() {
     registry.register_client(client_id, "kiro", models).await;
 
     // Verify client is initially available
-    assert!(registry.client_is_effectively_available(client_id, model_id).await);
+    assert!(
+        registry
+            .client_is_effectively_available(client_id, model_id)
+            .await
+    );
 
     // Simulate quota check returning exhausted
     use rusuh::auth::kiro_runtime::UsageCheckRequest;
@@ -173,7 +183,11 @@ async fn exhausted_checker_marks_quota_exceeded_in_registry() {
     }
 
     // Verify client is now unavailable
-    assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+    assert!(
+        !registry
+            .client_is_effectively_available(client_id, model_id)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -206,7 +220,11 @@ async fn available_checker_clears_stale_quota_exceeded() {
 
     // Mark as quota-exceeded
     registry.set_quota_exceeded(client_id, model_id).await;
-    assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+    assert!(
+        !registry
+            .client_is_effectively_available(client_id, model_id)
+            .await
+    );
 
     // Simulate quota check returning available
     use rusuh::auth::kiro_runtime::UsageCheckRequest;
@@ -227,7 +245,11 @@ async fn available_checker_clears_stale_quota_exceeded() {
     }
 
     // Verify client is now available again
-    assert!(registry.client_is_effectively_available(client_id, model_id).await);
+    assert!(
+        registry
+            .client_is_effectively_available(client_id, model_id)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -274,5 +296,9 @@ async fn noop_checker_does_not_block_requests() {
 
     // Unknown status should not affect availability
     // (we don't mark quota-exceeded for Unknown status)
-    assert!(registry.client_is_effectively_available(client_id, model_id).await);
+    assert!(
+        registry
+            .client_is_effectively_available(client_id, model_id)
+            .await
+    );
 }

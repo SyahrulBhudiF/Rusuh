@@ -6,6 +6,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::kiro::{
+    KiroTokenData, BUILDER_ID_START_URL, CALLBACK_PORT, DEFAULT_REGION, KIRO_AUTH_ENDPOINT,
+    REFRESH_SKEW_SECS, SCOPES, SSO_OIDC_ENDPOINT,
+};
+use crate::error::{AppError, AppResult};
 use axum::{
     extract::Query,
     response::{Html, IntoResponse},
@@ -16,11 +21,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
-use crate::error::{AppError, AppResult};
-use crate::auth::kiro::{
-    KiroTokenData, BUILDER_ID_START_URL, CALLBACK_PORT, DEFAULT_REGION, KIRO_AUTH_ENDPOINT,
-    REFRESH_SKEW_SECS, SCOPES, SSO_OIDC_ENDPOINT,
-};
 
 // ── PKCE Helper Functions ────────────────────────────────────────────────────
 
@@ -87,6 +87,28 @@ struct RefreshTokenRequest<'a> {
     refresh_token: &'a str,
 }
 
+fn format_oauth_error_message(error: &str, description: Option<String>) -> String {
+    match description {
+        Some(description) if !description.trim().is_empty() => {
+            format!("OAuth error: {error} - {}", description.trim())
+        }
+        _ => format!("OAuth error: {error}"),
+    }
+}
+
+fn format_non_success_response_body<E>(body_result: Result<String, E>) -> String
+where
+    E: std::fmt::Display,
+{
+    match body_result {
+        Ok(body) => body,
+        Err(error) => format!("<failed to read response body: {error}>"),
+    }
+}
+
+fn option_string_or_empty(value: Option<String>) -> String {
+    value.as_deref().unwrap_or("").to_owned()
+}
 
 // ── Callback Server ──────────────────────────────────────────────────────────
 
@@ -101,8 +123,7 @@ async fn oauth_callback(
 ) -> impl IntoResponse {
     // Check for OAuth error
     if let Some(error) = params.error {
-        let description = params.error_description.unwrap_or_default();
-        let error_msg = format!("OAuth error: {} - {}", error, description);
+        let error_msg = format_oauth_error_message(&error, params.error_description);
         warn!("{}", error_msg);
 
         // Send error through channel
@@ -273,7 +294,7 @@ impl SocialAuthClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "token exchange failed (status {}): {}",
                 status, body
@@ -306,7 +327,7 @@ impl SocialAuthClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "token refresh failed (status {}): {}",
                 status, body
@@ -327,7 +348,7 @@ impl SocialAuthClient {
                 .refresh_token
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| refresh_token.to_string()),
-            profile_arn: token_resp.profile_arn.unwrap_or_default(),
+            profile_arn: option_string_or_empty(token_resp.profile_arn),
             expires_at: expires_at.to_rfc3339(),
             auth_method: "social".to_string(),
             provider: "imported".to_string(),
@@ -338,7 +359,6 @@ impl SocialAuthClient {
             email: None,
         })
     }
-
 
     /// Complete Google OAuth login flow.
     pub async fn login_with_google(&self) -> AppResult<KiroTokenData> {
@@ -386,7 +406,7 @@ impl SocialAuthClient {
         println!("│  Opening browser for authentication...                  │");
         println!("│                                                         │");
         println!("│  If browser doesn't open, visit:                       │");
-        println!("│  {}  │", &auth_url[..57.min(auth_url.len())]);
+        println!("│  {}  │", truncate_for_terminal_preview(&auth_url, 57));
         println!("│                                                         │");
         println!("└─────────────────────────────────────────────────────────┘\n");
 
@@ -415,8 +435,8 @@ impl SocialAuthClient {
 
         Ok(KiroTokenData {
             access_token: token_resp.access_token,
-            refresh_token: token_resp.refresh_token.unwrap_or_default(),
-            profile_arn: token_resp.profile_arn.unwrap_or_default(),
+            refresh_token: option_string_or_empty(token_resp.refresh_token),
+            profile_arn: option_string_or_empty(token_resp.profile_arn),
             expires_at: expires_at.to_rfc3339(),
             auth_method: "social".to_string(),
             provider: provider_name.to_string(),
@@ -432,6 +452,82 @@ impl SocialAuthClient {
 impl Default for SocialAuthClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn truncate_for_terminal_preview(input: &str, max_chars: usize) -> String {
+    input.chars().take(max_chars).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_non_success_response_body, format_oauth_error_message, truncate_for_terminal_preview,
+    };
+
+    #[test]
+    fn preview_keeps_short_ascii_unchanged() {
+        let input = "https://example.com/auth";
+        assert_eq!(truncate_for_terminal_preview(input, 57), input);
+    }
+
+    #[test]
+    fn preview_truncates_long_ascii_to_limit() {
+        let input = "https://example.com/abcdefghijklmnopqrstuvwxyz0123456789/extra";
+        let preview = truncate_for_terminal_preview(input, 10);
+
+        assert_eq!(preview, "https://ex");
+        assert_eq!(preview.chars().count(), 10);
+    }
+
+    #[test]
+    fn preview_handles_multibyte_utf8_near_boundary() {
+        let input = "https://example.com/こんにちは世界";
+        let preview = truncate_for_terminal_preview(input, 22);
+
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
+        assert_eq!(preview.chars().count(), 22);
+    }
+
+    #[test]
+    fn preview_keeps_exact_boundary_stable() {
+        let input = "1234567890";
+        assert_eq!(truncate_for_terminal_preview(input, 10), input);
+    }
+
+    #[test]
+    fn oauth_error_message_omits_empty_description() {
+        assert_eq!(
+            format_oauth_error_message("access_denied", None),
+            "OAuth error: access_denied"
+        );
+        assert_eq!(
+            format_oauth_error_message("access_denied", Some(String::new())),
+            "OAuth error: access_denied"
+        );
+    }
+
+    #[test]
+    fn oauth_error_message_includes_non_empty_description() {
+        assert_eq!(
+            format_oauth_error_message("access_denied", Some("user cancelled".to_string())),
+            "OAuth error: access_denied - user cancelled"
+        );
+    }
+
+    #[test]
+    fn non_success_response_body_reports_read_errors() {
+        let formatted = format_non_success_response_body(Err(std::io::Error::other("boom")));
+
+        assert_eq!(formatted, "<failed to read response body: boom>");
+    }
+
+    #[test]
+    fn non_success_response_body_preserves_text() {
+        let formatted =
+            format_non_success_response_body::<std::io::Error>(Ok("upstream body".into()));
+
+        assert_eq!(formatted, "upstream body");
     }
 }
 
@@ -471,7 +567,6 @@ pub async fn login(store: &FileTokenStore, provider: &str) -> AppResult<()> {
     );
     Ok(())
 }
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AWS SSO OIDC (Builder ID / Enterprise IDC)
@@ -567,7 +662,7 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "register client failed (status {}): {}",
                 status, body
@@ -619,7 +714,7 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "register auth-code client failed (status {}): {}",
                 status, body
@@ -662,7 +757,7 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "auth-code token exchange failed (status {}): {}",
                 status, body
@@ -705,16 +800,16 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "auth-code token exchange failed (status {}): {}",
                 status, body
             )));
         }
 
-        resp.json().await.map_err(|e| {
-            AppError::Auth(format!("failed to parse auth-code token response: {}", e))
-        })
+        resp.json()
+            .await
+            .map_err(|e| AppError::Auth(format!("failed to parse auth-code token response: {}", e)))
     }
 
     pub async fn refresh_token_with_region(
@@ -745,23 +840,25 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "token refresh failed (status {}): {}",
                 status, body
             )));
         }
 
-        let result: CreateTokenResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Auth(format!("failed to parse refresh token response: {}", e)))?;
+        let result: CreateTokenResponse = resp.json().await.map_err(|e| {
+            AppError::Auth(format!("failed to parse refresh token response: {}", e))
+        })?;
 
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(i64::from(result.expires_in));
+        let expires_at =
+            chrono::Utc::now() + chrono::Duration::seconds(i64::from(result.expires_in));
 
         Ok(KiroTokenData {
             access_token: result.access_token,
-            refresh_token: result.refresh_token.unwrap_or_else(|| refresh_token.to_string()),
+            refresh_token: result
+                .refresh_token
+                .unwrap_or_else(|| refresh_token.to_string()),
             profile_arn: String::new(),
             expires_at: expires_at.to_rfc3339(),
             auth_method: "idc".to_string(),
@@ -858,7 +955,7 @@ impl SSOOIDCClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             return Err(AppError::Auth(format!(
                 "device authorization failed (status {}): {}",
                 status, body
@@ -919,7 +1016,7 @@ impl SSOOIDCClient {
             }
 
             // Check for error response
-            let body = resp.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(resp.text().await);
             if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&body) {
                 match err_resp.error.as_str() {
                     "authorization_pending" => {
@@ -1020,7 +1117,7 @@ impl SSOOIDCClient {
 
         Ok(KiroTokenData {
             access_token: token_resp.access_token,
-            refresh_token: token_resp.refresh_token.unwrap_or_default(),
+            refresh_token: option_string_or_empty(token_resp.refresh_token),
             profile_arn: String::new(), // Will be populated by CodeWhisperer API
             expires_at: expires_at.to_rfc3339(),
             auth_method: "builder-id".to_string(),
