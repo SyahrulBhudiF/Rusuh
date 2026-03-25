@@ -127,6 +127,16 @@ pub fn convert_openai_to_anthropic(openai_request: &Value) -> Result<Value> {
         .and_then(|v| v.as_array())
         .ok_or_else(|| anyhow!("Missing or invalid messages field"))?;
 
+    let max_tokens = obj
+        .get("max_tokens")
+        .ok_or_else(|| anyhow!("Missing required field: max_tokens"))?;
+    let max_tokens = max_tokens
+        .as_u64()
+        .ok_or_else(|| anyhow!("max_tokens must be a positive integer"))?;
+    if max_tokens == 0 {
+        return Err(anyhow!("max_tokens must be greater than 0"));
+    }
+
     let mut anthropic_messages = Vec::new();
     let mut leading_system_messages = Vec::new();
     let mut seen_non_system = false;
@@ -163,10 +173,9 @@ pub fn convert_openai_to_anthropic(openai_request: &Value) -> Result<Value> {
         anthropic_request["system"] = Value::String(leading_system_messages.join("\n\n"));
     }
 
+    anthropic_request["max_tokens"] = Value::Number(max_tokens.into());
+
     // Copy optional fields
-    if let Some(max_tokens) = obj.get("max_tokens") {
-        anthropic_request["max_tokens"] = max_tokens.clone();
-    }
     if let Some(temperature) = obj.get("temperature") {
         anthropic_request["temperature"] = temperature.clone();
     }
@@ -232,7 +241,8 @@ mod tests {
                 {"role": "system", "content": "Instruction 2"},
                 {"role": "user", "content": "Hello!"},
                 {"role": "assistant", "content": "Hi"}
-            ]
+            ],
+            "max_tokens": 1000
         });
 
         let result = convert_openai_to_anthropic(&request).unwrap();
@@ -249,7 +259,8 @@ mod tests {
                 {"role": "system", "content": "Instruction 1"},
                 {"role": "user", "content": "Hello!"},
                 {"role": "system", "content": "Late instruction"}
-            ]
+            ],
+            "max_tokens": 1000
         });
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
@@ -257,5 +268,52 @@ mod tests {
             err.to_string()
                 .contains("System messages are only supported at the start of the conversation")
         );
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_rejects_missing_max_tokens() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        });
+
+        let err = convert_openai_to_anthropic(&request).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Missing required field: max_tokens")
+        );
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_rejects_non_numeric_max_tokens() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "max_tokens": "1000"
+        });
+
+        let err = convert_openai_to_anthropic(&request).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("max_tokens must be a positive integer")
+        );
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_rejects_zero_max_tokens() {
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "max_tokens": 0
+        });
+
+        let err = convert_openai_to_anthropic(&request).unwrap_err();
+        assert!(err.to_string().contains("max_tokens must be greater than 0"));
     }
 }
