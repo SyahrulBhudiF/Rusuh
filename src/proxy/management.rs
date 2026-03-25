@@ -1473,7 +1473,12 @@ async fn import_zed_credential(
     match import_zed_credential(&auth_dir, name, user_id, credential_json) {
         Ok(filename) => {
             // Reload accounts
-            let _ = state.accounts.reload().await;
+            if let Err(error) = state.accounts.reload().await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("reload accounts: {error}")})),
+                );
+            }
 
             (
                 StatusCode::OK,
