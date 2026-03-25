@@ -5,6 +5,7 @@ import { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import './index.css'
+import { Toaster } from './components/ui/sonner'
 import { ManagementAuthProvider, useManagementAuth } from './lib/management-auth'
 import { createAppQueryClient } from './lib/query-client'
 import { useThemeStore } from './lib/theme'
@@ -20,6 +21,7 @@ function AppProviders() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
+      <Toaster />
     </QueryClientProvider>
   )
 }

@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+
 export function QueryState({
   isLoading,
   isError,
@@ -21,10 +23,12 @@ export function QueryState({
   }
   if (isError) {
     return (
-      <div className='dashboard-enter border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive-foreground rounded-3xl border p-8 text-sm shadow-sm'>
-        <p className='text-foreground font-medium'>Request failed</p>
-        <p className='mt-2'>{error?.message ?? 'Try again in a moment.'}</p>
-      </div>
+      <Alert variant='destructive' className='dashboard-enter rounded-3xl p-8 shadow-sm'>
+        <AlertTitle className='text-foreground'>Request failed</AlertTitle>
+        <AlertDescription className='mt-2'>
+          {error?.message ?? 'Try again in a moment.'}
+        </AlertDescription>
+      </Alert>
     )
   }
 

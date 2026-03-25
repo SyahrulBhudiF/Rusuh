@@ -77,7 +77,7 @@ export function ConfigPage() {
     <PageShell
       eyebrow='Config'
       title='Runtime configuration'
-      description='Read-only runtime snapshot: listener, management policy, routing, and provider key inventory.'
+      description='Read-only runtime config. Use this page to inspect the current setup, not to edit it.'
       actions={
         <div className='border-border bg-background/60 grid grid-cols-1 gap-2 rounded-2xl border p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
           {(['structured', 'json', 'yaml'] as const).map((value) => (
@@ -132,7 +132,7 @@ export function ConfigPage() {
               <div className='grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
                 <section className='space-y-3'>
                   <div>
-                    <h3 className='text-lg font-semibold'>Core settings</h3>
+                    <h3 className='text-lg font-semibold'>Runtime settings</h3>
                     <p className='text-muted-foreground mt-1 text-sm'>
                       Runtime behavior and management flags.
                     </p>
@@ -189,7 +189,7 @@ export function ConfigPage() {
                 <section className='space-y-4'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                     <div>
-                      <h3 className='text-lg font-semibold'>Provider inventory</h3>
+                      <h3 className='text-lg font-semibold'>Configured providers</h3>
                       <p className='text-muted-foreground mt-1 text-sm'>
                         Configured providers and key inventories.
                       </p>
@@ -211,7 +211,7 @@ export function ConfigPage() {
                       </div>
                     ) : (
                       <p className='text-muted-foreground mt-2 text-sm'>
-                        None configured in the current runtime snapshot.
+                        No providers configured yet. Add an account first, then return here to inspect the runtime config.
                       </p>
                     )}
                   </div>
