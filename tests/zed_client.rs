@@ -60,10 +60,28 @@ fn test_is_stale_token_response_401_without_headers() {
 }
 
 #[test]
-fn test_is_stale_token_response_non_401() {
+fn test_is_stale_token_response_non_401_with_expired_header() {
     let client = ZedClient;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("x-zed-expired-token", "true".parse().unwrap());
 
     assert!(!client.is_stale_token_response(403, &headers));
+}
+
+#[test]
+fn test_is_stale_token_response_non_401_with_outdated_header() {
+    let client = ZedClient;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-zed-outdated-token", "true".parse().unwrap());
+
+    assert!(!client.is_stale_token_response(403, &headers));
+}
+
+#[test]
+fn test_is_stale_token_response_with_unrelated_header() {
+    let client = ZedClient;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-zed-something-else", "true".parse().unwrap());
+
+    assert!(!client.is_stale_token_response(401, &headers));
 }

@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use rusuh::auth::kiro_runtime::{KiroRateLimiter, QuotaStatus, UsageCheckRequest};
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::Config;
-use rusuh::providers::model_registry::ModelRegistry;
-use rusuh::proxy::ProxyState;
 use rusuh::providers::kiro_outcome::{
     body_indicates_suspension, body_indicates_token_error, body_matches_suspend_keywords,
     calculate_429_cooldown, classify_kiro_response, cooldown_for_outcome,
     cooldown_reason_for_outcome, registry_action_for_outcome, KiroRequestOutcome, RegistryAction,
     COOLDOWN_REASON_429, COOLDOWN_REASON_QUOTA, COOLDOWN_REASON_SUSPENDED,
 };
+use rusuh::providers::model_registry::ModelRegistry;
+use rusuh::proxy::ProxyState;
 
 // ── classify_kiro_response tests ─────────────────────────────────────────────
 

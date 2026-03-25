@@ -1,12 +1,13 @@
 //! Tests for ZedProvider runtime behavior
 
+use chrono::Utc;
 use rusuh::auth::store::{AuthRecord, AuthStatus};
 use rusuh::providers::zed::{TokenCache, ZedProvider};
+use rusuh::providers::Provider;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
-use chrono::Utc;
 
 fn make_zed_record(user_id: &str, credential_json: &str) -> AuthRecord {
     let mut metadata = HashMap::new();
@@ -154,6 +155,34 @@ fn test_zed_provider_models_cache_initially_empty() {
 }
 
 #[tokio::test]
+async fn test_zed_provider_list_models_uses_cached_model_mapping() {
+    let record = make_zed_record("user123", "{\"key\":\"value\"}");
+    let provider = ZedProvider::new(record).unwrap();
+
+    {
+        let mut token_cache = provider.token_cache.lock().await;
+        *token_cache = Some(TokenCache::new("test-bearer-token".to_string(), 3600));
+    }
+
+    {
+        let mut models_cache = provider.models_cache.lock().await;
+        *models_cache = Some(vec!["claude-3.7-sonnet".to_string(), "gpt-4.1".to_string()]);
+    }
+
+    let models = provider.list_models().await.unwrap();
+
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "claude-3.7-sonnet");
+    assert_eq!(models[0].object, "model");
+    assert_eq!(models[0].created, 0);
+    assert_eq!(models[0].owned_by, "zed");
+    assert_eq!(models[1].id, "gpt-4.1");
+    assert_eq!(models[1].object, "model");
+    assert_eq!(models[1].created, 0);
+    assert_eq!(models[1].owned_by, "zed");
+}
+
+#[tokio::test]
 async fn test_zed_provider_build_headers() {
     let record = make_zed_record("user123", "{\"key\":\"value\"}");
     let provider = ZedProvider::new(record).unwrap();
@@ -166,7 +195,10 @@ async fn test_zed_provider_build_headers() {
 
     let headers = provider.build_headers().await.unwrap();
 
-    assert_eq!(headers.get("authorization").unwrap(), "Bearer test-bearer-token");
+    assert_eq!(
+        headers.get("authorization").unwrap(),
+        "Bearer test-bearer-token"
+    );
     assert_eq!(headers.get("content-type").unwrap(), "application/json");
     assert_eq!(headers.get("x-zed-version").unwrap(), "0.222.4");
 }

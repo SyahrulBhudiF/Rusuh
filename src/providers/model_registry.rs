@@ -365,8 +365,7 @@ impl ModelRegistry {
     /// Mark model as quota exceeded for client at a specific instant (for testability).
     pub async fn set_quota_exceeded_at(&self, client_id: &str, model_id: &str, at: Instant) {
         if let Some(reg) = self.models.write().await.get_mut(model_id) {
-            reg.quota_exceeded_clients
-                .insert(client_id.to_string(), at);
+            reg.quota_exceeded_clients.insert(client_id.to_string(), at);
         }
     }
 

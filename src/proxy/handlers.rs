@@ -164,7 +164,10 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
         let targets = public_route_targets(public_model);
         let mut available = false;
         for target in targets {
-            let clients = state.model_registry.available_clients_for_model(target.model).await;
+            let clients = state
+                .model_registry
+                .available_clients_for_model(target.model)
+                .await;
             if clients.iter().any(|client_id| {
                 client_provider_name(client_id)
                     .map(|name| name.eq_ignore_ascii_case(target.provider))

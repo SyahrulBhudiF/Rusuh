@@ -24,13 +24,14 @@ use rusuh::router::build_router;
 const SECRET: &str = "test-zed-login-secret";
 
 fn mgmt_config(auth_dir: &str) -> Config {
-    let mut cfg = Config::default();
-    cfg.auth_dir = auth_dir.into();
-    cfg.remote_management = ManagementConfig {
-        allow_remote: true,
-        secret_key: SECRET.into(),
-    };
-    cfg
+    Config {
+        auth_dir: auth_dir.into(),
+        remote_management: ManagementConfig {
+            allow_remote: true,
+            secret_key: SECRET.into(),
+        },
+        ..Default::default()
+    }
 }
 
 async fn test_app(cfg: Config) -> axum::Router {
@@ -120,10 +121,7 @@ async fn login_initiate_returns_reachable_callback_port_and_zed_url() {
     let port = body["port"].as_u64().unwrap();
     let login_url = body["login_url"].as_str().unwrap();
     let session_id = body["session_id"].as_str().unwrap();
-    let public_key = login_url
-        .split("native_app_public_key=")
-        .nth(1)
-        .unwrap();
+    let public_key = login_url.split("native_app_public_key=").nth(1).unwrap();
 
     assert_eq!(body["status"], "waiting");
     assert!(Uuid::parse_str(session_id).is_ok());
@@ -132,7 +130,9 @@ async fn login_initiate_returns_reachable_callback_port_and_zed_url() {
     let public_key_der = URL_SAFE_NO_PAD.decode(public_key.as_bytes()).unwrap();
     assert!(RsaPublicKey::from_pkcs1_der(&public_key_der).is_ok());
 
-    let response = reqwest::get(format!("http://127.0.0.1:{port}/")).await.unwrap();
+    let response = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
@@ -217,7 +217,10 @@ async fn unpadded_callback_token_is_accepted() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "completed");
-    assert_eq!(body["filename"], canonical_zed_login_filename("another-user"));
+    assert_eq!(
+        body["filename"],
+        canonical_zed_login_filename("another-user")
+    );
 }
 
 #[tokio::test]
@@ -249,10 +252,8 @@ async fn first_login_writes_canonical_filename() {
     let filename = canonical_zed_login_filename("first-user");
     assert_eq!(body["filename"], filename);
 
-    let content: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join(filename)).unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(filename)).unwrap()).unwrap();
     assert_eq!(content["type"], "zed");
     assert_eq!(content["user_id"], "first-user");
     assert_eq!(content["credential_json"], r#"{"token":"first"}"#);
@@ -312,10 +313,9 @@ async fn relogin_updates_existing_canonical_file_instead_of_creating_duplicate()
 
     let entries = std::fs::read_dir(dir.path()).unwrap().count();
     assert_eq!(entries, 1);
-    let content: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join(canonical)).unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(canonical)).unwrap())
+            .unwrap();
     assert_eq!(content["credential_json"], r#"{"token":"new-token"}"#);
 }
 
@@ -362,10 +362,9 @@ async fn relogin_reuses_existing_legacy_filename_for_same_user() {
         .join(canonical_zed_login_filename("legacy-user"))
         .exists());
 
-    let content: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join(legacy_name)).unwrap(),
-    )
-    .unwrap();
+    let content: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(legacy_name)).unwrap())
+            .unwrap();
     assert_eq!(content["credential_json"], r#"{"token":"updated-token"}"#);
 }
 

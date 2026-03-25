@@ -88,9 +88,15 @@ async fn callback_server_binds_localhost_and_stores_user_id_and_access_token() {
         .unwrap();
 
     assert!(response.status().is_redirection());
-    assert_eq!(response.headers()[reqwest::header::LOCATION], "https://zed.dev/native_app_signin_succeeded");
+    assert_eq!(
+        response.headers()[reqwest::header::LOCATION],
+        "https://zed.dev/native_app_signin_succeeded"
+    );
     assert_eq!(state.user_id.lock().await.as_deref(), Some("test-user"));
-    assert_eq!(state.access_token.lock().await.as_deref(), Some("test-token"));
+    assert_eq!(
+        state.access_token.lock().await.as_deref(),
+        Some("test-token")
+    );
     assert!(state.is_completed());
 
     handle.abort();
@@ -114,7 +120,10 @@ async fn callback_handler_redirects_to_zed_success_page() {
         .unwrap();
 
     assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
-    assert_eq!(response.headers()[reqwest::header::LOCATION], "https://zed.dev/native_app_signin_succeeded");
+    assert_eq!(
+        response.headers()[reqwest::header::LOCATION],
+        "https://zed.dev/native_app_signin_succeeded"
+    );
 
     handle.abort();
     let _ = handle.await;
@@ -158,46 +167,141 @@ async fn session_boundary_at_exactly_ten_minutes_is_not_expired() {
 }
 
 #[tokio::test]
-async fn session_store_cleanup_evicts_sessions_older_than_ten_minutes() {
-    let (callback_state_old, _port_old, old_handle) = start_callback_server(0).await.unwrap();
-    let (callback_state_new, _port_new, new_handle) = start_callback_server(0).await.unwrap();
-
-    let old_arc = Arc::new(callback_state_old);
-    let new_arc = Arc::new(callback_state_new);
+async fn cleanup_expired_sessions_removes_expired_session() {
+    let (callback_state_expired, _port_expired, expired_handle) =
+        start_callback_server(0).await.unwrap();
+    let (callback_state_fresh, _port_fresh, fresh_handle) = start_callback_server(0).await.unwrap();
 
     let mut sessions = HashMap::new();
     sessions.insert(
-        "old".to_string(),
+        "expired".to_string(),
         ZedLoginSession {
-            name: "old".to_string(),
+            name: "expired".to_string(),
             private_key: "priv".to_string(),
             port: 1234,
             status: ZedLoginSessionStatus::Waiting,
             created_at: Utc::now() - Duration::minutes(11),
-            callback_state: old_arc,
-            server_handle: old_handle,
+            callback_state: Arc::new(callback_state_expired),
+            server_handle: expired_handle,
         },
     );
     sessions.insert(
-        "new".to_string(),
+        "fresh".to_string(),
         ZedLoginSession {
-            name: "new".to_string(),
+            name: "fresh".to_string(),
             private_key: "priv".to_string(),
             port: 1235,
             status: ZedLoginSessionStatus::Waiting,
             created_at: Utc::now() - Duration::minutes(5),
-            callback_state: new_arc,
-            server_handle: new_handle,
+            callback_state: Arc::new(callback_state_fresh),
+            server_handle: fresh_handle,
         },
     );
 
     cleanup_expired_sessions(&mut sessions);
 
-    assert!(!sessions.contains_key("old"));
-    assert!(sessions.contains_key("new"));
+    assert!(!sessions.contains_key("expired"));
 
-    if let Some(session) = sessions.remove("new") {
+    if let Some(session) = sessions.remove("fresh") {
         session.server_handle.abort();
         let _ = session.server_handle.await;
     }
+}
+
+#[tokio::test]
+async fn cleanup_expired_sessions_keeps_fresh_session() {
+    let (callback_state, _port, handle) = start_callback_server(0).await.unwrap();
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "fresh".to_string(),
+        ZedLoginSession {
+            name: "fresh".to_string(),
+            private_key: "priv".to_string(),
+            port: 1234,
+            status: ZedLoginSessionStatus::Waiting,
+            created_at: Utc::now() - Duration::minutes(5),
+            callback_state: Arc::new(callback_state),
+            server_handle: handle,
+        },
+    );
+
+    cleanup_expired_sessions(&mut sessions);
+
+    let session = sessions.remove("fresh").unwrap();
+    assert_eq!(session.name, "fresh");
+    assert_eq!(session.port, 1234);
+    assert_eq!(session.status, ZedLoginSessionStatus::Waiting);
+
+    session.server_handle.abort();
+    let _ = session.server_handle.await;
+}
+
+#[tokio::test]
+async fn cleanup_expired_sessions_does_not_affect_unrelated_sessions() {
+    let (callback_state_expired, _port_expired, expired_handle) =
+        start_callback_server(0).await.unwrap();
+    let (callback_state_waiting, _port_waiting, waiting_handle) =
+        start_callback_server(0).await.unwrap();
+    let (callback_state_completed, _port_completed, completed_handle) =
+        start_callback_server(0).await.unwrap();
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "expired".to_string(),
+        ZedLoginSession {
+            name: "expired".to_string(),
+            private_key: "priv".to_string(),
+            port: 1234,
+            status: ZedLoginSessionStatus::Waiting,
+            created_at: Utc::now() - Duration::minutes(11),
+            callback_state: Arc::new(callback_state_expired),
+            server_handle: expired_handle,
+        },
+    );
+    sessions.insert(
+        "waiting".to_string(),
+        ZedLoginSession {
+            name: "waiting".to_string(),
+            private_key: "priv-a".to_string(),
+            port: 1235,
+            status: ZedLoginSessionStatus::Waiting,
+            created_at: Utc::now() - Duration::minutes(2),
+            callback_state: Arc::new(callback_state_waiting),
+            server_handle: waiting_handle,
+        },
+    );
+    sessions.insert(
+        "completed".to_string(),
+        ZedLoginSession {
+            name: "completed".to_string(),
+            private_key: "priv-b".to_string(),
+            port: 1236,
+            status: ZedLoginSessionStatus::Completed,
+            created_at: Utc::now() - Duration::minutes(1),
+            callback_state: Arc::new(callback_state_completed),
+            server_handle: completed_handle,
+        },
+    );
+
+    cleanup_expired_sessions(&mut sessions);
+
+    assert_eq!(sessions.len(), 2);
+    assert!(!sessions.contains_key("expired"));
+
+    let waiting = sessions.remove("waiting").unwrap();
+    assert_eq!(waiting.name, "waiting");
+    assert_eq!(waiting.private_key, "priv-a");
+    assert_eq!(waiting.port, 1235);
+    assert_eq!(waiting.status, ZedLoginSessionStatus::Waiting);
+    waiting.server_handle.abort();
+    let _ = waiting.server_handle.await;
+
+    let completed = sessions.remove("completed").unwrap();
+    assert_eq!(completed.name, "completed");
+    assert_eq!(completed.private_key, "priv-b");
+    assert_eq!(completed.port, 1236);
+    assert_eq!(completed.status, ZedLoginSessionStatus::Completed);
+    completed.server_handle.abort();
+    let _ = completed.server_handle.await;
 }

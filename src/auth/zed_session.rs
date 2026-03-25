@@ -1,15 +1,9 @@
 //! Zed native-app login session store.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Duration, Utc};
-use tokio::{
-    sync::Mutex,
-    task::JoinHandle,
-};
+use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::auth::zed_callback::CallbackState;
 
@@ -64,14 +58,17 @@ pub fn new_session_store() -> ZedLoginSessionStore {
 
 pub fn cleanup_expired_sessions(sessions: &mut HashMap<String, ZedLoginSession>) {
     let now = Utc::now();
-    let expired_ids = sessions
-        .iter()
-        .filter_map(|(session_id, session)| session.is_expired(now).then_some(session_id.clone()))
-        .collect::<Vec<_>>();
+    let mut expired_sessions = Vec::new();
 
-    for session_id in expired_ids {
-        if let Some(session) = sessions.remove(&session_id) {
-            session.server_handle.abort();
+    for (session_id, session) in sessions.iter() {
+        if session.is_expired(now) {
+            expired_sessions.push(session_id.clone());
+        }
+    }
+
+    for session_id in expired_sessions {
+        if let Some(expired_session) = sessions.remove(&session_id) {
+            expired_session.server_handle.abort();
         }
     }
 }

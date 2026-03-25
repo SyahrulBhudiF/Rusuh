@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::models::{ChatCompletionRequest, ChatMessage, MessageContent};
+use crate::models::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, MessageContent, Usage,
+};
 
 // ── Native Kiro Request Structures ──────────────────────────────────────────
 
@@ -490,9 +492,252 @@ fn extract_usage(payload: &Value) -> Option<Value> {
     }))
 }
 
+// ── Aggregation ──────────────────────────────────────────────────────────────
+
+/// Aggregated response from KIRO event stream messages
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KiroAggregatedResponse {
+    /// Accumulated text content
+    pub content: String,
+    /// Tool calls in OpenAI format
+    pub tool_calls: Vec<Value>,
+    /// Usage information
+    pub usage: Option<Value>,
+    /// Stop reason from messageStop event
+    pub stop_reason: Option<String>,
+}
+
+/// Aggregate KIRO event stream messages into a single response
+///
+/// Processes event stream messages and accumulates:
+/// - Text content from assistantResponseEvent and contentBlockDelta
+/// - Tool calls from toolUseEvent and toolUses arrays
+/// - Usage data from usageEvent
+/// - Stop reason from messageStop
+pub fn aggregate_kiro_messages(
+    messages: &[crate::providers::kiro_stream::EventStreamMessage],
+) -> KiroAggregatedResponse {
+    let mut result = KiroAggregatedResponse::default();
+
+    for msg in messages {
+        let event = KiroEventType::parse(&msg.event_type);
+
+        // Parse payload
+        let payload: Value = match serde_json::from_slice(&msg.payload) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match event {
+            KiroEventType::AssistantResponseEvent => {
+                // Extract text content
+                if let Some(text) = payload["content"].as_str() {
+                    result.content.push_str(text);
+                }
+
+                // Extract toolUses array if present
+                if let Some(tool_uses) = payload["toolUses"].as_array() {
+                    for tool_use in tool_uses {
+                        if let Some(tool_call) = convert_tool_use_to_openai(tool_use) {
+                            result.tool_calls.push(tool_call);
+                        }
+                    }
+                }
+            }
+
+            KiroEventType::ContentBlockDelta => {
+                // Extract delta text
+                let text = extract_delta_text(&payload);
+                if !text.is_empty() {
+                    result.content.push_str(&text);
+                }
+            }
+
+            KiroEventType::ToolUseEvent => {
+                // Extract tool from payload - supports both nested and flat shapes
+                if let Some(tool) = payload["tool"].as_object() {
+                    // Nested shape: {"tool": {"id": "...", "name": "...", "input": {...}}}
+                    if let Some(tool_call) =
+                        convert_tool_use_to_openai(&Value::Object(tool.clone()))
+                    {
+                        result.tool_calls.push(tool_call);
+                    }
+                } else if payload.get("toolUseId").is_some() || payload.get("name").is_some() {
+                    // Flat shape: {"toolUseId": "...", "name": "...", "input": {...}}
+                    if let Some(tool_call) = convert_flat_tool_use_to_openai(&payload) {
+                        result.tool_calls.push(tool_call);
+                    }
+                }
+            }
+
+            KiroEventType::UsageEvent => {
+                // Extract usage data
+                if let Some(usage) = extract_usage(&payload) {
+                    result.usage = Some(usage);
+                }
+            }
+
+            KiroEventType::MessageStop => {
+                // Extract stop reason
+                let stop_reason = payload["stopReason"]
+                    .as_str()
+                    .or_else(|| payload["stop_reason"].as_str())
+                    .map(|s| s.to_string());
+                result.stop_reason = stop_reason;
+            }
+
+            _ => {}
+        }
+    }
+
+    result
+}
+
+/// Convert KIRO tool use to OpenAI tool call format
+fn convert_tool_use_to_openai(tool_use: &Value) -> Option<Value> {
+    let id = tool_use["id"].as_str()?;
+    let name = tool_use["name"].as_str()?;
+    let input = &tool_use["input"];
+
+    // Serialize input as JSON string
+    let arguments = serde_json::to_string(input).ok()?;
+
+    Some(json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments
+        }
+    }))
+}
+
+/// Convert flat KIRO tool use payload to OpenAI tool call format
+/// Handles flat shape: {"toolUseId": "...", "name": "...", "input": {...}}
+fn convert_flat_tool_use_to_openai(payload: &Value) -> Option<Value> {
+    let id = payload["toolUseId"].as_str()?;
+    let name = payload["name"].as_str()?;
+    let input = &payload["input"];
+
+    // Serialize input as JSON string
+    let arguments = serde_json::to_string(input).ok()?;
+
+    Some(json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments
+        }
+    }))
+}
+
+/// Build OpenAI ChatCompletionResponse from aggregated Kiro response
+///
+/// Converts KiroAggregatedResponse into standard OpenAI chat completion format.
+/// Maps Kiro stop reasons to OpenAI finish_reason values:
+/// - end_turn -> stop
+/// - max_tokens -> length
+/// - tool_use -> tool_calls
+pub fn build_openai_chat_completion_response(
+    aggregate: KiroAggregatedResponse,
+    chat_id: &str,
+    model: &str,
+    created: i64,
+) -> ChatCompletionResponse {
+    // Map stop reason to OpenAI finish_reason
+    let finish_reason = match aggregate.stop_reason.as_deref() {
+        Some("end_turn") => "stop",
+        Some("max_tokens") => "length",
+        Some("tool_use") => "tool_calls",
+        _ => "stop",
+    };
+
+    // Build assistant message
+    let content = MessageContent::Text(aggregate.content);
+    let tool_calls = if aggregate.tool_calls.is_empty() {
+        None
+    } else {
+        Some(aggregate.tool_calls)
+    };
+
+    let message = ChatMessage {
+        role: "assistant".to_string(),
+        content,
+        name: None,
+        tool_calls,
+        tool_call_id: None,
+    };
+
+    // Build choice
+    let choice = Choice {
+        index: 0,
+        message: Some(message),
+        delta: None,
+        finish_reason: Some(finish_reason.to_string()),
+    };
+
+    // Parse usage if present
+    let usage = aggregate.usage.and_then(|usage_json| {
+        let prompt_tokens = usage_json["prompt_tokens"].as_u64()? as u32;
+        let completion_tokens = usage_json["completion_tokens"].as_u64()? as u32;
+        let total_tokens = usage_json["total_tokens"].as_u64()? as u32;
+
+        Some(Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        })
+    });
+
+    ChatCompletionResponse {
+        id: chat_id.to_string(),
+        object: "chat.completion".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![choice],
+        usage,
+    }
+}
+
+fn serialize_sse_data(data: &Value) -> String {
+    match serde_json::to_string(data) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            let escaped_error = error.to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            format!(
+                r#"{{"error":"failed to serialize Kiro SSE payload: {}"}}"#,
+                escaped_error
+            )
+        }
+    }
+}
+
 /// Format a JSON value as SSE event
 fn format_sse_event(event_type: &str, data: &Value) -> Bytes {
-    let json_str = serde_json::to_string(data).unwrap_or_default();
-    let sse = format!("event: {}\ndata: {}\n\n", event_type, json_str);
+    let sse = format!(
+        "event: {}\ndata: {}\n\n",
+        event_type,
+        serialize_sse_data(data)
+    );
     Bytes::from(sse)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::serialize_sse_data;
+
+    #[test]
+    fn serialize_sse_data_preserves_compact_json() {
+        let payload = json!({"message":"hello","count":2});
+        let serialized = serialize_sse_data(&payload);
+
+        assert!(!serialized.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&serialized).unwrap(),
+            payload
+        );
+    }
 }

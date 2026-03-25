@@ -79,12 +79,12 @@ async fn handle_callback(
     State(state): State<CallbackState>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    let Some(user_id) = query.user_id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "missing user_id query parameter",
-        )
-            .into_response();
+    let Some(user_id) = query
+        .user_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing user_id query parameter").into_response();
     };
 
     let Some(access_token) = query

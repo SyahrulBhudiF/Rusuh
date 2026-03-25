@@ -2,7 +2,33 @@
 
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::path::Path;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+/// Validate Zed credential fields and return trimmed values.
+///
+/// Ensures both `user_id` and `credential_json` are present and non-empty.
+///
+/// # Errors
+/// Returns error if either field is missing or empty.
+pub fn validated_zed_credential<'a>(
+    user_id: Option<&'a str>,
+    credential_json: Option<&'a str>,
+) -> Result<(&'a str, &'a str)> {
+    let user_id = user_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("user_id is required")?;
+
+    let credential_json = credential_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("credential_json is required")?;
+
+    Ok((user_id, credential_json))
+}
 
 /// Validate Zed credential fields.
 ///
@@ -11,13 +37,32 @@ use std::path::Path;
 /// # Errors
 /// Returns error if either field is missing or empty.
 pub fn validate_zed_credential(user_id: Option<&str>, credential_json: Option<&str>) -> Result<()> {
-    if user_id.is_none() || user_id.unwrap().trim().is_empty() {
-        anyhow::bail!("user_id is required");
+    validated_zed_credential(user_id, credential_json).map(|_| ())
+}
+
+fn validated_zed_import_filename(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+
+    if trimmed.is_empty() {
+        anyhow::bail!("name is required");
     }
-    if credential_json.is_none() || credential_json.unwrap().trim().is_empty() {
-        anyhow::bail!("credential_json is required");
+
+    if trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+        || !trimmed.is_ascii()
+    {
+        anyhow::bail!("invalid filename");
     }
-    Ok(())
+
+    let filename = if trimmed.to_ascii_lowercase().ends_with(".json") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.json")
+    };
+
+    Ok(filename)
 }
 
 /// Import Zed credential to auth file.
@@ -39,14 +84,8 @@ pub fn import_zed_credential(
     user_id: &str,
     credential_json: &str,
 ) -> Result<String> {
-    // Auto-add .json extension if missing
-    let filename = if name.to_lowercase().ends_with(".json") {
-        name.to_string()
-    } else {
-        format!("{}.json", name)
-    };
-
-    let file_path = auth_dir.join(&filename);
+    let filename = validated_zed_import_filename(name)?;
+    let file_path: PathBuf = auth_dir.join(&filename);
 
     // Prevent overwrite
     if file_path.exists() {
@@ -58,9 +97,11 @@ pub fn import_zed_credential(
         "user_id": user_id.trim(),
         "credential_json": credential_json.trim(),
     });
+    let serialized =
+        serde_json::to_string_pretty(&auth_data).context("failed to serialize zed auth file")?;
 
-    std::fs::write(&file_path, serde_json::to_string_pretty(&auth_data)?)
-        .context("failed to write auth file")?;
+    fs::write(&file_path, serialized)
+        .with_context(|| format!("failed to write auth file: {}", file_path.display()))?;
 
     Ok(filename)
 }
@@ -88,6 +129,15 @@ mod tests {
     #[test]
     fn validate_accepts_valid_credentials() {
         assert!(validate_zed_credential(Some("user"), Some("cred")).is_ok());
+    }
+
+    #[test]
+    fn validated_returns_trimmed_credentials() {
+        let (user_id, credential_json) =
+            validated_zed_credential(Some("  user  "), Some("  cred  ")).unwrap();
+
+        assert_eq!(user_id, "user");
+        assert_eq!(credential_json, "cred");
     }
 
     #[test]

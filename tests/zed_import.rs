@@ -16,13 +16,14 @@ use rusuh::router::build_router;
 const SECRET: &str = "test-mgmt-secret";
 
 fn mgmt_config(auth_dir: &str) -> Config {
-    let mut cfg = Config::default();
-    cfg.auth_dir = auth_dir.into();
-    cfg.remote_management = ManagementConfig {
-        allow_remote: true,
-        secret_key: SECRET.into(),
-    };
-    cfg
+    Config {
+        auth_dir: auth_dir.into(),
+        remote_management: ManagementConfig {
+            allow_remote: true,
+            secret_key: SECRET.into(),
+        },
+        ..Default::default()
+    }
 }
 
 async fn test_app(cfg: Config) -> axum::Router {
@@ -78,6 +79,29 @@ async fn import_rejects_missing_user_id() {
 }
 
 #[tokio::test]
+async fn import_rejects_whitespace_only_user_id() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap())).await;
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/zed/import",
+            json!({
+                "name": "test-zed.json",
+                "user_id": "   ",
+                "credential_json": "{\"token\":\"abc\"}"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("user_id"));
+}
+
+#[tokio::test]
 async fn import_rejects_missing_credential_json() {
     let dir = TempDir::new().unwrap();
     let app = test_app(mgmt_config(dir.path().to_str().unwrap())).await;
@@ -89,6 +113,29 @@ async fn import_rejects_missing_credential_json() {
             json!({
                 "name": "test-zed.json",
                 "user_id": "test-user"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("credential_json"));
+}
+
+#[tokio::test]
+async fn import_rejects_whitespace_only_credential_json() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap())).await;
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/zed/import",
+            json!({
+                "name": "test-zed.json",
+                "user_id": "test-user",
+                "credential_json": "   "
             }),
         ))
         .await
@@ -121,11 +168,49 @@ async fn import_writes_valid_zed_auth_file() {
     let body = body_json(resp).await;
     assert_eq!(body["filename"], "test-zed.json");
 
-    // Verify file was written with correct structure
     let file_path = dir.path().join("test-zed.json");
     assert!(file_path.exists());
-    let content: Value = serde_json::from_str(&std::fs::read_to_string(&file_path).unwrap()).unwrap();
+
+    let file_text = std::fs::read_to_string(&file_path).unwrap();
+    let expected = serde_json::to_string_pretty(&json!({
+        "type": "zed",
+        "user_id": "test-user",
+        "credential_json": "{\"token\":\"abc\"}"
+    }))
+    .unwrap();
+    assert_eq!(file_text, expected);
+
+    let content: Value = serde_json::from_str(&file_text).unwrap();
     assert_eq!(content["type"], "zed");
+    assert_eq!(content["user_id"], "test-user");
+    assert_eq!(content["credential_json"], "{\"token\":\"abc\"}");
+}
+
+#[tokio::test]
+async fn import_trims_and_persists_fields() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap())).await;
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/zed/import",
+            json!({
+                "name": "trimmed-zed.json",
+                "user_id": "  test-user  ",
+                "credential_json": "  {\"token\":\"abc\"}  "
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["filename"], "trimmed-zed.json");
+
+    let file_path = dir.path().join("trimmed-zed.json");
+    let content: Value =
+        serde_json::from_str(&std::fs::read_to_string(&file_path).unwrap()).unwrap();
     assert_eq!(content["user_id"], "test-user");
     assert_eq!(content["credential_json"], "{\"token\":\"abc\"}");
 }
@@ -193,8 +278,41 @@ async fn import_prevents_overwrite() {
 
     // Verify original file unchanged
     let file_path = dir.path().join("test-zed.json");
-    let content: Value = serde_json::from_str(&std::fs::read_to_string(&file_path).unwrap()).unwrap();
+    let content: Value =
+        serde_json::from_str(&std::fs::read_to_string(&file_path).unwrap()).unwrap();
     assert_eq!(content["user_id"], "existing-user");
+}
+
+#[tokio::test]
+async fn import_rejects_traversal_name_and_does_not_write_outside_auth_dir() {
+    let dir = TempDir::new().unwrap();
+    let auth_dir = dir.path().join("nested").join("auth");
+    std::fs::create_dir_all(&auth_dir).unwrap();
+
+    let outside_path = dir.path().join("nested").join("outside.json");
+    assert!(!outside_path.exists());
+
+    let app = test_app(mgmt_config(auth_dir.to_str().unwrap())).await;
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/zed/import",
+            json!({
+                "name": "../outside",
+                "user_id": "test-user",
+                "credential_json": "{\"token\":\"abc\"}"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("invalid filename"));
+    assert!(!outside_path.exists());
+    assert!(!auth_dir.join("../outside.json").exists());
+    assert!(!auth_dir.join(r"..\outside.json").exists());
 }
 
 // ── Quota tests ──────────────────────────────────────────────────────────────

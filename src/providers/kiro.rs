@@ -15,8 +15,8 @@ use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::auth::kiro::{KiroTokenData, BUILDER_ID_START_URL, REFRESH_SKEW_SECS};
-use crate::auth::kiro_runtime::{QuotaStatus, UsageCheckRequest};
 use crate::auth::kiro_login::{SSOOIDCClient, SocialAuthClient};
+use crate::auth::kiro_runtime::{QuotaStatus, UsageCheckRequest};
 use crate::auth::store::AuthRecord;
 use crate::error::{AppError, AppResult};
 use crate::models::{ChatCompletionRequest, ChatCompletionResponse, ModelInfo};
@@ -97,6 +97,29 @@ fn sha256_hex(input: &str) -> String {
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
     result.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn format_upstream_error_body<E>(body_result: Result<String, E>) -> String
+where
+    E: std::fmt::Display,
+{
+    match body_result {
+        Ok(body) => body,
+        Err(error) => format!("<failed to read upstream error body: {error}>"),
+    }
+}
+
+fn cooldown_remaining_or_zero(remaining: Option<Duration>) -> Duration {
+    remaining.unwrap_or(Duration::ZERO)
+}
+
+fn profile_arn_or_empty(record: &AuthRecord) -> String {
+    record
+        .metadata
+        .get("profile_arn")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 // ── Retry Configuration ──────────────────────────────────────────────────────
@@ -266,14 +289,19 @@ impl KiroProvider {
 
     /// Build Kiro fingerprint headers matching kiro-client behavior
     fn build_kiro_headers(&self, token: &str) -> AppResult<reqwest::header::HeaderMap> {
-        use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST, USER_AGENT};
+        use reqwest::header::{
+            HeaderMap, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST, USER_AGENT,
+        };
 
         #[cfg(test)]
         if self.test_endpoint.is_some() {
             let mut headers = HeaderMap::new();
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-            headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))
-                .map_err(|e| AppError::Auth(format!("invalid authorization: {e}")))?);
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))
+                    .map_err(|e| AppError::Auth(format!("invalid authorization: {e}")))?,
+            );
             headers.insert(USER_AGENT, HeaderValue::from_static("rusuh-test"));
             return Ok(headers);
         }
@@ -297,19 +325,40 @@ impl KiroProvider {
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert("x-amzn-codewhisperer-optout", HeaderValue::from_static("true"));
+        headers.insert(
+            "x-amzn-codewhisperer-optout",
+            HeaderValue::from_static("true"),
+        );
         headers.insert("x-amzn-kiro-agent-mode", HeaderValue::from_static("vibe"));
-        headers.insert("x-amz-user-agent", HeaderValue::from_str(&x_amz_user_agent)
-            .map_err(|e| AppError::Auth(format!("invalid x-amz-user-agent: {e}")))?);
-        headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)
-            .map_err(|e| AppError::Auth(format!("invalid user-agent: {e}")))?);
-        headers.insert(HOST, HeaderValue::from_str(&host)
-            .map_err(|e| AppError::Auth(format!("invalid host: {e}")))?);
-        headers.insert("amz-sdk-invocation-id", HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
-            .map_err(|e| AppError::Auth(format!("invalid invocation-id: {e}")))?);
-        headers.insert("amz-sdk-request", HeaderValue::from_static("attempt=1; max=3"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))
-            .map_err(|e| AppError::Auth(format!("invalid authorization: {e}")))?);
+        headers.insert(
+            "x-amz-user-agent",
+            HeaderValue::from_str(&x_amz_user_agent)
+                .map_err(|e| AppError::Auth(format!("invalid x-amz-user-agent: {e}")))?,
+        );
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_str(&user_agent)
+                .map_err(|e| AppError::Auth(format!("invalid user-agent: {e}")))?,
+        );
+        headers.insert(
+            HOST,
+            HeaderValue::from_str(&host)
+                .map_err(|e| AppError::Auth(format!("invalid host: {e}")))?,
+        );
+        headers.insert(
+            "amz-sdk-invocation-id",
+            HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                .map_err(|e| AppError::Auth(format!("invalid invocation-id: {e}")))?,
+        );
+        headers.insert(
+            "amz-sdk-request",
+            HeaderValue::from_static("attempt=1; max=3"),
+        );
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))
+                .map_err(|e| AppError::Auth(format!("invalid authorization: {e}")))?,
+        );
         headers.insert(CONNECTION, HeaderValue::from_static("close"));
 
         Ok(headers)
@@ -322,9 +371,11 @@ impl KiroProvider {
             let mut cooldown = self.kiro_runtime.cooldown.write().await;
             cooldown.purge_expired(now);
             if cooldown.is_in_cooldown(&self.auth_key, model_id, now) {
-                let remaining = cooldown
-                    .remaining_cooldown(&self.auth_key, model_id, now)
-                    .unwrap_or_default();
+                let remaining = cooldown_remaining_or_zero(cooldown.remaining_cooldown(
+                    &self.auth_key,
+                    model_id,
+                    now,
+                ));
                 let reason = cooldown
                     .cooldown_reason(&self.auth_key, model_id, now)
                     .unwrap_or("cooldown");
@@ -389,12 +440,7 @@ impl KiroProvider {
             .ok_or_else(|| AppError::Auth("missing refresh_token".into()))?
             .to_string();
 
-        let profile_arn = record
-            .metadata
-            .get("profile_arn")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let profile_arn = profile_arn_or_empty(record);
 
         let expires_at = record
             .metadata
@@ -503,7 +549,7 @@ impl KiroProvider {
                 .start_url
                 .as_deref()
                 .filter(|value| !value.is_empty())
-            .unwrap_or(BUILDER_ID_START_URL);
+                .unwrap_or(BUILDER_ID_START_URL);
             SSOOIDCClient::new()
                 .refresh_token_with_region(
                     client_id,
@@ -514,6 +560,15 @@ impl KiroProvider {
                 )
                 .await?
         };
+
+        self.apply_refreshed_token(&mut state, refresh_result).await
+    }
+
+    async fn apply_refreshed_token(
+        &self,
+        state: &mut TokenState,
+        refresh_result: KiroTokenData,
+    ) -> AppResult<String> {
         state.access_token = refresh_result.access_token;
         state.refresh_token = refresh_result.refresh_token;
         state.expires_at = crate::auth::kiro::parse_expiry_str(&refresh_result.expires_at)
@@ -522,7 +577,10 @@ impl KiroProvider {
 
         let new_token = state.access_token.clone();
 
-        if let Err(error) = self.persist_token(&state).await {
+        // A successful upstream refresh updates the in-memory token for this process immediately.
+        // If persistence fails we warn and continue the current request, but a later restart may lose
+        // the refreshed token because the auth file was not updated.
+        if let Err(error) = self.persist_token(state).await {
             tracing::warn!(
                 provider = "kiro",
                 account = %self.account_name,
@@ -532,7 +590,6 @@ impl KiroProvider {
 
         Ok(new_token)
     }
-
 
     /// Check if an error is retryable
     fn is_retryable_error(error: &AppError) -> bool {
@@ -552,9 +609,7 @@ impl KiroProvider {
     fn is_retryable_status(status: StatusCode) -> bool {
         matches!(
             status,
-            StatusCode::BAD_GATEWAY
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::GATEWAY_TIMEOUT
+            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
         )
     }
 
@@ -569,8 +624,7 @@ impl KiroProvider {
 
         // Add ±30% jitter
         let jitter_range = (delay_millis * 3) / 10; // 30%
-        let jitter = (rand::random::<u64>() % (jitter_range * 2))
-            .saturating_sub(jitter_range);
+        let jitter = (rand::random::<u64>() % (jitter_range * 2)).saturating_sub(jitter_range);
         let final_delay = delay_millis.saturating_add(jitter);
 
         Duration::from_millis(final_delay)
@@ -645,9 +699,15 @@ impl KiroProvider {
         metadata.insert("type".into(), serde_json::json!("kiro"));
         metadata.insert("provider_key".into(), serde_json::json!("kiro"));
         metadata.insert("access_token".into(), serde_json::json!(state.access_token));
-        metadata.insert("refresh_token".into(), serde_json::json!(state.refresh_token));
+        metadata.insert(
+            "refresh_token".into(),
+            serde_json::json!(state.refresh_token),
+        );
         metadata.insert("profile_arn".into(), serde_json::json!(state.profile_arn));
-        metadata.insert("expires_at".into(), serde_json::json!(state.expires_at.to_rfc3339()));
+        metadata.insert(
+            "expires_at".into(),
+            serde_json::json!(state.expires_at.to_rfc3339()),
+        );
         metadata.insert("auth_method".into(), serde_json::json!(state.auth_method));
         metadata.insert("provider".into(), serde_json::json!(state.provider));
         metadata.insert("region".into(), serde_json::json!(state.region));
@@ -686,6 +746,111 @@ impl KiroProvider {
         }
 
         Ok(())
+    }
+
+    /// Execute buffered Kiro request and return parsed event messages.
+    ///
+    /// This helper performs the upstream request with retry logic, applies request outcomes,
+    /// and returns parsed EventStreamMessage objects for further processing.
+    async fn execute_buffered_kiro_request(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> AppResult<Vec<crate::providers::kiro_stream::EventStreamMessage>> {
+        use crate::providers::kiro_stream::EventStreamParser;
+        use crate::providers::kiro_translator::build_native_kiro_request;
+
+        let token = self.ensure_access_token().await?;
+        self.pre_request_check(&req.model, &token).await?;
+
+        // Build native Kiro request with profile ARN
+        let profile_arn = {
+            let state = self.token.read().await;
+            if state.profile_arn.is_empty() {
+                None
+            } else {
+                Some(state.profile_arn.clone())
+            }
+        };
+        let kiro_request = build_native_kiro_request(req, profile_arn);
+
+        // Build endpoint URL and headers
+        let url = self.build_endpoint_url();
+        let headers = self.build_kiro_headers(&token)?;
+
+        // Make request with retry logic
+        let mut last_error = None;
+        for attempt in 0..=self.retry_config.max_retries {
+            if attempt > 0 {
+                let delay = self.calculate_retry_delay(attempt - 1);
+                debug!(
+                    provider = "kiro",
+                    account = %self.account_name,
+                    attempt = attempt,
+                    delay_ms = delay.as_millis(),
+                    "retrying buffered request"
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            let resp = self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .header("Accept", "application/vnd.amazon.eventstream")
+                .json(&kiro_request)
+                .timeout(self.retry_config.stream_read_timeout)
+                .send()
+                .await;
+
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    let err = AppError::Upstream(format!("kiro request failed: {e}"));
+                    if Self::is_retryable_error(&err) && attempt < self.retry_config.max_retries {
+                        last_error = Some(err);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
+
+            let status = resp.status();
+            if !status.is_success() {
+                let body = format_upstream_error_body(resp.text().await);
+                let outcome = classify_kiro_response(status.as_u16(), &body, attempt);
+                self.apply_request_outcome(&req.model, &outcome, Instant::now())
+                    .await;
+                let err = AppError::Upstream(format!("kiro error ({}): {}", status, body));
+
+                if Self::is_retryable_status(status) && attempt < self.retry_config.max_retries {
+                    last_error = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+
+            // Success - buffer and parse event stream
+            let outcome = KiroRequestOutcome::Success;
+            self.apply_request_outcome(&req.model, &outcome, Instant::now())
+                .await;
+
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| AppError::Upstream(format!("failed to read response body: {e}")))?;
+
+            // Parse AWS Event Stream
+            use std::io::Cursor;
+            let cursor = Cursor::new(bytes.as_ref());
+            let parser = EventStreamParser::new(cursor);
+            let messages = parser
+                .parse_all()
+                .map_err(|e| AppError::Upstream(format!("failed to parse event stream: {e}")))?;
+
+            return Ok(messages);
+        }
+
+        Err(last_error.unwrap_or_else(|| AppError::Upstream("all retries failed".into())))
     }
 }
 
@@ -737,131 +902,47 @@ impl Provider for KiroProvider {
 
     async fn chat_completion(
         &self,
-        _req: &ChatCompletionRequest,
+        req: &ChatCompletionRequest,
     ) -> AppResult<ChatCompletionResponse> {
-        // KIRO primarily supports streaming
-        // Non-streaming would require buffering the entire stream
-        Err(AppError::Upstream(
-            "KIRO provider requires streaming mode".into(),
+        use crate::providers::kiro_translator::{
+            aggregate_kiro_messages, build_openai_chat_completion_response,
+        };
+
+        let messages = self.execute_buffered_kiro_request(req).await?;
+        let aggregate = aggregate_kiro_messages(&messages);
+        let chat_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let created = chrono::Utc::now().timestamp();
+
+        Ok(build_openai_chat_completion_response(
+            aggregate, &chat_id, &req.model, created,
         ))
     }
 
     async fn chat_completion_stream(&self, req: &ChatCompletionRequest) -> AppResult<BoxStream> {
-        use crate::providers::kiro_translator::build_native_kiro_request;
-        use crate::providers::kiro_stream::EventStreamParser;
+        let messages = self.execute_buffered_kiro_request(req).await?;
 
-        let token = self.ensure_access_token().await?;
-        self.pre_request_check(&req.model, &token).await?;
-
-        // Build native Kiro request with profile ARN
-        let profile_arn = {
-            let state = self.token.read().await;
-            if state.profile_arn.is_empty() {
-                None
-            } else {
-                Some(state.profile_arn.clone())
-            }
-        };
-        let kiro_request = build_native_kiro_request(req, profile_arn);
-        let model = req.model.clone();
         let chat_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
         let created = chrono::Utc::now().timestamp();
 
-        // Build endpoint URL and headers
-        let url = self.build_endpoint_url();
-        let headers = self.build_kiro_headers(&token)?;
+        // Convert to SSE stream
+        use crate::providers::kiro_translator::translate_kiro_event_to_openai_sse;
+        use futures::stream;
+        let sse_chunks: Vec<_> = messages
+            .into_iter()
+            .filter_map(|msg| {
+                translate_kiro_event_to_openai_sse(
+                    &msg.event_type,
+                    &msg.payload,
+                    &chat_id,
+                    &req.model,
+                    created,
+                )
+            })
+            .map(Ok)
+            .collect();
 
-        // Make request with retry logic
-        let mut last_error = None;
-        for attempt in 0..=self.retry_config.max_retries {
-            if attempt > 0 {
-                let delay = self.calculate_retry_delay(attempt - 1);
-                debug!(
-                    provider = "kiro",
-                    account = %self.account_name,
-                    attempt = attempt,
-                    delay_ms = delay.as_millis(),
-                    "retrying stream request"
-                );
-                tokio::time::sleep(delay).await;
-            }
-
-            let resp = self
-                .client
-                .post(&url)
-                .headers(headers.clone())
-                .header("Accept", "application/vnd.amazon.eventstream")
-                .json(&kiro_request)
-                .timeout(self.retry_config.stream_read_timeout)
-                .send()
-                .await;
-
-            let resp = match resp {
-                Ok(r) => r,
-                Err(e) => {
-                    let err = AppError::Upstream(format!("kiro request failed: {e}"));
-                    if Self::is_retryable_error(&err) && attempt < self.retry_config.max_retries {
-                        last_error = Some(err);
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
-
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                let outcome = classify_kiro_response(status.as_u16(), &body, attempt);
-                self.apply_request_outcome(&req.model, &outcome, Instant::now())
-                    .await;
-                let err = AppError::Upstream(format!("kiro error ({}): {}", status, body));
-
-                if Self::is_retryable_status(status) && attempt < self.retry_config.max_retries {
-                    last_error = Some(err);
-                    continue;
-                }
-                return Err(err);
-            }
-
-            // Success - buffer and parse event stream
-            let outcome = KiroRequestOutcome::Success;
-            self.apply_request_outcome(&req.model, &outcome, Instant::now())
-                .await;
-
-            let bytes = resp.bytes().await.map_err(|e| {
-                AppError::Upstream(format!("failed to read response body: {e}"))
-            })?;
-
-            // Parse AWS Event Stream
-            use std::io::Cursor;
-            let cursor = Cursor::new(bytes.as_ref());
-            let parser = EventStreamParser::new(cursor);
-            let messages = parser.parse_all().map_err(|e| {
-                AppError::Upstream(format!("failed to parse event stream: {e}"))
-            })?;
-
-            // Convert to SSE stream
-            use crate::providers::kiro_translator::translate_kiro_event_to_openai_sse;
-            use futures::stream;
-            let sse_chunks: Vec<_> = messages
-                .into_iter()
-                .filter_map(|msg| {
-                    translate_kiro_event_to_openai_sse(
-                        &msg.event_type,
-                        &msg.payload,
-                        &chat_id,
-                        &model,
-                        created,
-                    )
-                })
-                .map(Ok)
-                .collect();
-
-            let stream = stream::iter(sse_chunks);
-            return Ok(Box::pin(stream));
-        }
-
-        Err(last_error.unwrap_or_else(|| AppError::Upstream("all retries failed".into())))
+        let stream = stream::iter(sse_chunks);
+        Ok(Box::pin(stream))
     }
 }
 
@@ -873,16 +954,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
 
-    use axum::body::Body;
-    use axum::http::StatusCode as AxumStatusCode;
-    use axum::routing::post;
-    use axum::Router;
     use crate::auth::kiro_runtime::{
         CooldownManager, KiroRateLimiter, NoOpQuotaChecker, QuotaChecker, UsageCheckRequest,
     };
     use crate::auth::store::AuthStatus;
     use crate::providers::model_registry::ModelRegistry;
     use crate::proxy::KiroRuntimeState;
+    use axum::body::Body;
+    use axum::http::StatusCode as AxumStatusCode;
+    use axum::routing::post;
+    use axum::Router;
     use serde_json::json;
     use tokio::sync::oneshot;
     use tokio::sync::RwLock;
@@ -891,7 +972,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl QuotaChecker for FakeExhaustedChecker {
-        async fn check_quota(&self, _request: &UsageCheckRequest) -> crate::auth::kiro_runtime::QuotaStatus {
+        async fn check_quota(
+            &self,
+            _request: &UsageCheckRequest,
+        ) -> crate::auth::kiro_runtime::QuotaStatus {
             crate::auth::kiro_runtime::QuotaStatus::Exhausted {
                 detail: "test exhausted".into(),
             }
@@ -902,7 +986,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl QuotaChecker for FakeAvailableChecker {
-        async fn check_quota(&self, _request: &UsageCheckRequest) -> crate::auth::kiro_runtime::QuotaStatus {
+        async fn check_quota(
+            &self,
+            _request: &UsageCheckRequest,
+        ) -> crate::auth::kiro_runtime::QuotaStatus {
             crate::auth::kiro_runtime::QuotaStatus::Available {
                 remaining: Some(10),
                 next_reset: None,
@@ -950,6 +1037,186 @@ mod tests {
         }
     }
 
+    #[test]
+    fn format_upstream_error_body_preserves_response_text() {
+        let body = format_upstream_error_body::<std::io::Error>(Ok("quota exceeded".to_string()));
+
+        assert_eq!(body, "quota exceeded");
+    }
+
+    #[test]
+    fn format_upstream_error_body_describes_read_failures() {
+        let body = format_upstream_error_body::<std::io::Error>(Err(std::io::Error::other("boom")));
+
+        assert!(body.contains("failed to read upstream error body"));
+        assert!(body.contains("boom"));
+    }
+
+    #[test]
+    fn cooldown_remaining_or_zero_defaults_to_zero() {
+        assert_eq!(cooldown_remaining_or_zero(None), Duration::ZERO);
+        assert_eq!(
+            cooldown_remaining_or_zero(Some(Duration::from_secs(7))),
+            Duration::from_secs(7)
+        );
+    }
+
+    #[test]
+    fn profile_arn_or_empty_defaults_when_missing() {
+        let mut record = test_record();
+        record.metadata.remove("profile_arn");
+
+        assert!(profile_arn_or_empty(&record).is_empty());
+    }
+
+    #[test]
+    fn generate_machine_id_prefers_refresh_token_fingerprint() {
+        let token_data = KiroTokenData {
+            access_token: "test-access-token".into(),
+            refresh_token: "test-refresh-token".into(),
+            profile_arn: "arn:aws:iam::123456789012:role/test".into(),
+            expires_at: "2030-01-01T00:00:00Z".into(),
+            auth_method: "builder-id".into(),
+            provider: "AWS".into(),
+            client_id: Some("test-client-id".into()),
+            client_secret: Some("test-client-secret".into()),
+            region: "us-east-1".into(),
+            start_url: Some(BUILDER_ID_START_URL.into()),
+            email: None,
+        };
+
+        assert_eq!(
+            generate_machine_id(&token_data),
+            Some(sha256_hex("KotlinNativeAPI/test-refresh-token"))
+        );
+    }
+
+    #[test]
+    fn build_endpoint_url_uses_native_generate_assistant_response_path() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let Ok(provider) =
+            KiroProvider::new_with_runtime(test_record(), "kiro_0".to_string(), registry, runtime)
+        else {
+            panic!("provider should be constructed");
+        };
+
+        assert_eq!(
+            provider.build_endpoint_url(),
+            format!(
+                "https://q.us-east-1.amazonaws.com{}",
+                GENERATE_ASSISTANT_RESPONSE_PATH
+            )
+        );
+    }
+
+    #[test]
+    fn build_kiro_headers_include_native_fingerprint_fields() {
+        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, USER_AGENT};
+
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let Ok(provider) =
+            KiroProvider::new_with_runtime(test_record(), "kiro_0".to_string(), registry, runtime)
+        else {
+            panic!("provider should be constructed");
+        };
+        let Some(machine_id) = generate_machine_id(&provider.token_data) else {
+            panic!("machine_id should be generated");
+        };
+        let Ok(headers) = provider.build_kiro_headers("test-access-token") else {
+            panic!("headers should be built");
+        };
+
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(
+            headers
+                .get("x-amzn-kiro-agent-mode")
+                .and_then(|value| value.to_str().ok()),
+            Some("vibe")
+        );
+        assert_eq!(
+            headers.get(HOST).and_then(|value| value.to_str().ok()),
+            Some("q.us-east-1.amazonaws.com")
+        );
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-access-token")
+        );
+        assert_eq!(
+            headers
+                .get("amz-sdk-request")
+                .and_then(|value| value.to_str().ok()),
+            Some("attempt=1; max=3")
+        );
+        assert!(headers.contains_key("amz-sdk-invocation-id"));
+
+        let Some(x_amz_user_agent) = headers
+            .get("x-amz-user-agent")
+            .and_then(|value| value.to_str().ok())
+        else {
+            panic!("x-amz-user-agent should be present");
+        };
+        assert!(
+            x_amz_user_agent.starts_with(&format!("aws-sdk-js/1.0.27 KiroIDE-{}-", KIRO_VERSION))
+        );
+        assert!(x_amz_user_agent.ends_with(&machine_id));
+
+        let Some(user_agent) = headers
+            .get(USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+        else {
+            panic!("user-agent should be present");
+        };
+        assert!(user_agent.contains("aws-sdk-js/1.0.27"));
+        assert!(user_agent.contains("api/codewhispererstreaming#1.0.27"));
+        assert!(user_agent.contains(&format!("KiroIDE-{}-{}", KIRO_VERSION, machine_id)));
+    }
+
+    #[tokio::test]
+    async fn apply_refreshed_token_keeps_in_memory_token_when_persist_fails() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let mut record = test_record();
+        record.path =
+            std::env::temp_dir().join(format!("kiro-missing-{}.json", uuid::Uuid::new_v4()));
+
+        let provider =
+            KiroProvider::new_with_runtime(record, "kiro_0".to_string(), registry, runtime)
+                .unwrap();
+        let mut state = TokenState::from_token_data(&provider.token_data).unwrap();
+        let refreshed = KiroTokenData {
+            access_token: "refreshed-access-token".into(),
+            refresh_token: "refreshed-refresh-token".into(),
+            profile_arn: state.profile_arn.clone(),
+            expires_at: "2030-01-02T00:00:00Z".into(),
+            auth_method: state.auth_method.clone(),
+            provider: state.provider.clone(),
+            client_id: state.client_id.clone(),
+            client_secret: state.client_secret.clone(),
+            region: state.region.clone(),
+            start_url: state.start_url.clone(),
+            email: state.email.clone(),
+        };
+
+        let token = provider
+            .apply_refreshed_token(&mut state, refreshed)
+            .await
+            .unwrap();
+
+        assert_eq!(token, "refreshed-access-token");
+        assert_eq!(state.access_token, "refreshed-access-token");
+        assert_eq!(state.refresh_token, "refreshed-refresh-token");
+        assert!(state.last_refreshed_at.is_some());
+    }
+
     fn test_request(model_id: &str) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: model_id.to_string(),
@@ -969,6 +1236,44 @@ mod tests {
             stop: None,
             extra: HashMap::new(),
         }
+    }
+
+    fn test_non_stream_request(model_id: &str) -> ChatCompletionRequest {
+        let mut req = test_request(model_id);
+        req.stream = Some(false);
+        req
+    }
+
+    async fn register_kiro_test_model(
+        registry: &Arc<ModelRegistry>,
+        client_id: &str,
+        model_id: &str,
+    ) {
+        registry
+            .register_client(
+                client_id,
+                "kiro",
+                vec![crate::providers::model_info::ExtModelInfo {
+                    id: model_id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "kiro".to_string(),
+                    provider_type: "kiro".to_string(),
+                    display_name: None,
+                    name: Some(model_id.to_string()),
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                }],
+            )
+            .await;
     }
 
     fn create_event_stream_message(event_type: &str, payload: &[u8]) -> Vec<u8> {
@@ -998,10 +1303,7 @@ mod tests {
 
     fn success_stream_bytes() -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&create_event_stream_message(
-            "messageStart",
-            br#"{}"#,
-        ));
+        bytes.extend_from_slice(&create_event_stream_message("messageStart", br#"{}"#));
         bytes.extend_from_slice(&create_event_stream_message(
             "assistantResponseEvent",
             br#"{"content":"hello"}"#,
@@ -1013,9 +1315,35 @@ mod tests {
         bytes
     }
 
-    async fn spawn_test_server(status: AxumStatusCode, body: Vec<u8>, content_type: &'static str) -> (String, oneshot::Sender<()>) {
+    fn success_stream_with_usage_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&create_event_stream_message("messageStart", br#"{}"#));
+        bytes.extend_from_slice(&create_event_stream_message(
+            "assistantResponseEvent",
+            br#"{"content":"hello world"}"#,
+        ));
+        bytes.extend_from_slice(&create_event_stream_message(
+            "usageEvent",
+            br#"{"inputTokens":10,"outputTokens":5}"#,
+        ));
+        bytes.extend_from_slice(&create_event_stream_message(
+            "messageStop",
+            br#"{"stopReason":"end_turn"}"#,
+        ));
+        bytes
+    }
+
+    async fn spawn_test_server(
+        status: AxumStatusCode,
+        body: Vec<u8>,
+        content_type: &'static str,
+    ) -> (String, oneshot::Sender<()>) {
         async fn conversation_handler(
-            axum::extract::State(state): axum::extract::State<(AxumStatusCode, Vec<u8>, &'static str)>,
+            axum::extract::State(state): axum::extract::State<(
+                AxumStatusCode,
+                Vec<u8>,
+                &'static str,
+            )>,
         ) -> impl axum::response::IntoResponse {
             let (status, body, content_type) = state;
             (status, [("content-type", content_type)], Body::from(body))
@@ -1084,13 +1412,18 @@ mod tests {
             "old cooldown",
             Instant::now() - Duration::from_secs(31),
         );
-        runtime.rate_limiter.write().await.mark_token_failed(
-            "kiro-test.json",
-            Instant::now() - Duration::from_secs(31),
-        );
+        runtime
+            .rate_limiter
+            .write()
+            .await
+            .mark_token_failed("kiro-test.json", Instant::now() - Duration::from_secs(31));
 
-        let (endpoint, shutdown) =
-            spawn_test_server(AxumStatusCode::OK, success_stream_bytes(), "application/vnd.amazon.eventstream").await;
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::OK,
+            success_stream_bytes(),
+            "application/vnd.amazon.eventstream",
+        )
+        .await;
         let mut provider = KiroProvider::new_with_runtime(
             test_record(),
             client_id.to_string(),
@@ -1100,21 +1433,27 @@ mod tests {
         .unwrap();
         provider.test_endpoint = Some(format!("{}/conversation", endpoint));
 
-        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let result = provider
+            .chat_completion_stream(&test_request(model_id))
+            .await;
         let _ = shutdown.send(());
 
         let _stream = result.unwrap();
-        assert!(registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(
+            registry
+                .client_is_effectively_available(client_id, model_id)
+                .await
+        );
         assert!(runtime
             .rate_limiter
             .read()
             .await
             .is_token_available("kiro-test.json", Instant::now()));
-        assert!(!runtime
-            .cooldown
-            .read()
-            .await
-            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
+        assert!(!runtime.cooldown.read().await.is_in_cooldown(
+            "kiro-test.json",
+            model_id,
+            Instant::now()
+        ));
     }
 
     #[tokio::test]
@@ -1166,7 +1505,9 @@ mod tests {
         .unwrap();
         provider.test_endpoint = Some(format!("{}/conversation", endpoint));
 
-        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let result = provider
+            .chat_completion_stream(&test_request(model_id))
+            .await;
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("Expected error but got success"),
@@ -1174,18 +1515,22 @@ mod tests {
         let _ = shutdown.send(());
 
         assert!(matches!(err, AppError::Upstream(message) if message.contains("429")));
-        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
-        assert!(runtime
-            .cooldown
-            .read()
-            .await
-            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
-        assert_eq!(
-            runtime
-                .cooldown
-                .read()
+        assert!(
+            !registry
+                .client_is_effectively_available(client_id, model_id)
                 .await
-                .cooldown_reason("kiro-test.json", model_id, Instant::now()),
+        );
+        assert!(runtime.cooldown.read().await.is_in_cooldown(
+            "kiro-test.json",
+            model_id,
+            Instant::now()
+        ));
+        assert_eq!(
+            runtime.cooldown.read().await.cooldown_reason(
+                "kiro-test.json",
+                model_id,
+                Instant::now()
+            ),
             Some("rate_limit_exceeded")
         );
         assert!(!runtime
@@ -1244,7 +1589,9 @@ mod tests {
         .unwrap();
         provider.test_endpoint = Some(format!("{}/conversation", endpoint));
 
-        let result = provider.chat_completion_stream(&test_request(model_id)).await;
+        let result = provider
+            .chat_completion_stream(&test_request(model_id))
+            .await;
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("Expected error but got success"),
@@ -1252,18 +1599,22 @@ mod tests {
         let _ = shutdown.send(());
 
         assert!(matches!(err, AppError::Upstream(message) if message.contains("403")));
-        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
-        assert!(runtime
-            .cooldown
-            .read()
-            .await
-            .is_in_cooldown("kiro-test.json", model_id, Instant::now()));
-        assert_eq!(
-            runtime
-                .cooldown
-                .read()
+        assert!(
+            !registry
+                .client_is_effectively_available(client_id, model_id)
                 .await
-                .cooldown_reason("kiro-test.json", model_id, Instant::now()),
+        );
+        assert!(runtime.cooldown.read().await.is_in_cooldown(
+            "kiro-test.json",
+            model_id,
+            Instant::now()
+        ));
+        assert_eq!(
+            runtime.cooldown.read().await.cooldown_reason(
+                "kiro-test.json",
+                model_id,
+                Instant::now()
+            ),
             Some("account_suspended")
         );
         assert!(!runtime
@@ -1290,8 +1641,9 @@ mod tests {
             Instant::now(),
         );
 
-        let provider = KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
-            .unwrap();
+        let provider =
+            KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
+                .unwrap();
 
         let err = provider
             .pre_request_check(model_id, "test-access-token")
@@ -1310,13 +1662,15 @@ mod tests {
         let record = test_record();
         let auth_key = record.id.clone();
 
-        runtime.rate_limiter.write().await.mark_token_failed(
-            &auth_key,
-            Instant::now() - Duration::from_millis(29_700),
-        );
+        runtime
+            .rate_limiter
+            .write()
+            .await
+            .mark_token_failed(&auth_key, Instant::now() - Duration::from_millis(29_700));
 
-        let provider = KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
-            .unwrap();
+        let provider =
+            KiroProvider::new_with_runtime(record, client_id.to_string(), registry, runtime)
+                .unwrap();
 
         let started = std::time::Instant::now();
         tokio::time::timeout(
@@ -1377,7 +1731,11 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, AppError::QuotaExceeded(_)));
-        assert!(!registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(
+            !registry
+                .client_is_effectively_available(client_id, model_id)
+                .await
+        );
     }
 
     #[tokio::test]
@@ -1427,7 +1785,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(registry.client_is_effectively_available(client_id, model_id).await);
+        assert!(
+            registry
+                .client_is_effectively_available(client_id, model_id)
+                .await
+        );
     }
 
     #[tokio::test]
@@ -1470,5 +1832,148 @@ mod tests {
         assert!(!ids.contains("claude-sonnet-4.5"));
         assert!(!ids.contains("claude-sonnet-4.5-thinking"));
         assert!(!ids.contains("deepseek-3.2"));
+    }
+
+    #[tokio::test]
+    async fn chat_completion_non_stream_success() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        register_kiro_test_model(&registry, client_id, model_id).await;
+
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::OK,
+            success_stream_bytes(),
+            "application/vnd.amazon.eventstream",
+        )
+        .await;
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.test_endpoint = Some(format!("{}/conversation", endpoint));
+
+        let result = provider
+            .chat_completion(&test_non_stream_request(model_id))
+            .await;
+        let _ = shutdown.send(());
+
+        let response = result.unwrap();
+        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.model, model_id);
+        assert_eq!(response.choices.len(), 1);
+
+        let choice = &response.choices[0];
+        let message = choice.message.as_ref().unwrap();
+        assert_eq!(message.role, "assistant");
+        if let crate::models::MessageContent::Text(text) = &message.content {
+            assert!(text.contains("hello"));
+        } else {
+            panic!("Expected text content");
+        }
+        assert_eq!(choice.finish_reason, Some("stop".to_string()));
+    }
+
+    #[tokio::test]
+    async fn chat_completion_non_stream_aggregates_usage() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        register_kiro_test_model(&registry, client_id, model_id).await;
+
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::OK,
+            success_stream_with_usage_bytes(),
+            "application/vnd.amazon.eventstream",
+        )
+        .await;
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.test_endpoint = Some(format!("{}/conversation", endpoint));
+
+        let result = provider
+            .chat_completion(&test_non_stream_request(model_id))
+            .await;
+        let _ = shutdown.send(());
+
+        let response = result.unwrap();
+        assert!(response.usage.is_some());
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[tokio::test]
+    async fn chat_completion_non_stream_tool_calls() {
+        let registry = Arc::new(ModelRegistry::new());
+        let runtime = runtime_with_checker(Arc::new(NoOpQuotaChecker));
+        let client_id = "kiro_0";
+        let model_id = "claude-sonnet-4";
+
+        register_kiro_test_model(&registry, client_id, model_id).await;
+
+        let mut tool_stream_bytes = Vec::new();
+        tool_stream_bytes.extend_from_slice(&create_event_stream_message("messageStart", br#"{}"#));
+        tool_stream_bytes.extend_from_slice(&create_event_stream_message(
+            "toolUseEvent",
+            br#"{"toolUseId":"tool_123","name":"get_weather","input":{"location":"NYC"}}"#,
+        ));
+        tool_stream_bytes.extend_from_slice(&create_event_stream_message(
+            "messageStop",
+            br#"{"stopReason":"tool_use"}"#,
+        ));
+
+        let (endpoint, shutdown) = spawn_test_server(
+            AxumStatusCode::OK,
+            tool_stream_bytes,
+            "application/vnd.amazon.eventstream",
+        )
+        .await;
+        let mut provider = KiroProvider::new_with_runtime(
+            test_record(),
+            client_id.to_string(),
+            registry.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        provider.test_endpoint = Some(format!("{}/conversation", endpoint));
+
+        let result = provider
+            .chat_completion(&test_non_stream_request(model_id))
+            .await;
+        let _ = shutdown.send(());
+
+        let response = result.unwrap();
+        assert_eq!(response.choices.len(), 1);
+
+        let choice = &response.choices[0];
+        let message = choice.message.as_ref().unwrap();
+        assert_eq!(message.role, "assistant");
+        assert!(message.tool_calls.is_some());
+        let tool_calls = message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "tool_123");
+        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+        assert_eq!(choice.finish_reason, Some("tool_calls".to_string()));
+
+        // When there are tool calls but no text content, content should be empty text
+        if let crate::models::MessageContent::Text(text) = &message.content {
+            assert_eq!(text, "");
+        } else {
+            panic!("Expected text content");
+        }
     }
 }

@@ -27,7 +27,10 @@ fn test_convert_anthropic_to_openai_basic() {
     assert_eq!(result["object"], "chat.completion");
     assert_eq!(result["model"], "claude-3-5-sonnet-20241022");
     assert_eq!(result["choices"][0]["message"]["role"], "assistant");
-    assert_eq!(result["choices"][0]["message"]["content"], "Hello! How can I help you?");
+    assert_eq!(
+        result["choices"][0]["message"]["content"],
+        "Hello! How can I help you?"
+    );
     assert_eq!(result["choices"][0]["finish_reason"], "stop");
     assert_eq!(result["usage"]["prompt_tokens"], 10);
     assert_eq!(result["usage"]["completion_tokens"], 20);
@@ -60,10 +63,16 @@ fn test_convert_anthropic_to_openai_with_thinking() {
 
     let result = convert_anthropic_to_openai(&anthropic_response).unwrap();
 
-    assert_eq!(result["choices"][0]["message"]["content"], "Here's my answer.");
+    assert_eq!(
+        result["choices"][0]["message"]["content"],
+        "Here's my answer."
+    );
     // Thinking block should be preserved in metadata
     assert!(result["choices"][0]["message"]["thinking"].is_string());
-    assert_eq!(result["choices"][0]["message"]["thinking"], "Let me think about this...");
+    assert_eq!(
+        result["choices"][0]["message"]["thinking"],
+        "Let me think about this..."
+    );
 }
 
 #[test]
@@ -92,7 +101,10 @@ fn test_convert_anthropic_to_openai_multiple_text_blocks() {
 
     let result = convert_anthropic_to_openai(&anthropic_response).unwrap();
 
-    assert_eq!(result["choices"][0]["message"]["content"], "First part. Second part.");
+    assert_eq!(
+        result["choices"][0]["message"]["content"],
+        "First part. Second part."
+    );
 }
 
 #[test]

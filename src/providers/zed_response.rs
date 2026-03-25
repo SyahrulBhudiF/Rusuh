@@ -76,13 +76,19 @@ fn convert_events_to_openai(response: &Value, fallback_model: Option<&str>) -> R
             "message_start" => {
                 if let Some(message) = event.get("message") {
                     if let Some(message_obj) = message.as_object() {
-                        if let Some(event_id) = message_obj.get("id").and_then(|value| value.as_str()) {
+                        if let Some(event_id) =
+                            message_obj.get("id").and_then(|value| value.as_str())
+                        {
                             id = event_id.to_string();
                         }
-                        if let Some(event_model) = message_obj.get("model").and_then(|value| value.as_str()) {
+                        if let Some(event_model) =
+                            message_obj.get("model").and_then(|value| value.as_str())
+                        {
                             model = event_model.to_string();
                         }
-                        if let Some(usage) = message_obj.get("usage").and_then(|value| value.as_object()) {
+                        if let Some(usage) =
+                            message_obj.get("usage").and_then(|value| value.as_object())
+                        {
                             prompt_tokens = usage
                                 .get("input_tokens")
                                 .and_then(|value| value.as_u64())
@@ -99,7 +105,8 @@ fn convert_events_to_openai(response: &Value, fallback_model: Option<&str>) -> R
                 if let Some(delta) = event.get("delta").and_then(|value| value.as_object()) {
                     match delta.get("type").and_then(|value| value.as_str()) {
                         Some("text_delta") => {
-                            if let Some(chunk) = delta.get("text").and_then(|value| value.as_str()) {
+                            if let Some(chunk) = delta.get("text").and_then(|value| value.as_str())
+                            {
                                 text.push_str(chunk);
                             }
                         }
@@ -115,7 +122,9 @@ fn convert_events_to_openai(response: &Value, fallback_model: Option<&str>) -> R
             }
             "response.completed" => {
                 if let Some(response_obj) = event.get("response") {
-                    if let Some(event_model) = response_obj.get("model").and_then(|value| value.as_str()) {
+                    if let Some(event_model) =
+                        response_obj.get("model").and_then(|value| value.as_str())
+                    {
                         model = event_model.to_string();
                     }
                     if let Some(usage) = response_obj.get("usage") {

@@ -61,17 +61,11 @@ pub async fn build_providers(
     for record in accounts.accounts_for("zed").await {
         match ZedProvider::new(record.clone()) {
             Ok(provider) => {
-                info!(
-                    "registering zed provider: {} ({})",
-                    record.label, record.id
-                );
+                info!("registering zed provider: {} ({})", record.label, record.id);
                 providers.push(Arc::new(provider));
             }
             Err(e) => {
-                warn!(
-                    "skipping zed account {} ({}): {e}",
-                    record.label, record.id
-                );
+                warn!("skipping zed account {} ({}): {e}", record.label, record.id);
             }
         }
     }

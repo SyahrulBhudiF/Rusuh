@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, KiroUsageChecker, QuotaChecker};
-use crate::auth::zed_session::{new_session_store, ZedLoginSessionStore};
+use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, NoOpQuotaChecker, QuotaChecker};
 use crate::auth::manager::AccountManager;
+use crate::auth::zed_session::{new_session_store, ZedLoginSessionStore};
 use crate::config::Config;
 use crate::providers::model_registry::ModelRegistry;
 use crate::providers::Provider;
@@ -32,7 +32,7 @@ impl Default for KiroRuntimeState {
         Self {
             cooldown: Arc::new(RwLock::new(CooldownManager::new())),
             rate_limiter: Arc::new(RwLock::new(KiroRateLimiter::new())),
-            quota_checker: Arc::new(KiroUsageChecker::new("https://codewhisperer.us-east-1.amazonaws.com")),
+            quota_checker: Arc::new(NoOpQuotaChecker),
         }
     }
 }

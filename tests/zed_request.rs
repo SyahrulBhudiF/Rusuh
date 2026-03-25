@@ -47,10 +47,7 @@ fn test_normalize_model_already_prefixed() {
         normalize_model_for_zed("anthropic/claude-3-5-sonnet-20241022"),
         "anthropic/claude-3-5-sonnet-20241022"
     );
-    assert_eq!(
-        normalize_model_for_zed("open_ai/gpt-4o"),
-        "open_ai/gpt-4o"
-    );
+    assert_eq!(normalize_model_for_zed("open_ai/gpt-4o"), "open_ai/gpt-4o");
 }
 
 #[test]
@@ -97,8 +94,14 @@ fn test_translate_to_zed_request_strips_unsupported_fields() {
 
     let result = translate_to_zed_request(&openai_request).unwrap();
 
-    assert!(!result.as_object().unwrap().contains_key("unsupported_field"));
-    assert!(!result.as_object().unwrap().contains_key("another_unsupported"));
+    assert!(!result
+        .as_object()
+        .unwrap()
+        .contains_key("unsupported_field"));
+    assert!(!result
+        .as_object()
+        .unwrap()
+        .contains_key("another_unsupported"));
     assert_eq!(result["provider"], "open_ai");
     assert_eq!(result["model"], "gpt-4o");
 }
@@ -147,7 +150,9 @@ fn test_translate_to_zed_request_wraps_provider_request_for_claude() {
     );
     assert_eq!(result["provider_request"]["temperature"], 0.2);
     assert_eq!(result["provider_request"]["max_tokens"], 16);
-    assert!(result["provider_request"].get("unsupported_field").is_none());
+    assert!(result["provider_request"]
+        .get("unsupported_field")
+        .is_none());
 }
 
 #[test]
@@ -174,11 +179,23 @@ fn test_translate_to_zed_request_wraps_provider_request_for_openai() {
     assert_eq!(result["provider_request"]["top_p"], 0.9);
     assert_eq!(result["provider_request"]["input"][0]["role"], "system");
     assert_eq!(result["provider_request"]["input"][0]["type"], "message");
-    assert_eq!(result["provider_request"]["input"][0]["content"][0]["type"], "input_text");
-    assert_eq!(result["provider_request"]["input"][0]["content"][0]["text"], "You are concise.");
+    assert_eq!(
+        result["provider_request"]["input"][0]["content"][0]["type"],
+        "input_text"
+    );
+    assert_eq!(
+        result["provider_request"]["input"][0]["content"][0]["text"],
+        "You are concise."
+    );
     assert_eq!(result["provider_request"]["input"][2]["role"], "assistant");
-    assert_eq!(result["provider_request"]["input"][2]["content"][0]["type"], "output_text");
-    assert_eq!(result["provider_request"]["input"][2]["content"][0]["text"], "Hi");
+    assert_eq!(
+        result["provider_request"]["input"][2]["content"][0]["type"],
+        "output_text"
+    );
+    assert_eq!(
+        result["provider_request"]["input"][2]["content"][0]["text"],
+        "Hi"
+    );
 }
 
 #[test]

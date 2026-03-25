@@ -29,7 +29,10 @@ fn test_parse_zed_response_valid() {
     assert!(result.is_ok());
     let parsed = result.unwrap();
     assert_eq!(parsed["id"], "chatcmpl-123");
-    assert_eq!(parsed["choices"][0]["message"]["content"], "Hello! How can I help you?");
+    assert_eq!(
+        parsed["choices"][0]["message"]["content"],
+        "Hello! How can I help you?"
+    );
 }
 
 #[test]

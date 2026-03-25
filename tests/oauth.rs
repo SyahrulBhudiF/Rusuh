@@ -32,13 +32,14 @@ fn test_app(cfg: Config) -> axum::Router {
 }
 
 fn mgmt_config(auth_dir: &str) -> Config {
-    let mut cfg = Config::default();
-    cfg.auth_dir = auth_dir.into();
-    cfg.remote_management = ManagementConfig {
-        allow_remote: true,
-        secret_key: SECRET.into(),
-    };
-    cfg
+    Config {
+        auth_dir: auth_dir.into(),
+        remote_management: ManagementConfig {
+            allow_remote: true,
+            secret_key: SECRET.into(),
+        },
+        ..Default::default()
+    }
 }
 
 fn mgmt_request(uri: &str) -> Request<Body> {
@@ -115,14 +116,19 @@ async fn antigravity_auth_url_returns_url_and_state() {
     let dir = TempDir::new().unwrap();
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
     let resp = app
-        .oneshot(mgmt_request("/v0/management/oauth/start?provider=antigravity"))
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/start?provider=antigravity",
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ok");
     assert_eq!(body["provider"], "antigravity");
-    assert!(body["url"].as_str().unwrap().contains("accounts.google.com"));
+    assert!(body["url"]
+        .as_str()
+        .unwrap()
+        .contains("accounts.google.com"));
     assert!(body["url"].as_str().unwrap().contains("redirect_uri="));
     assert!(!body["state"].as_str().unwrap().is_empty());
 }
@@ -166,7 +172,9 @@ async fn auth_status_unknown_state_returns_ok() {
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
     let resp = app
-        .oneshot(mgmt_request("/v0/management/oauth/status?state=nonexistent"))
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/status?state=nonexistent",
+        ))
         .await
         .unwrap();
 
@@ -181,7 +189,9 @@ async fn legacy_kiro_social_start_rejected() {
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 
     let resp = app
-        .oneshot(mgmt_request("/v0/management/oauth/start?provider=kiro-google"))
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/start?provider=kiro-google",
+        ))
         .await
         .unwrap();
 
@@ -253,7 +263,9 @@ async fn oauth_status_reports_kiro_pending_session() {
         rusuh::middleware::auth::api_key_auth,
     ));
     let status_resp = app
-        .oneshot(mgmt_request("/v0/management/oauth/status?state=kiro-pending"))
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/status?state=kiro-pending",
+        ))
         .await
         .unwrap();
     assert_eq!(status_resp.status(), StatusCode::OK);
@@ -332,7 +344,10 @@ async fn builder_id_callback_marks_error_when_code_missing() {
     let accounts = Arc::new(AccountManager::with_dir(auth_dir));
     let registry = Arc::new(ModelRegistry::new());
     let state = Arc::new(ProxyState::new(cfg, accounts, registry, 0));
-    state.oauth_sessions.register("kiro-missing-code", "kiro").await;
+    state
+        .oauth_sessions
+        .register("kiro-missing-code", "kiro")
+        .await;
 
     let app = build_router(state.clone()).layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -391,7 +406,10 @@ fn builder_id_session_context_contains_persistence_critical_fields() {
         Some("  Main Kiro  ".into()),
     );
 
-    assert_eq!(context.get("client_id").and_then(Value::as_str), Some("client-id"));
+    assert_eq!(
+        context.get("client_id").and_then(Value::as_str),
+        Some("client-id")
+    );
     assert_eq!(
         context.get("client_secret").and_then(Value::as_str),
         Some("client-secret")
@@ -405,12 +423,18 @@ fn builder_id_session_context_contains_persistence_critical_fields() {
         Some("builder-id")
     );
     assert_eq!(context.get("provider").and_then(Value::as_str), Some("AWS"));
-    assert_eq!(context.get("region").and_then(Value::as_str), Some("us-east-1"));
+    assert_eq!(
+        context.get("region").and_then(Value::as_str),
+        Some("us-east-1")
+    );
     assert_eq!(
         context.get("start_url").and_then(Value::as_str),
         Some("https://view.awsapps.com/start")
     );
-    assert_eq!(context.get("label").and_then(Value::as_str), Some("Main Kiro"));
+    assert_eq!(
+        context.get("label").and_then(Value::as_str),
+        Some("Main Kiro")
+    );
 }
 
 #[test]
@@ -443,9 +467,18 @@ fn builder_id_auth_record_uses_callback_context_and_token_response() {
     assert_eq!(record.provider, "kiro");
     assert_eq!(record.provider_key, "kiro");
     assert_eq!(record.label, "Main Kiro");
-    assert_eq!(record.metadata.get("auth_method").and_then(Value::as_str), Some("builder-id"));
-    assert_eq!(record.metadata.get("provider").and_then(Value::as_str), Some("AWS"));
-    assert_eq!(record.metadata.get("region").and_then(Value::as_str), Some("us-east-1"));
+    assert_eq!(
+        record.metadata.get("auth_method").and_then(Value::as_str),
+        Some("builder-id")
+    );
+    assert_eq!(
+        record.metadata.get("provider").and_then(Value::as_str),
+        Some("AWS")
+    );
+    assert_eq!(
+        record.metadata.get("region").and_then(Value::as_str),
+        Some("us-east-1")
+    );
     assert_eq!(
         record.metadata.get("start_url").and_then(Value::as_str),
         Some("https://view.awsapps.com/start")
@@ -466,7 +499,10 @@ fn builder_id_auth_record_uses_callback_context_and_token_response() {
         record.metadata.get("refresh_token").and_then(Value::as_str),
         Some("refresh-token")
     );
-    assert_eq!(record.metadata.get("email").and_then(Value::as_str), Some("user@example.com"));
+    assert_eq!(
+        record.metadata.get("email").and_then(Value::as_str),
+        Some("user@example.com")
+    );
 }
 
 #[test]
@@ -489,7 +525,7 @@ fn builder_id_auth_record_rejects_empty_access_token() {
         refresh_token: Some("refresh-token".into()),
     };
 
-    let error = rusuh::proxy::oauth::build_builder_id_auth_record(&context, token_resp, None)
-        .unwrap_err();
+    let error =
+        rusuh::proxy::oauth::build_builder_id_auth_record(&context, token_resp, None).unwrap_err();
     assert!(error.to_string().contains("empty access token"));
 }

@@ -42,11 +42,16 @@ struct StubProvider {
 #[derive(Debug, Clone)]
 enum StubCompletionResult {
     Success,
+    SuccessWithToolCalls(Vec<serde_json::Value>),
     QuotaExceeded(String),
 }
 
 impl StubProvider {
-    fn success(name: &'static str, model_ids: &[&str], observed_models: Arc<Mutex<Vec<String>>>) -> Self {
+    fn success(
+        name: &'static str,
+        model_ids: &[&str],
+        observed_models: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
         Self {
             name,
             models: model_ids
@@ -60,6 +65,28 @@ impl StubProvider {
                 .collect(),
             observed_models,
             result: StubCompletionResult::Success,
+        }
+    }
+
+    fn success_with_tool_calls(
+        name: &'static str,
+        model_ids: &[&str],
+        observed_models: Arc<Mutex<Vec<String>>>,
+        tool_calls: Vec<serde_json::Value>,
+    ) -> Self {
+        Self {
+            name,
+            models: model_ids
+                .iter()
+                .map(|id| ModelInfo {
+                    id: (*id).to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: name.to_string(),
+                })
+                .collect(),
+            observed_models,
+            result: StubCompletionResult::SuccessWithToolCalls(tool_calls),
         }
     }
 
@@ -122,16 +149,42 @@ impl Provider for StubProvider {
                 }],
                 usage: None,
             }),
+            StubCompletionResult::SuccessWithToolCalls(tool_calls) => Ok(ChatCompletionResponse {
+                id: format!("{}-ok", self.name),
+                object: "chat.completion".to_string(),
+                created: 0,
+                model: req.model.clone(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Some(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text(String::new()),
+                        name: None,
+                        tool_calls: Some(tool_calls.clone()),
+                        tool_call_id: None,
+                    }),
+                    delta: None,
+                    finish_reason: Some("tool_calls".to_string()),
+                }],
+                usage: None,
+            }),
             StubCompletionResult::QuotaExceeded(message) => {
                 Err(AppError::QuotaExceeded(message.clone()))
             }
         }
     }
 
-    async fn chat_completion_stream(&self, req: &ChatCompletionRequest) -> rusuh::error::AppResult<BoxStream> {
+    async fn chat_completion_stream(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> rusuh::error::AppResult<BoxStream> {
         self.observed_models.lock().await.push(req.model.clone());
         match &self.result {
-            StubCompletionResult::Success => Ok(Box::pin(futures::stream::iter(vec![Ok(Bytes::from_static(b"data: [DONE]\n\n"))]))),
+            StubCompletionResult::Success | StubCompletionResult::SuccessWithToolCalls(_) => {
+                Ok(Box::pin(futures::stream::iter(vec![Ok(
+                    Bytes::from_static(b"data: [DONE]\n\n"),
+                )])))
+            }
             StubCompletionResult::QuotaExceeded(message) => {
                 Err(AppError::QuotaExceeded(message.clone()))
             }
@@ -205,8 +258,10 @@ async fn health_always_accessible() {
 
 #[tokio::test]
 async fn health_accessible_with_api_keys_set() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["secret-key".into()];
+    let cfg = Config {
+        api_keys: vec!["secret-key".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -243,8 +298,10 @@ async fn auth_disabled_when_no_keys() {
 
 #[tokio::test]
 async fn auth_rejects_missing_key() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["correct-key".into()];
+    let cfg = Config {
+        api_keys: vec!["correct-key".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -263,8 +320,10 @@ async fn auth_rejects_missing_key() {
 
 #[tokio::test]
 async fn auth_rejects_wrong_key() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["correct-key".into()];
+    let cfg = Config {
+        api_keys: vec!["correct-key".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -284,8 +343,10 @@ async fn auth_rejects_wrong_key() {
 
 #[tokio::test]
 async fn auth_accepts_bearer_token() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["my-key".into()];
+    let cfg = Config {
+        api_keys: vec!["my-key".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -305,8 +366,10 @@ async fn auth_accepts_bearer_token() {
 
 #[tokio::test]
 async fn auth_accepts_x_api_key_header() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["my-key".into()];
+    let cfg = Config {
+        api_keys: vec!["my-key".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -410,7 +473,9 @@ async fn public_claude_sonnet_4_6_does_not_use_kiro_alias_routing() {
             thinking: None,
             user_defined: false,
         }];
-        registry.register_client(&client_id, provider.name(), models).await;
+        registry
+            .register_client(&client_id, provider.name(), models)
+            .await;
     }
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
@@ -593,10 +658,14 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
             thinking: None,
             user_defined: false,
         }];
-        registry.register_client(&client_id, provider.name(), models).await;
+        registry
+            .register_client(&client_id, provider.name(), models)
+            .await;
 
         // Mark Kiro provider as quota exceeded to trigger fallback
-        registry.set_quota_exceeded(&client_id, "kiro-claude-sonnet-4-6").await;
+        registry
+            .set_quota_exceeded(&client_id, "kiro-claude-sonnet-4-6")
+            .await;
     }
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
@@ -629,8 +698,10 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
 #[tokio::test]
 async fn management_endpoint_skips_auth() {
-    let mut cfg = Config::default();
-    cfg.api_keys = vec!["secret".into()];
+    let cfg = Config {
+        api_keys: vec!["secret".into()],
+        ..Default::default()
+    };
 
     let app = test_app(cfg);
 
@@ -769,7 +840,9 @@ async fn kiro_routing_skips_quota_exceeded_auth() {
             thinking: None,
             user_defined: false,
         }];
-        registry.register_client(&client_id, provider.name(), models).await;
+        registry
+            .register_client(&client_id, provider.name(), models)
+            .await;
     }
 
     // Mark first provider as quota-exceeded
@@ -901,7 +974,9 @@ async fn kiro_routing_skips_suspended_auth() {
             thinking: None,
             user_defined: false,
         }];
-        registry.register_client(&client_id, provider.name(), models).await;
+        registry
+            .register_client(&client_id, provider.name(), models)
+            .await;
     }
 
     // Suspend first provider
@@ -1014,7 +1089,9 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
             thinking: None,
             user_defined: false,
         }];
-        registry.register_client(&client_id, provider.name(), models).await;
+        registry
+            .register_client(&client_id, provider.name(), models)
+            .await;
     }
 
     // Mark provider as quota-exceeded
@@ -1078,7 +1155,11 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         .await;
 
     let providers: Vec<Arc<dyn Provider>> = vec![];
-    let app = test_app_with_state(test_state_with_providers(Config::default(), registry, providers));
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
 
     let resp = app
         .oneshot(
@@ -1121,18 +1202,12 @@ async fn provider_pinned_kiro_models_expose_only_raw_kiro_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
-            &[
-                "kiro-claude-sonnet-4-5",
-                "kiro-claude-sonnet-4-5-agentic",
-            ],
+            &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_first_observed,
         )),
         Arc::new(StubProvider::success(
             "kiro",
-            &[
-                "kiro-claude-sonnet-4-5",
-                "kiro-claude-sonnet-4-5-agentic",
-            ],
+            &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_second_observed,
         )),
         Arc::new(StubProvider::success(
@@ -1187,10 +1262,7 @@ async fn provider_pinned_zed_models_expose_only_raw_zed_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
-            &[
-                "kiro-claude-sonnet-4-5",
-                "kiro-claude-sonnet-4-5-agentic",
-            ],
+            &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_observed,
         )),
         Arc::new(StubProvider::success(
@@ -1274,7 +1346,11 @@ async fn public_endpoint_rejects_provider_native_model_ids() {
         )
         .await;
 
-    let app = test_app_with_state(test_state_with_providers(Config::default(), registry, providers));
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
 
     for model in ["kiro-claude-sonnet-4-5", "claude-sonnet-4-5"] {
         let resp = app
@@ -1284,7 +1360,9 @@ async fn public_endpoint_rejects_provider_native_model_ids() {
                     .method("POST")
                     .uri("/v1/chat/completions")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&basic_chat_request(model)).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&basic_chat_request(model)).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1329,7 +1407,11 @@ async fn public_claude_sonnet_4_6_routes_only_to_zed_native_model() {
         )
         .await;
 
-    let app = test_app_with_state(test_state_with_providers(Config::default(), registry, providers));
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
     let body = basic_chat_request("claude-sonnet-4.6");
 
     let resp = app
@@ -1382,7 +1464,11 @@ async fn public_claude_sonnet_4_5_routes_kiro_first_then_falls_back_to_zed() {
         )
         .await;
 
-    let app = test_app_with_state(test_state_with_providers(Config::default(), registry, providers));
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
     let body = basic_chat_request("claude-sonnet-4.5");
 
     let resp = app
@@ -1398,7 +1484,10 @@ async fn public_claude_sonnet_4_5_routes_kiro_first_then_falls_back_to_zed() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(kiro_seen.lock().await.as_slice(), &["kiro-claude-sonnet-4-5"]);
+    assert_eq!(
+        kiro_seen.lock().await.as_slice(),
+        &["kiro-claude-sonnet-4-5"]
+    );
     assert_eq!(zed_seen.lock().await.as_slice(), &["claude-sonnet-4-5"]);
 }
 
@@ -1456,7 +1545,11 @@ async fn public_thinking_model_stays_on_kiro_without_zed_fallback() {
         )
         .await;
 
-    let app = test_app_with_state(test_state_with_providers(Config::default(), registry, providers));
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
     let body = basic_chat_request("claude-sonnet-4.5-thinking");
 
     let resp = app
@@ -1481,4 +1574,127 @@ async fn public_thinking_model_stays_on_kiro_without_zed_fallback() {
         &["kiro-claude-sonnet-4-5-agentic"]
     );
     assert!(zed_seen.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn public_claude_sonnet_4_5_non_stream_returns_chat_completion_response() {
+    let kiro_seen = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
+        "kiro",
+        &["kiro-claude-sonnet-4-5"],
+        kiro_seen.clone(),
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "kiro_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-sonnet-4-5", "kiro", "kiro")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4.5",
+        "stream": false,
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        kiro_seen.lock().await.as_slice(),
+        &["kiro-claude-sonnet-4-5"]
+    );
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["object"], "chat.completion");
+    assert_eq!(json["choices"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["choices"][0]["message"]["role"], "assistant");
+}
+
+#[tokio::test]
+async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
+    let kiro_seen = Arc::new(Mutex::new(Vec::new()));
+    let tool_calls = vec![serde_json::json!({
+        "id": "call_123",
+        "type": "function",
+        "function": {
+            "name": "lookup_weather",
+            "arguments": "{\"city\":\"Jakarta\"}"
+        }
+    })];
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_tool_calls(
+        "kiro",
+        &["kiro-claude-sonnet-4-5"],
+        kiro_seen.clone(),
+        tool_calls.clone(),
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "kiro_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-sonnet-4-5", "kiro", "kiro")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4.5",
+        "stream": false,
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        kiro_seen.lock().await.as_slice(),
+        &["kiro-claude-sonnet-4-5"]
+    );
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["object"], "chat.completion");
+    assert_eq!(
+        json["choices"][0]["message"]["tool_calls"],
+        serde_json::Value::Array(tool_calls)
+    );
 }

@@ -146,6 +146,6 @@ pub fn parse_expiry(metadata: &HashMap<String, Value>) -> DateTime<Utc> {
             return dt;
         }
     }
-    // Default to epoch if missing/invalid
-    DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now)
+    // Default to epoch if missing/invalid.
+    DateTime::UNIX_EPOCH
 }

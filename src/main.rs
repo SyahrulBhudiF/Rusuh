@@ -8,6 +8,13 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+fn load_config_or_default(path: &str) -> anyhow::Result<config::Config> {
+    match config::Config::load_optional(path)? {
+        Some(cfg) => Ok(cfg),
+        None => Ok(config::Config::default()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Init tracing
@@ -24,9 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load config (optional — server works with defaults)
-    let cfg = config::Config::load_optional(&cli.config)
-        .unwrap_or_default()
-        .unwrap_or_default();
+    let cfg = load_config_or_default(&cli.config)?;
 
     match cli.command.unwrap_or(Commands::Serve) {
         Commands::Serve => serve(cfg).await?,
@@ -149,9 +154,15 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     // Build model registry and Kiro runtime before providers so providers can share them.
     let model_registry = Arc::new(providers::model_registry::ModelRegistry::new());
     let mut kiro_runtime = proxy::KiroRuntimeState::default();
-    kiro_runtime.quota_checker = Arc::new(auth::kiro_runtime::KiroUsageChecker::new(
-        "https://codewhisperer.us-east-1.amazonaws.com",
-    ));
+    match auth::kiro_runtime::KiroUsageChecker::new("https://codewhisperer.us-east-1.amazonaws.com")
+    {
+        Ok(checker) => {
+            kiro_runtime.quota_checker = Arc::new(checker);
+        }
+        Err(error) => {
+            tracing::warn!("failed to initialize Kiro usage checker: {error}");
+        }
+    }
 
     // Build providers from loaded accounts + config
     let providers = providers::registry::build_providers(
@@ -218,4 +229,40 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_config_or_default;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn load_config_or_default_uses_defaults_when_file_is_missing() {
+        let cfg = load_config_or_default("/tmp/nonexistent_rusuh_main_config_xyz.yaml").unwrap();
+
+        assert_eq!(cfg.listen_addr(), "0.0.0.0:8317");
+        assert!(cfg.api_keys.is_empty());
+    }
+
+    #[test]
+    fn load_config_or_default_loads_existing_config_file() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "host: 127.0.0.1\nport: 9000\n").unwrap();
+
+        let cfg = load_config_or_default(file.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(cfg.listen_addr(), "127.0.0.1:9000");
+    }
+
+    #[test]
+    fn load_config_or_default_returns_error_for_invalid_yaml() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "host: [\n").unwrap();
+
+        let error = load_config_or_default(file.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("host:"));
+        assert!(message.contains("expected a string"));
+    }
 }

@@ -55,18 +55,12 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
             "/kiro/builder-id/start",
             axum::routing::post(crate::proxy::oauth::start_builder_id_login),
         )
-        .route(
-            "/kiro/import",
-            axum::routing::post(import_kiro_auth_file),
-        )
+        .route("/kiro/import", axum::routing::post(import_kiro_auth_file))
         .route(
             "/kiro/social/import",
             axum::routing::post(import_kiro_social_refresh_token),
         )
-        .route(
-            "/kiro/check-quota",
-            axum::routing::post(check_kiro_quota),
-        )
+        .route("/kiro/check-quota", axum::routing::post(check_kiro_quota))
         // ── Zed ──────────────────────────────────────────────────────────────
         .route(
             "/zed/login/initiate",
@@ -76,14 +70,8 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
             "/zed/login/status",
             axum::routing::get(get_zed_login_status),
         )
-        .route(
-            "/zed/import",
-            axum::routing::post(import_zed_credential),
-        )
-        .route(
-            "/zed/check-quota",
-            axum::routing::post(check_zed_quota),
-        )
+        .route("/zed/import", axum::routing::post(import_zed_credential))
+        .route("/zed/check-quota", axum::routing::post(check_zed_quota))
         .route("/zed/models", axum::routing::post(list_zed_models))
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
@@ -593,7 +581,6 @@ async fn upload_auth_file(
     (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
 }
 
-
 #[derive(Deserialize)]
 struct ImportKiroBody {
     access_token: Option<String>,
@@ -641,7 +628,10 @@ async fn import_kiro_social_refresh_token(
         );
     }
 
-    let mut token_data = match SocialAuthClient::new().refresh_social_token(&refresh_token).await {
+    let mut token_data = match SocialAuthClient::new()
+        .refresh_social_token(&refresh_token)
+        .await
+    {
         Ok(data) => data,
         Err(error) => {
             return (
@@ -710,7 +700,6 @@ async fn import_kiro_social_refresh_token(
         })),
     )
 }
-
 
 async fn import_kiro_auth_file(
     State(state): State<Arc<ProxyState>>,
@@ -887,7 +876,6 @@ async fn check_kiro_quota(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<CheckKiroQuotaBody>,
 ) -> impl IntoResponse {
-
     let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
         Ok(n) => n,
         Err(e) => return e,
@@ -895,7 +883,9 @@ async fn check_kiro_quota(
 
     // Find the auth record
     let accounts = state.accounts.accounts_for("kiro").await;
-    let record = accounts.iter().find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let record = accounts
+        .iter()
+        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
 
     let Some(mut record) = record.cloned() else {
         return (
@@ -911,7 +901,11 @@ async fn check_kiro_quota(
         crate::auth::kiro_runtime::QuotaStatus::Unknown => json!({
             "status": "unknown"
         }),
-        crate::auth::kiro_runtime::QuotaStatus::Available { remaining, next_reset, breakdown } => {
+        crate::auth::kiro_runtime::QuotaStatus::Available {
+            remaining,
+            next_reset,
+            breakdown,
+        } => {
             let mut resp = json!({
                 "status": "available",
                 "remaining": remaining,
@@ -927,7 +921,7 @@ async fn check_kiro_quota(
                 }
             }
             resp
-        },
+        }
         crate::auth::kiro_runtime::QuotaStatus::Exhausted { detail } => json!({
             "status": "exhausted",
             "detail": detail,
@@ -962,8 +956,16 @@ async fn check_quota_with_refresh(
         return crate::auth::kiro_runtime::QuotaStatus::Unknown;
     }
 
-    let client_id = record.metadata.get("client_id").and_then(|v| v.as_str()).map(String::from);
-    let refresh_token = record.metadata.get("refresh_token").and_then(|v| v.as_str()).map(String::from);
+    let client_id = record
+        .metadata
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let refresh_token = record
+        .metadata
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let request = UsageCheckRequest {
         access_token: access_token.clone(),
@@ -979,11 +981,20 @@ async fn check_quota_with_refresh(
     if matches!(status, crate::auth::kiro_runtime::QuotaStatus::Unknown) {
         if let Some(refreshed) = attempt_token_refresh(record).await {
             // Update record with refreshed token
-            record.metadata.insert("access_token".to_string(), serde_json::json!(refreshed.access_token));
+            record.metadata.insert(
+                "access_token".to_string(),
+                serde_json::json!(refreshed.access_token),
+            );
             if !refreshed.refresh_token.is_empty() {
-                record.metadata.insert("refresh_token".to_string(), serde_json::json!(refreshed.refresh_token));
+                record.metadata.insert(
+                    "refresh_token".to_string(),
+                    serde_json::json!(refreshed.refresh_token),
+                );
             }
-            record.metadata.insert("expires_at".to_string(), serde_json::json!(refreshed.expires_at));
+            record.metadata.insert(
+                "expires_at".to_string(),
+                serde_json::json!(refreshed.expires_at),
+            );
 
             // Save to disk
             if let Err(e) = state.accounts.store().save(record).await {
@@ -999,7 +1010,11 @@ async fn check_quota_with_refresh(
                 client_id,
                 refresh_token: Some(refreshed.refresh_token),
             };
-            return state.kiro_runtime.quota_checker.check_quota(&retry_request).await;
+            return state
+                .kiro_runtime
+                .quota_checker
+                .check_quota(&retry_request)
+                .await;
         }
     }
 
@@ -1007,10 +1022,8 @@ async fn check_quota_with_refresh(
 }
 
 /// Attempt to refresh a Kiro token based on its auth method.
-async fn attempt_token_refresh(
-    record: &crate::auth::store::AuthRecord,
-) -> Option<RefreshedToken> {
-    use crate::auth::kiro_login::{SocialAuthClient, SSOOIDCClient};
+async fn attempt_token_refresh(record: &crate::auth::store::AuthRecord) -> Option<RefreshedToken> {
+    use crate::auth::kiro_login::{SSOOIDCClient, SocialAuthClient};
 
     let auth_method = record
         .metadata
@@ -1023,10 +1036,7 @@ async fn attempt_token_refresh(
         .get("refresh_token")
         .and_then(|v| v.as_str())?;
 
-    let client_id = record
-        .metadata
-        .get("client_id")
-        .and_then(|v| v.as_str());
+    let client_id = record.metadata.get("client_id").and_then(|v| v.as_str());
 
     let client_secret = record
         .metadata
@@ -1045,7 +1055,10 @@ async fn attempt_token_refresh(
             if let (Some(cid), Some(secret)) = (client_id, client_secret) {
                 let client = SSOOIDCClient::new();
                 let start_url = "https://view.awsapps.com/start";
-                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                match client
+                    .refresh_token_with_region(cid, secret, refresh_token, region, start_url)
+                    .await
+                {
                     Ok(response) => {
                         return Some(RefreshedToken {
                             access_token: response.access_token,
@@ -1069,7 +1082,10 @@ async fn attempt_token_refresh(
                     .unwrap_or("");
 
                 let client = SSOOIDCClient::new();
-                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                match client
+                    .refresh_token_with_region(cid, secret, refresh_token, region, start_url)
+                    .await
+                {
                     Ok(response) => {
                         return Some(RefreshedToken {
                             access_token: response.access_token,
@@ -1386,7 +1402,9 @@ async fn patch_auth_file_fields(
     if !changed {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no fields to update — use label, prefix, proxy_url, or priority"})),
+            Json(
+                json!({"error": "no fields to update — use label, prefix, proxy_url, or priority"}),
+            ),
         );
     }
 
@@ -1427,7 +1445,7 @@ async fn import_zed_credential(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<ImportZedCredentialBody>,
 ) -> impl IntoResponse {
-    use crate::proxy::zed_import::{import_zed_credential, validate_zed_credential};
+    use crate::proxy::zed_import::{import_zed_credential, validated_zed_credential};
 
     let name = body.name.as_deref().unwrap_or("").trim();
     if name.is_empty() {
@@ -1437,26 +1455,22 @@ async fn import_zed_credential(
         );
     }
 
-    let user_id = body.user_id.as_deref();
-    let credential_json = body.credential_json.as_deref();
-
-    if let Err(e) = validate_zed_credential(user_id, credential_json) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        );
-    }
+    let (user_id, credential_json) =
+        match validated_zed_credential(body.user_id.as_deref(), body.credential_json.as_deref()) {
+            Ok(values) => values,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": e.to_string()})),
+                );
+            }
+        };
 
     let cfg = state.config.read().await;
     let auth_dir = std::path::PathBuf::from(&cfg.auth_dir);
     drop(cfg);
 
-    match import_zed_credential(
-        &auth_dir,
-        name,
-        user_id.unwrap(),
-        credential_json.unwrap(),
-    ) {
+    match import_zed_credential(&auth_dir, name, user_id, credential_json) {
         Ok(filename) => {
             // Reload accounts
             let _ = state.accounts.reload().await;
@@ -1470,12 +1484,15 @@ async fn import_zed_credential(
             )
         }
         Err(e) => {
-            let status = if e.to_string().contains("already exists") {
+            let msg = e.to_string();
+            let status = if msg.contains("already exists") {
                 StatusCode::CONFLICT
+            } else if msg.contains("invalid filename") || msg.contains("name is required") {
+                StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            (status, Json(json!({"error": e.to_string()})))
+            (status, Json(json!({"error": msg})))
         }
     }
 }
@@ -1722,9 +1739,9 @@ async fn check_zed_quota(
 
     // Find the auth record
     let accounts = state.accounts.accounts_for("zed").await;
-    let record = accounts.iter().find(|r| {
-        r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name)
-    });
+    let record = accounts
+        .iter()
+        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
 
     let Some(record) = record else {
         return (
@@ -1735,8 +1752,7 @@ async fn check_zed_quota(
 
     // Parse Zed credential from metadata
     let metadata_value = serde_json::to_value(&record.metadata).unwrap_or(json!({}));
-    let (user_id, credential_json) = match crate::auth::zed::parse_zed_credential(&metadata_value)
-    {
+    let (user_id, credential_json) = match crate::auth::zed::parse_zed_credential(&metadata_value) {
         Ok(creds) => creds,
         Err(e) => {
             return (

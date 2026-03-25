@@ -41,10 +41,7 @@ fn test_parse_zed_credential_missing_credential_json() {
 
     let result = parse_zed_credential(&json);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("credential_json"));
+    assert!(result.unwrap_err().to_string().contains("credential_json"));
 }
 
 #[test]

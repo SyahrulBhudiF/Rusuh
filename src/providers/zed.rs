@@ -66,8 +66,8 @@ impl ZedClient {
         headers: &reqwest::header::HeaderMap,
     ) -> bool {
         let headers = headers
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.to_str().unwrap_or("")))
+            .keys()
+            .map(|name| (name.as_str(), ""))
             .collect::<Vec<_>>();
         is_stale_token_response(status_code, &headers)
     }
@@ -84,6 +84,40 @@ pub fn is_stale_token_response(status: u16, headers: &[(&str, &str)]) -> bool {
         k.eq_ignore_ascii_case("x-zed-expired-token")
             || k.eq_ignore_ascii_case("x-zed-outdated-token")
     })
+}
+
+fn format_non_success_response_body<E>(body_result: Result<String, E>) -> String
+where
+    E: std::fmt::Display,
+{
+    match body_result {
+        Ok(body) => body,
+        Err(error) => format!("<failed to read response body: {error}>"),
+    }
+}
+
+fn should_refresh_token(cache: Option<&TokenCache>) -> bool {
+    cache.is_none_or(TokenCache::is_expired)
+}
+
+fn map_cached_model_ids(model_ids: &[String]) -> Vec<ModelInfo> {
+    model_ids
+        .iter()
+        .map(|id| ModelInfo {
+            id: id.clone(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "zed".to_string(),
+        })
+        .collect()
+}
+
+fn read_cached_models(models_cache: Option<&Vec<String>>) -> AppResult<Vec<ModelInfo>> {
+    models_cache
+        .map(|model_ids| map_cached_model_ids(model_ids))
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("zed models cache missing after refresh"))
+        })
 }
 
 /// Cached Zed API token with expiry tracking.
@@ -188,6 +222,19 @@ impl ZedProvider {
 
     /// Refresh the API token from Zed Cloud.
     pub async fn refresh_token(&self) -> AppResult<()> {
+        let needs_refresh = {
+            let cache = self.token_cache.lock().await;
+            should_refresh_token(cache.as_ref())
+        };
+
+        if !needs_refresh {
+            debug!(
+                "skipping zed token refresh for user {} because cache is already valid",
+                self.user_id
+            );
+            return Ok(());
+        }
+
         debug!("refreshing zed token for user {}", self.user_id);
 
         let mut headers = reqwest::header::HeaderMap::new();
@@ -221,7 +268,7 @@ impl ZedProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(response.text().await);
             return Err(AppError::Upstream(format!(
                 "token refresh failed: {} - {}",
                 status, body
@@ -267,7 +314,7 @@ impl ZedProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(response.text().await);
             return Err(AppError::Upstream(format!(
                 "models fetch failed: {} - {}",
                 status, body
@@ -300,24 +347,15 @@ impl ZedProvider {
 
     /// Ensure we have a valid token, refreshing if needed.
     async fn ensure_token(&self) -> AppResult<()> {
-        {
+        let needs_refresh = {
             let cache = self.token_cache.lock().await;
-            if let Some(token) = cache.as_ref() {
-                if !token.is_expired() {
-                    return Ok(());
-                }
-            }
+            should_refresh_token(cache.as_ref())
+        };
+
+        if !needs_refresh {
+            return Ok(());
         }
 
-        let cache = self.token_cache.lock().await;
-
-        if let Some(token) = cache.as_ref() {
-            if !token.is_expired() {
-                return Ok(());
-            }
-        }
-
-        drop(cache);
         self.refresh_token().await?;
 
         Ok(())
@@ -336,32 +374,14 @@ impl Provider for ZedProvider {
         {
             let cache = self.models_cache.lock().await;
             if let Some(models) = cache.as_ref() {
-                return Ok(models
-                    .iter()
-                    .map(|id| ModelInfo {
-                        id: id.clone(),
-                        object: "model".to_string(),
-                        created: 0,
-                        owned_by: "zed".to_string(),
-                    })
-                    .collect());
+                return Ok(map_cached_model_ids(models));
             }
         }
 
         self.refresh_models().await?;
 
         let cache = self.models_cache.lock().await;
-        Ok(cache
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|id| ModelInfo {
-                id: id.clone(),
-                object: "model".to_string(),
-                created: 0,
-                owned_by: "zed".to_string(),
-            })
-            .collect())
+        read_cached_models(cache.as_ref())
     }
 
     async fn chat_completion(
@@ -388,7 +408,7 @@ impl Provider for ZedProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(response.text().await);
             return Err(AppError::Upstream(format!(
                 "completions failed: {} - {}",
                 status, body
@@ -435,7 +455,7 @@ impl Provider for ZedProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = format_non_success_response_body(response.text().await);
             return Err(AppError::Upstream(format!(
                 "streaming failed: {} - {}",
                 status, body
@@ -493,4 +513,125 @@ pub async fn scan_zed_providers(
     }
 
     Ok(providers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_non_success_response_body, map_cached_model_ids, read_cached_models,
+        should_refresh_token, TokenCache, ZedProvider,
+    };
+    use crate::auth::store::{AuthRecord, AuthStatus};
+    use crate::error::AppError;
+    use chrono::Utc;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    fn make_zed_record(user_id: &str, credential_json: &str) -> AuthRecord {
+        let mut metadata = HashMap::new();
+        metadata.insert("user_id".to_string(), json!(user_id));
+        metadata.insert("credential_json".to_string(), json!(credential_json));
+
+        AuthRecord {
+            id: "test.json".into(),
+            provider: "zed".into(),
+            provider_key: "zed".into(),
+            label: user_id.to_string(),
+            disabled: false,
+            status: AuthStatus::Active,
+            status_message: None,
+            last_refreshed_at: None,
+            path: PathBuf::from("test.json"),
+            metadata,
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn format_non_success_response_body_returns_body_text_on_success() {
+        let formatted = format_non_success_response_body::<std::io::Error>(Ok("zed body".into()));
+
+        assert_eq!(formatted, "zed body");
+    }
+
+    #[test]
+    fn format_non_success_response_body_returns_explicit_fallback_on_read_error() {
+        let formatted = format_non_success_response_body(Err(std::io::Error::other("boom")));
+
+        assert_eq!(formatted, "<failed to read response body: boom>");
+    }
+
+    #[test]
+    fn map_cached_model_ids_preserves_ids_and_sets_zed_metadata() {
+        let models =
+            map_cached_model_ids(&["claude-3.7-sonnet".to_string(), "gpt-4.1".to_string()]);
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-3.7-sonnet");
+        assert_eq!(models[0].object, "model");
+        assert_eq!(models[0].created, 0);
+        assert_eq!(models[0].owned_by, "zed");
+        assert_eq!(models[1].id, "gpt-4.1");
+        assert_eq!(models[1].object, "model");
+        assert_eq!(models[1].created, 0);
+        assert_eq!(models[1].owned_by, "zed");
+    }
+
+    #[test]
+    fn read_cached_models_returns_internal_error_when_cache_is_missing() {
+        let error = read_cached_models(None).unwrap_err();
+
+        assert!(matches!(error, AppError::Internal(_)));
+        assert!(error
+            .to_string()
+            .contains("models cache missing after refresh"));
+    }
+
+    #[test]
+    fn should_refresh_token_returns_false_for_valid_cached_token() {
+        let cache = TokenCache::new("test-token".to_string(), 120);
+
+        assert!(!should_refresh_token(Some(&cache)));
+    }
+
+    #[test]
+    fn should_refresh_token_returns_true_for_empty_cache() {
+        assert!(should_refresh_token(None));
+    }
+
+    #[test]
+    fn should_refresh_token_returns_true_for_expired_cached_token() {
+        let cache = TokenCache {
+            token: "test-token".to_string(),
+            expires_at: SystemTime::now() - Duration::from_secs(1),
+        };
+
+        assert!(should_refresh_token(Some(&cache)));
+    }
+
+    #[tokio::test]
+    async fn ensure_token_skips_refresh_when_valid_cache_appears_before_dispatch() {
+        let record = make_zed_record("user123", "bad\ncredential");
+        let provider = ZedProvider::new(record).unwrap();
+
+        {
+            let mut cache = provider.token_cache.lock().await;
+            *cache = Some(TokenCache {
+                token: "stale-token".to_string(),
+                expires_at: SystemTime::now() - Duration::from_secs(1),
+            });
+        }
+
+        {
+            let mut cache = provider.token_cache.lock().await;
+            *cache = Some(TokenCache::new("fresh-token".to_string(), 120));
+        }
+
+        provider.refresh_token().await.unwrap();
+
+        let cache = provider.token_cache.lock().await;
+        assert_eq!(cache.as_ref().unwrap().token(), "fresh-token");
+    }
 }

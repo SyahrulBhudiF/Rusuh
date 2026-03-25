@@ -129,7 +129,9 @@ fn build_anthropic_provider_request(obj: &Map<String, Value>, model_id: &str) ->
     provider_request.insert("messages".to_string(), Value::Array(messages));
     provider_request.insert(
         "max_tokens".to_string(),
-        obj.get("max_tokens").cloned().unwrap_or_else(|| json!(8192)),
+        obj.get("max_tokens")
+            .cloned()
+            .unwrap_or_else(|| json!(8192)),
     );
     copy_if_present(&mut provider_request, obj, "stream", "stream");
     copy_if_present(&mut provider_request, obj, "temperature", "temperature");
@@ -274,7 +276,10 @@ mod tests {
         let result = translate_to_zed_request(&request).unwrap();
         assert_eq!(result["provider"], "anthropic");
         assert_eq!(result["model"], "claude-3-5-sonnet-20241022");
-        assert_eq!(result["provider_request"]["model"], "claude-3-5-sonnet-20241022");
+        assert_eq!(
+            result["provider_request"]["model"],
+            "claude-3-5-sonnet-20241022"
+        );
         assert_eq!(
             result["provider_request"]["messages"][0]["content"][0]["text"],
             "Hello"
