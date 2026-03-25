@@ -440,13 +440,14 @@ export function AccountsPage() {
                                       </p>
                                     ) : null}
                                     {zedQuotaResults[item.id].error ? (
-                                      <p className="text-muted-foreground mt-1 text-xs">
+                                      <p className="text-destructive mt-1 text-xs">
                                         {zedQuotaResults[item.id].error}
                                       </p>
                                     ) : null}
                                   </div>
                                 ) : null}
-                                {zedModelsResults[item.id] ? (
+                                {item.provider_key === "zed" &&
+                                zedModelsResults[item.id] ? (
                                   <div className="border-border bg-muted/50 mt-3 rounded-lg border p-3">
                                     <p className="text-xs font-medium">
                                       Available Models:
