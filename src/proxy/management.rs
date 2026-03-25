@@ -1595,70 +1595,74 @@ async fn get_zed_login_status(
         );
     };
 
-    let mut sessions = state.zed_login_sessions.lock().await;
-    cleanup_expired_sessions(&mut sessions);
+    let (private_key, callback_state) = {
+        let mut sessions = state.zed_login_sessions.lock().await;
+        cleanup_expired_sessions(&mut sessions);
 
-    let completed = match sessions.get(session_id) {
-        Some(session) => session.callback_state.is_completed(),
-        None => {
+        let session = match sessions.get_mut(session_id) {
+            Some(session) => session,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "Zed login session not found"})),
+                )
+            }
+        };
+
+        if !session.callback_state.is_completed() {
             return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Zed login session not found"})),
-            )
+                StatusCode::OK,
+                Json(json!({
+                    "status": "waiting",
+                    "session_id": session_id,
+                })),
+            );
         }
+
+        (session.private_key.clone(), Arc::clone(&session.callback_state))
     };
 
-    if !completed {
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "status": "waiting",
-                "session_id": session_id,
-            })),
-        );
-    }
-
-    let mut session = match sessions.remove(session_id) {
-        Some(session) => session,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Zed login session not found"})),
-            )
-        }
-    };
-    drop(sessions);
-
-    let user_id = match session.callback_state.user_id.lock().await.clone() {
+    let user_id = match callback_state.user_id.lock().await.clone() {
         Some(user_id) => user_id,
         None => {
-            session.server_handle.abort();
+            let error_msg = "callback completed without user_id".to_string();
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "callback completed without user_id"})),
+                Json(json!({"error": error_msg})),
             );
         }
     };
-    let encrypted_access_token = match session.callback_state.access_token.lock().await.clone() {
+    let encrypted_access_token = match callback_state.access_token.lock().await.clone() {
         Some(access_token) => access_token,
         None => {
-            session.server_handle.abort();
+            let error_msg = "callback completed without access_token".to_string();
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "callback completed without access_token"})),
+                Json(json!({"error": error_msg})),
             );
         }
     };
 
-    let credential_json = match decrypt_credential(&session.private_key, &encrypted_access_token) {
+    let credential_json = match decrypt_credential(&private_key, &encrypted_access_token) {
         Ok(value) => value,
         Err(error) => {
-            session.status = ZedLoginSessionStatus::Failed(error.to_string());
-            session.server_handle.abort();
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("decrypt credential: {error}")})),
-            );
+            let error_msg = format!("decrypt credential: {error}");
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error_msg})));
         }
     };
 
@@ -1670,22 +1674,36 @@ async fn get_zed_login_status(
 
     let record = build_zed_login_record(&filename, &user_id, &credential_json);
     if let Err(error) = state.accounts.store().save(&record).await {
-        session.server_handle.abort();
+        let error_msg = format!("save auth file: {error}");
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+            session.server_handle.abort();
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("save auth file: {error}")})),
+            Json(json!({"error": error_msg})),
         );
     }
     if let Err(error) = state.accounts.reload().await {
-        session.server_handle.abort();
+        let error_msg = format!("reload accounts: {error}");
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+            session.server_handle.abort();
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("reload accounts: {error}")})),
+            Json(json!({"error": error_msg})),
         );
     }
 
-    session.status = ZedLoginSessionStatus::Completed;
-    session.server_handle.abort();
+    {
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.remove(session_id) {
+            session.server_handle.abort();
+        }
+    }
 
     (
         StatusCode::OK,
