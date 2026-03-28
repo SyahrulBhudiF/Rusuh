@@ -277,20 +277,32 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
         Value::Null => String::new(),
         Value::Array(items) => {
             let mut segments = Vec::new();
-            for item in items {
+            for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     Value::String(s) => segments.push(s),
                     Value::Object(map) => {
-                        if let Some(s) = map.get("text").and_then(Value::as_str) {
-                            segments.push(s.to_string());
-                        }
+                        let text = map.get("text").and_then(Value::as_str).ok_or_else(|| {
+                            AppError::BadRequest(format!(
+                                "responses input array item {idx} must be a string or object with a text string"
+                            ))
+                        })?;
+                        segments.push(text.to_string());
                     }
-                    _ => {}
+                    _ => {
+                        return Err(AppError::BadRequest(format!(
+                            "responses input array item {idx} must be a string or object with a text string"
+                        )));
+                    }
                 }
             }
             segments.join("\n")
         }
-        _ => String::new(),
+        _ => {
+            return Err(AppError::BadRequest(
+                "responses input must be a string, null, or array to build a chat completion request"
+                    .to_string(),
+            ));
+        }
     };
 
     let stream = body.get("stream").and_then(Value::as_bool);
@@ -321,6 +333,47 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
         stop: None,
         extra,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::responses_body_to_chat_request;
+    use crate::error::AppError;
+
+    #[test]
+    fn responses_body_rejects_unsupported_top_level_input_shape() {
+        let error = responses_body_to_chat_request(json!({
+            "model": "claude-sonnet-4.6",
+            "input": {"text": "hello"}
+        }))
+        .expect_err("object input should be rejected");
+
+        match error {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("responses input must be a string, null, or array"));
+            }
+            other => panic!("expected bad request, got {other}"),
+        }
+    }
+
+    #[test]
+    fn responses_body_rejects_array_items_with_invalid_shape() {
+        let error = responses_body_to_chat_request(json!({
+            "model": "claude-sonnet-4.6",
+            "input": ["hello", {"type": "input_text", "text": 42}]
+        }))
+        .expect_err("invalid array item should be rejected");
+
+        match error {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("responses input array item"));
+                assert!(message.contains("string or object with a text string"));
+            }
+            other => panic!("expected bad request, got {other}"),
+        }
+    }
 }
 
 async fn route_chat(
