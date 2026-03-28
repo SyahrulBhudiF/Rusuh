@@ -6,6 +6,7 @@ pub mod oauth;
 pub mod stream;
 pub mod zed_import;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -72,10 +73,6 @@ impl ProxyState {
                 .collect::<Vec<_>>()
         };
 
-        for client_id in &previous_client_ids {
-            self.model_registry.unregister_client(client_id).await;
-        }
-
         let config = self.config.read().await.clone();
         let providers = crate::providers::registry::build_providers(
             &config,
@@ -85,11 +82,17 @@ impl ProxyState {
         )
         .await;
 
+        let replacement_client_ids: HashSet<String> = providers
+            .iter()
+            .enumerate()
+            .map(|(idx, provider)| format!("{}_{}", provider.name(), idx))
+            .collect();
+
         for (idx, provider) in providers.iter().enumerate() {
             let client_id = format!("{}_{}", provider.name(), idx);
 
             match provider.list_models().await {
-                Ok(models) => {
+                Ok(models) if !models.is_empty() => {
                     let ext_models: Vec<ExtModelInfo> = models
                         .into_iter()
                         .map(|model| ExtModelInfo {
@@ -116,9 +119,18 @@ impl ProxyState {
                         .register_client(&client_id, provider.name(), ext_models)
                         .await;
                 }
+                Ok(_) => {
+                    tracing::warn!("provider {} returned no models during refresh", provider.name());
+                }
                 Err(error) => {
                     tracing::warn!("failed to list models from {}: {error}", provider.name());
                 }
+            }
+        }
+
+        for client_id in &previous_client_ids {
+            if !replacement_client_ids.contains(client_id) {
+                self.model_registry.unregister_client(client_id).await;
             }
         }
 
