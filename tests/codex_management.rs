@@ -1,6 +1,7 @@
 //! Integration tests for Codex management quota endpoint.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -103,6 +104,24 @@ async fn spawn_codex_quota_server(
     (format!("http://{addr}/v1"), last_authorization)
 }
 
+async fn spawn_slow_codex_quota_server(delay: Duration) -> String {
+    let app = Router::new().route(
+        "/v1/models",
+        get(move || async move {
+            tokio::time::sleep(delay).await;
+            (StatusCode::OK, Json(json!({"data": []})))
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}/v1")
+}
+
 fn write_codex_auth(
     dir: &TempDir,
     file_name: &str,
@@ -187,6 +206,42 @@ async fn check_codex_quota_returns_available_for_200_probe() {
         *last_authorization.lock().await,
         Some("Bearer fake_access_token".to_string())
     );
+}
+
+#[tokio::test]
+async fn check_codex_quota_times_out_slow_probe() {
+    let dir = TempDir::new().unwrap();
+    let base_url = spawn_slow_codex_quota_server(Duration::from_secs(30)).await;
+    write_codex_auth(
+        &dir,
+        "codex-slow.json",
+        "slow-account",
+        &base_url,
+        Some("plus"),
+    );
+
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap())).await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(8),
+        app.oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/codex/check-quota",
+            json!({"name": "codex-slow.json"}),
+        )),
+    )
+    .await;
+
+    let resp = response.expect("quota probe should be bounded").unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert_eq!(body["account"], "slow-account");
+    assert_eq!(body["status"], "error");
+    assert_eq!(body["upstream_status"], 0);
+    assert_eq!(body["plan_type"], "plus");
+    let detail = body["detail"].as_str().unwrap().to_ascii_lowercase();
+    assert!(detail.contains("request failed:"));
 }
 
 #[tokio::test]

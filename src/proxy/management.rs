@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 
@@ -1223,6 +1223,7 @@ async fn probe_codex_quota(
 
     let result = http_client
         .get(&models_url)
+        .timeout(Duration::from_secs(5))
         .header("authorization", format!("Bearer {}", access_token))
         .header("content-type", "application/json")
         .send()
