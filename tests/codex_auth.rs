@@ -3,7 +3,7 @@ use rusuh::auth::codex::{
     normalize_plan_type_for_filename, save_auth_bundle, update_token_storage, CodexAuthBundle,
     CodexTokenData,
 };
-use rusuh::auth::codex_device::device_login;
+use rusuh::auth::codex_device::{device_login_with_endpoints, CodexDeviceEndpoints};
 use rusuh::auth::codex_login::{
     derive_code_challenge, exchange_code_for_tokens_with_redirect, generate_auth_url,
     generate_pkce_codes, is_safe_platform_url, parse_manual_callback_url,
@@ -237,7 +237,7 @@ fn resolve_callback_code_from_url_rejects_state_mismatch() {
 }
 
 #[tokio::test]
-async fn device_login_persists_canonical_codex_record_from_real_device_endpoints() {
+async fn device_login_persists_canonical_codex_record_from_explicit_endpoints() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let store = FileTokenStore::new(tmp.path());
 
@@ -291,13 +291,13 @@ async fn device_login_persists_canonical_codex_record_from_real_device_endpoints
         let _ = axum::serve(listener, app).await;
     });
 
-    std::env::set_var("RUSUH_CODEX_AUTH_BASE_URL", format!("http://{addr}"));
+    let endpoints = CodexDeviceEndpoints::from_auth_base_url(&format!("http://{addr}"))
+        .expect("mock endpoint base url should be accepted");
+    let client = reqwest::Client::new();
 
-    let login_result = device_login(&store).await;
-
-    std::env::remove_var("RUSUH_CODEX_AUTH_BASE_URL");
-
-    let saved = login_result.expect("device login should succeed");
+    let saved = device_login_with_endpoints(&store, &client, &endpoints)
+        .await
+        .expect("device login should succeed");
 
     assert!(saved
         .file_name()
