@@ -832,6 +832,73 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 }
 
 #[tokio::test]
+async fn public_route_failed_selected_auth_request_does_not_poison_execution_session() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
+        "zed",
+        &["claude-sonnet-4-6"],
+        seen.clone(),
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "zed_0",
+            "zed",
+            vec![make_ext_model("claude-sonnet-4-6", "zed", "zed")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let initial_body = serde_json::json!({
+        "model": "claude-sonnet-4.6",
+        "selected_auth_id": "zed_99",
+        "execution_session_id": "session-public",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let initial_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&initial_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial_resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let follow_up_body = serde_json::json!({
+        "model": "claude-sonnet-4.6",
+        "execution_session_id": "session-public",
+        "messages": [{"role": "user", "content": "continue"}]
+    });
+
+    let follow_up_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&follow_up_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up_resp.status(), StatusCode::OK);
+    assert_eq!(seen.lock().await.as_slice(), &["claude-sonnet-4-6"]);
+}
+
+#[tokio::test]
 async fn responses_execution_session_sticks_selected_auth_across_requests() {
     let first_seen = Arc::new(Mutex::new(Vec::new()));
     let second_seen = Arc::new(Mutex::new(Vec::new()));

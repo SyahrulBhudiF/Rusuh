@@ -356,6 +356,74 @@ async fn execution_session_sticks_to_first_selected_auth() {
 }
 
 #[tokio::test]
+async fn failed_selected_auth_request_does_not_poison_execution_session() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
+        "codex",
+        &["gpt-5-codex"],
+        seen.clone(),
+        "handled by first",
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let initial_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "execution_session_id": "session-unpoisoned",
+        "selected_auth_id": "codex_99",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let initial_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&initial_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial_resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let follow_up_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "execution_session_id": "session-unpoisoned",
+        "messages": [{"role": "user", "content": "continue"}]
+    });
+
+    let follow_up_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&follow_up_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up_resp.status(), StatusCode::OK);
+    assert_eq!(seen.lock().await.as_slice(), &["gpt-5-codex"]);
+}
+
+#[tokio::test]
 async fn responses_execution_session_prefers_previous_selected_auth() {
     let first_seen = Arc::new(Mutex::new(Vec::new()));
     let second_seen = Arc::new(Mutex::new(Vec::new()));

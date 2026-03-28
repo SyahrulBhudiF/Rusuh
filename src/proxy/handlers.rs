@@ -433,12 +433,6 @@ async fn try_route_with_model(
         .map(ToString::to_string);
 
     let effective_selected_auth_id = if let Some(selected_auth_id) = request_selected_auth_id {
-        if let Some(session_id) = execution_session_id.as_ref() {
-            state
-                .execution_sessions
-                .set_selected_auth(session_id.clone(), selected_auth_id.clone())
-                .await;
-        }
         Some(selected_auth_id)
     } else if let Some(session_id) = execution_session_id.as_ref() {
         state.execution_sessions.get_selected_auth(session_id).await
@@ -491,12 +485,6 @@ async fn try_route_with_targets(
             .map(ToString::to_string);
 
         let effective_selected_auth_id = if let Some(selected_auth_id) = request_selected_auth_id {
-            if let Some(session_id) = execution_session_id.as_ref() {
-                state
-                    .execution_sessions
-                    .set_selected_auth(session_id.clone(), selected_auth_id.clone())
-                    .await;
-            }
             Some(selected_auth_id)
         } else if let Some(session_id) = execution_session_id.as_ref() {
             state.execution_sessions.get_selected_auth(session_id).await
