@@ -28,12 +28,21 @@ import {
 } from '../../lib/management-oauth'
 import { buildOAuthTerminalFeedback } from '../../lib/oauth-feedback'
 import { toastError, toastInfo, toastSuccess } from '../../lib/toast'
+import {
+  resolveTrackedOauthSession,
+  type AddAccountOauthProvider,
+  type TrackedOauthStates,
+} from './add-account-page.oauth'
 import { PageShell } from '../page-shell'
 
 const MAX_LABEL_LENGTH = 200
 const MAX_UPLOAD_NAME_LENGTH = 200
 const MAX_UPLOAD_BODY_LENGTH = 20000
 const MAX_UPLOAD_FILE_SIZE = 1024 * 1024
+
+function useProviderOauthStatus(state: string | undefined) {
+  return useOAuthStatusQuery(state ?? null, Boolean(state))
+}
 
 export function AddAccountPage() {
   const uploadAuthFile = useUploadAuthFileMutation()
@@ -43,8 +52,8 @@ export function AddAccountPage() {
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
 
-  const [oauthState, setOauthState] = useState<string | null>(null)
-  const [provider, setProvider] = useState<'kiro' | 'antigravity' | 'codex'>('kiro')
+  const [oauthStates, setOauthStates] = useState<TrackedOauthStates>({})
+  const [provider, setProvider] = useState<AddAccountOauthProvider>('kiro')
 
   const [antigravityLabel, setAntigravityLabel] = useState('')
   const [antigravityAuthUrl, setAntigravityAuthUrl] = useState('')
@@ -74,36 +83,66 @@ export function AddAccountPage() {
   const [uploadFileError, setUploadFileError] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const oauthStatus = useOAuthStatusQuery(oauthState, Boolean(oauthState))
-  const oauthStatusData = oauthStatus.data
-  const oauthStatusSummary = oauthState
-    ? (oauthStatusData?.status ?? (oauthStatus.isFetching ? 'wait' : 'idle'))
+  const kiroOauthState = oauthStates.kiro
+  const antigravityOauthState = oauthStates.antigravity
+  const codexOauthState = oauthStates.codex
+
+  const kiroOauthStatus = useProviderOauthStatus(kiroOauthState)
+  const antigravityOauthStatus = useProviderOauthStatus(antigravityOauthState)
+  const codexOauthStatus = useProviderOauthStatus(codexOauthState)
+
+  const oauthStatusByProvider = {
+    kiro: kiroOauthStatus,
+    antigravity: antigravityOauthStatus,
+    codex: codexOauthStatus,
+  } as const
+
+  const activeOauthState = oauthStates[provider]
+  const activeOauthStatus = oauthStatusByProvider[provider]
+  const activeOauthStatusData = activeOauthStatus.data
+  const activeOauthStatusSummary = activeOauthState
+    ? (activeOauthStatusData?.status ?? (activeOauthStatus.isFetching ? 'wait' : 'idle'))
     : 'idle'
-  const oauthTerminalStatus = oauthStatusData?.status
-  const lastNotifiedOauthState = useRef<string | null>(null)
+  const lastNotifiedOauthStates = useRef<Partial<Record<AddAccountOauthProvider, string>>>({})
 
   useEffect(() => {
-    if (!oauthState || !oauthTerminalStatus || oauthTerminalStatus === 'wait') {
-      return
-    }
+    const trackedProviders: AddAccountOauthProvider[] = ['kiro', 'antigravity', 'codex']
 
-    if (lastNotifiedOauthState.current === oauthState) {
-      return
-    }
+    for (const trackedProvider of trackedProviders) {
+      const trackedState = oauthStates[trackedProvider]
+      const trackedStatus = oauthStatusByProvider[trackedProvider].data?.status
+      const trackedError = oauthStatusByProvider[trackedProvider].data?.error
 
-    const feedback = buildOAuthTerminalFeedback(oauthTerminalStatus, oauthStatusData?.error)
-    if (!feedback) {
-      return
-    }
+      if (!trackedState || !trackedStatus || trackedStatus === 'wait') {
+        continue
+      }
 
-    if (feedback.type === 'success') {
-      toastSuccess(feedback.title, feedback.detail)
-    } else {
-      toastError(feedback.title, feedback.detail)
-    }
+      if (lastNotifiedOauthStates.current[trackedProvider] === trackedState) {
+        continue
+      }
 
-    lastNotifiedOauthState.current = oauthState
-  }, [oauthState, oauthTerminalStatus, oauthStatusData?.error])
+      const feedback = buildOAuthTerminalFeedback(trackedStatus, trackedError)
+      if (!feedback) {
+        continue
+      }
+
+      if (feedback.type === 'success') {
+        toastSuccess(feedback.title, feedback.detail)
+      } else {
+        toastError(feedback.title, feedback.detail)
+      }
+
+      lastNotifiedOauthStates.current[trackedProvider] = trackedState
+    }
+  }, [
+    oauthStates,
+    kiroOauthStatus.data?.status,
+    kiroOauthStatus.data?.error,
+    antigravityOauthStatus.data?.status,
+    antigravityOauthStatus.data?.error,
+    codexOauthStatus.data?.status,
+    codexOauthStatus.data?.error,
+  ])
 
   function submitKiroStructuredImport() {
     importKiro.mutate(
@@ -226,7 +265,7 @@ export function AddAccountPage() {
                         { label: kiroLabel.trim() || undefined },
                         {
                           onSuccess: (data) => {
-                            setOauthState(data.session_id)
+                            setOauthStates((prev) => ({ ...prev, kiro: data.session_id }))
                             toastSuccess(
                               'Kiro sign-in started',
                               'Finish the flow, then open Accounts.',
@@ -247,20 +286,20 @@ export function AddAccountPage() {
                 </div>
 
                 <div className='motion-panel border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
-                  {oauthState ? (
+                  {activeOauthState ? (
                     <>
                       <p>
-                        Session ID <span className='text-foreground break-all'>{oauthState}</span>
+                        Session ID <span className='text-foreground break-all'>{activeOauthState}</span>
                       </p>
                       <p>
-                        Status <span className='text-foreground'>{oauthStatusSummary}</span>
+                        Status <span className='text-foreground'>{activeOauthStatusSummary}</span>
                       </p>
                     </>
                   ) : (
                     <p>No sign-in session started yet.</p>
                   )}
-                  {oauthStatusData?.error ? (
-                    <p className='text-destructive mt-2'>{oauthStatusData.error}</p>
+                  {activeOauthStatusData?.error ? (
+                    <p className='text-destructive mt-2'>{activeOauthStatusData.error}</p>
                   ) : null}
                 </div>
               </section>
@@ -462,7 +501,7 @@ export function AddAccountPage() {
                         },
                         {
                           onSuccess: (data) => {
-                            setOauthState(data.state)
+                            setOauthStates((prev) => ({ ...prev, [data.provider as AddAccountOauthProvider]: data.state }))
                             setAntigravityAuthUrl(data.url)
                             toastSuccess(
                               'Antigravity OAuth link ready',
@@ -514,7 +553,13 @@ export function AddAccountPage() {
                   <div className='flex justify-end'>
                     <Button
                       type='button'
-                      onClick={() =>
+                      onClick={() => {
+                        const trackedSession = resolveTrackedOauthSession(
+                          'antigravity',
+                          antigravityCallbackUrl,
+                          oauthStates,
+                        )
+
                         submitOAuthCallback.mutate(
                           {
                             provider: 'antigravity',
@@ -522,6 +567,12 @@ export function AddAccountPage() {
                           },
                           {
                             onSuccess: () => {
+                              if (trackedSession) {
+                                setOauthStates((prev) => ({
+                                  ...prev,
+                                  [trackedSession.provider]: trackedSession.state,
+                                }))
+                              }
                               toastSuccess('Callback submitted', 'Polling OAuth status...')
                             },
                             onError: (error) => {
@@ -529,7 +580,7 @@ export function AddAccountPage() {
                             },
                           },
                         )
-                      }
+                      }}
                       disabled={
                         submitOAuthCallback.isPending || antigravityCallbackUrl.trim().length === 0
                       }
@@ -570,7 +621,7 @@ export function AddAccountPage() {
                         },
                         {
                           onSuccess: (data) => {
-                            setOauthState(data.state)
+                            setOauthStates((prev) => ({ ...prev, [data.provider as AddAccountOauthProvider]: data.state }))
                             setCodexAuthUrl(data.url)
                             toastSuccess(
                               'Codex OAuth link ready',
@@ -622,7 +673,13 @@ export function AddAccountPage() {
                   <div className='flex justify-end'>
                     <Button
                       type='button'
-                      onClick={() =>
+                      onClick={() => {
+                        const trackedSession = resolveTrackedOauthSession(
+                          'codex',
+                          codexCallbackUrl,
+                          oauthStates,
+                        )
+
                         submitOAuthCallback.mutate(
                           {
                             provider: 'codex',
@@ -630,6 +687,12 @@ export function AddAccountPage() {
                           },
                           {
                             onSuccess: () => {
+                              if (trackedSession) {
+                                setOauthStates((prev) => ({
+                                  ...prev,
+                                  [trackedSession.provider]: trackedSession.state,
+                                }))
+                              }
                               toastSuccess('Callback submitted', 'Polling OAuth status...')
                             },
                             onError: (error) => {
@@ -637,7 +700,7 @@ export function AddAccountPage() {
                             },
                           },
                         )
-                      }
+                      }}
                       disabled={
                         submitOAuthCallback.isPending || codexCallbackUrl.trim().length === 0
                       }
