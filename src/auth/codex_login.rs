@@ -346,6 +346,7 @@ pub(crate) async fn exchange_code_for_tokens_with_redirect_url(
     let response = client
         .post(token_url)
         .form(&params)
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
         .map_err(|error| AppError::Auth(format!("codex token exchange request failed: {error}")))?;
@@ -457,5 +458,58 @@ fn non_empty(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{derive_code_challenge, exchange_code_for_tokens_with_redirect_url, PKCECodes};
+    use axum::{routing::post, Router};
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn token_exchange_request_times_out_for_slow_endpoint() {
+        let app = Router::new().route(
+            "/oauth/token",
+            post(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                axum::Json(serde_json::json!({
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "id_token": "id",
+                    "expires_in": 3600
+                }))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let addr = listener.local_addr().expect("read mock server addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        let pkce = PKCECodes {
+            code_verifier: "verifier".into(),
+            code_challenge: derive_code_challenge("verifier"),
+        };
+
+        let start = Instant::now();
+        let error = exchange_code_for_tokens_with_redirect_url(
+            &client,
+            "auth_code",
+            "http://localhost:1455/auth/callback",
+            &pkce,
+            &format!("http://{addr}/oauth/token"),
+        )
+        .await
+        .expect_err("slow token endpoint should time out");
+
+        assert!(start.elapsed() < Duration::from_secs(15));
+        assert!(error
+            .to_string()
+            .contains("codex token exchange request failed"));
     }
 }
