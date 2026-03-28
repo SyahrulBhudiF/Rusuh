@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 use rusuh::auth::codex_device::{
-    codex_device_approval_url, codex_device_is_success_status,
+    CodexDeviceEndpoints, codex_device_approval_url, codex_device_is_success_status,
     parse_codex_device_countdown_start_secs, parse_codex_device_poll_interval_secs,
     parse_device_token_response, parse_device_user_code_response, poll_codex_device_token,
     request_codex_device_user_code,
@@ -110,6 +110,29 @@ fn success_status_is_any_2xx() {
     assert!(codex_device_is_success_status(299));
     assert!(!codex_device_is_success_status(403));
     assert!(!codex_device_is_success_status(500));
+}
+
+#[test]
+fn custom_auth_base_url_keeps_device_verification_on_same_host() {
+    let endpoints = CodexDeviceEndpoints::from_auth_base_url("https://auth.example.test")
+        .expect("custom auth base URL should build endpoints");
+
+    assert_eq!(
+        endpoints.user_code_url,
+        "https://auth.example.test/api/accounts/deviceauth/usercode"
+    );
+    assert_eq!(
+        endpoints.token_url,
+        "https://auth.example.test/api/accounts/deviceauth/token"
+    );
+    assert_eq!(
+        endpoints.verification_url,
+        "https://auth.example.test/api/accounts/deviceauth/verify"
+    );
+    assert_eq!(
+        endpoints.token_exchange_url,
+        "https://auth.example.test/oauth/token"
+    );
 }
 
 #[test]

@@ -388,7 +388,7 @@ impl CodexDeviceEndpoints {
         Ok(Self {
             user_code_url: format!("{base_url}/api/accounts/deviceauth/usercode"),
             token_url: format!("{base_url}/api/accounts/deviceauth/token"),
-            verification_url: DEVICE_VERIFICATION_URL.to_string(),
+            verification_url: format!("{base_url}/api/accounts/deviceauth/verify"),
             token_exchange_url: format!("{base_url}/oauth/token"),
         })
     }
