@@ -140,9 +140,13 @@ pub async fn amp_claude_messages(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
-    let providers = state.providers.read().await;
+    let providers = {
+        let providers = state.providers.read().await;
+        providers.iter().cloned().collect::<Vec<_>>()
+    };
+
     let mut models = Vec::new();
-    for provider in providers.iter() {
+    for provider in providers {
         if let Ok(mut pm) = provider.list_models().await {
             models.append(&mut pm);
         }
@@ -151,15 +155,19 @@ async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
 }
 
 async fn collect_provider_models(state: &ProxyState, provider_name: &str) -> Vec<ModelInfo> {
-    let providers = state.providers.read().await;
+    let providers = {
+        let providers = state.providers.read().await;
+        providers
+            .iter()
+            .filter(|provider| provider.name().eq_ignore_ascii_case(provider_name))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
     let mut models = Vec::new();
     let mut seen_ids = HashSet::new();
 
-    for provider in providers.iter() {
-        if !provider.name().eq_ignore_ascii_case(provider_name) {
-            continue;
-        }
-
+    for provider in providers {
         if let Ok(pm) = provider.list_models().await {
             for model in pm {
                 if seen_ids.insert(model.id.clone()) {
@@ -491,35 +499,40 @@ async fn resolve_candidates_for_model(
     provider_hint: &Option<String>,
     selected_auth_id: Option<&str>,
 ) -> Vec<usize> {
-    let providers = state.providers.read().await;
     let model_providers = state.model_registry.get_model_providers(model_id).await;
-
-    let candidates: Vec<usize> = if let Some(hint) = provider_hint {
+    let provider_names = {
+        let providers = state.providers.read().await;
         providers
             .iter()
+            .map(|provider| provider.name().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let candidates: Vec<usize> = if let Some(hint) = provider_hint {
+        provider_names
+            .iter()
             .enumerate()
-            .filter(|(_, p)| p.name().eq_ignore_ascii_case(hint))
+            .filter(|(_, name)| name.eq_ignore_ascii_case(hint))
             .map(|(i, _)| i)
             .collect()
     } else if !model_providers.is_empty() {
-        providers
+        provider_names
             .iter()
             .enumerate()
-            .filter(|(_, p)| {
+            .filter(|(_, name)| {
                 model_providers
                     .iter()
-                    .any(|mp| mp.eq_ignore_ascii_case(p.name()))
+                    .any(|mp| mp.eq_ignore_ascii_case(name))
             })
             .map(|(i, _)| i)
             .collect()
     } else {
-        (0..providers.len()).collect()
+        (0..provider_names.len()).collect()
     };
 
     let mut available_candidates = Vec::new();
     for idx in candidates {
-        let provider = &providers[idx];
-        let client_id = format!("{}_{}", provider.name(), idx);
+        let client_id = format!("{}_{}", provider_names[idx], idx);
 
         if let Some(selected) = selected_auth_id {
             if !client_id.eq_ignore_ascii_case(selected) {
@@ -567,9 +580,15 @@ async fn execute_candidates(
         .collect();
     let mut last_error = None;
 
-    let providers = state.providers.read().await;
-    for &idx in &ordered {
-        let provider = &providers[idx];
+    let providers = {
+        let providers = state.providers.read().await;
+        ordered
+            .iter()
+            .filter_map(|&idx| providers.get(idx).cloned().map(|provider| (idx, provider)))
+            .collect::<Vec<_>>()
+    };
+
+    for (idx, provider) in providers {
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));

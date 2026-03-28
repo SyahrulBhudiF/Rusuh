@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower::ServiceExt;
 
 use rusuh::auth::manager::AccountManager;
@@ -238,6 +238,93 @@ fn basic_chat_request(model: &str) -> serde_json::Value {
         "messages": [{"role": "user", "content": "test"}]
     })
 }
+
+#[derive(Debug)]
+struct BlockingProvider {
+    name: &'static str,
+    models: Vec<ModelInfo>,
+    list_started: Arc<Notify>,
+    list_release: Arc<Notify>,
+    chat_started: Arc<Notify>,
+    chat_release: Arc<Notify>,
+}
+
+impl BlockingProvider {
+    fn new(
+        name: &'static str,
+        model_ids: &[&str],
+        list_started: Arc<Notify>,
+        list_release: Arc<Notify>,
+        chat_started: Arc<Notify>,
+        chat_release: Arc<Notify>,
+    ) -> Self {
+        Self {
+            name,
+            models: model_ids
+                .iter()
+                .map(|id| ModelInfo {
+                    id: (*id).to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: name.to_string(),
+                })
+                .collect(),
+            list_started,
+            list_release,
+            chat_started,
+            chat_release,
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for BlockingProvider {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
+        self.list_started.notify_waiters();
+        self.list_release.notified().await;
+        Ok(self.models.clone())
+    }
+
+    async fn chat_completion(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> rusuh::error::AppResult<ChatCompletionResponse> {
+        self.chat_started.notify_waiters();
+        self.chat_release.notified().await;
+
+        Ok(ChatCompletionResponse {
+            id: format!("{}-ok", self.name),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: req.model.clone(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(format!("handled by {}", self.name)),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }),
+                delta: None,
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: None,
+        })
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        _req: &ChatCompletionRequest,
+    ) -> rusuh::error::AppResult<BoxStream> {
+        unreachable!("streaming is not used in this test")
+    }
+}
+
 
 #[tokio::test]
 async fn health_always_accessible() {
@@ -1832,4 +1919,109 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
         json["choices"][0]["message"]["tool_calls"],
         serde_json::Value::Array(tool_calls)
     );
+}
+
+#[tokio::test]
+async fn provider_models_request_does_not_hold_providers_lock_while_listing_models() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
+        "codex",
+        &["gpt-5-codex"],
+        list_started.clone(),
+        list_release.clone(),
+        chat_started,
+        chat_release,
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    let state = test_state_with_providers(Config::default(), registry, providers);
+    let app = test_app_with_state(state.clone());
+
+    let request = Request::builder()
+        .uri("/api/provider/codex/v1/models")
+        .body(Body::empty())
+        .unwrap();
+
+    let request_task = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+
+    list_started.notified().await;
+
+    let write_attempt = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _guard = state.providers.write().await;
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), write_attempt)
+        .await
+        .expect("providers write lock should not be blocked by model listing")
+        .expect("write-lock task should complete successfully");
+
+    list_release.notify_waiters();
+
+    let resp = request_task.await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstream() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
+        "codex",
+        &["gpt-5-codex"],
+        list_started,
+        list_release,
+        chat_started.clone(),
+        chat_release.clone(),
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+    let state = test_state_with_providers(Config::default(), registry, providers);
+    let app = test_app_with_state(state.clone());
+
+    let body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/provider/codex/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+
+    let request_task = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+
+    chat_started.notified().await;
+
+    let write_attempt = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _guard = state.providers.write().await;
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), write_attempt)
+        .await
+        .expect("providers write lock should not be blocked by chat completion")
+        .expect("write-lock task should complete successfully");
+
+    chat_release.notify_waiters();
+
+    let resp = request_task.await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }
