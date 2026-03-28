@@ -1,7 +1,7 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 
-import { AddAccountPage } from './ui/pages/add-account-page'
 import { AccountsPage } from './ui/pages/accounts-page'
+import { AddAccountPage } from './ui/pages/add-account-page'
 import { ApiKeysPage } from './ui/pages/api-keys-page'
 import { ConfigPage } from './ui/pages/config-page'
 import { OverviewPage } from './ui/pages/overview-page'

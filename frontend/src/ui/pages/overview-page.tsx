@@ -60,7 +60,7 @@ export function OverviewPage() {
         {overview.data ? (
           <>
             {!hasProviders ? (
-              <section className='mb-4 rounded-3xl border border-border bg-muted/30 p-5'>
+              <section className='border-border bg-muted/30 mb-4 rounded-3xl border p-5'>
                 <p className='text-sm font-medium'>Start here</p>
                 <p className='text-muted-foreground mt-2 text-sm'>
                   Add an account, then come back here to confirm the runtime is healthy.

@@ -1,4 +1,5 @@
 pub mod balancer;
+pub mod execution_session;
 pub mod handlers;
 pub mod management;
 pub mod oauth;
@@ -13,10 +14,12 @@ use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, NoOpQuotaCheck
 use crate::auth::manager::AccountManager;
 use crate::auth::zed_session::{new_session_store, ZedLoginSessionStore};
 use crate::config::Config;
+use crate::providers::model_info::ExtModelInfo;
 use crate::providers::model_registry::ModelRegistry;
 use crate::providers::Provider;
 
 use self::balancer::{Balancer, Strategy};
+use self::execution_session::ExecutionSessionStore;
 use self::oauth::OAuthSessionStore;
 
 /// Kiro-specific runtime state owned by the proxy.
@@ -41,22 +44,101 @@ impl Default for KiroRuntimeState {
 pub struct ProxyState {
     pub config: RwLock<Config>,
     /// Registered upstream providers (populated at startup from config)
-    pub providers: Vec<Arc<dyn Provider>>,
+    pub providers: RwLock<Vec<Arc<dyn Provider>>>,
     /// Account manager — loaded from auth-dir at startup
     pub accounts: Arc<AccountManager>,
     /// Global model registry with ref counting, quota, suspension
     pub model_registry: Arc<ModelRegistry>,
     /// Load balancer for distributing requests across providers
-    pub balancer: Balancer,
+    pub balancer: RwLock<Balancer>,
     /// In-memory OAuth session tracker for web-triggered flows
     pub oauth_sessions: OAuthSessionStore,
     /// In-memory Zed native login session tracker
     pub zed_login_sessions: ZedLoginSessionStore,
+    /// In-memory execution-session to selected-auth mapping for sticky routing
+    pub execution_sessions: ExecutionSessionStore,
     /// Kiro-specific cooldown, rate-limit, and quota probing state
     pub kiro_runtime: KiroRuntimeState,
 }
 
 impl ProxyState {
+    pub async fn refresh_provider_runtime(&self) {
+        let previous_client_ids = {
+            let providers = self.providers.read().await;
+            providers
+                .iter()
+                .enumerate()
+                .map(|(idx, provider)| format!("{}_{}", provider.name(), idx))
+                .collect::<Vec<_>>()
+        };
+
+        for client_id in &previous_client_ids {
+            self.model_registry.unregister_client(client_id).await;
+        }
+
+        let config = self.config.read().await.clone();
+        let providers = crate::providers::registry::build_providers(
+            &config,
+            &self.accounts,
+            self.model_registry.clone(),
+            self.kiro_runtime.clone(),
+        )
+        .await;
+
+        for (idx, provider) in providers.iter().enumerate() {
+            let client_id = format!("{}_{}", provider.name(), idx);
+
+            match provider.list_models().await {
+                Ok(models) => {
+                    let ext_models: Vec<ExtModelInfo> = models
+                        .into_iter()
+                        .map(|model| ExtModelInfo {
+                            id: model.id.clone(),
+                            object: model.object,
+                            created: model.created,
+                            owned_by: model.owned_by,
+                            provider_type: provider.name().to_string(),
+                            display_name: Some(model.id),
+                            name: None,
+                            version: None,
+                            description: None,
+                            input_token_limit: 0,
+                            output_token_limit: 0,
+                            supported_generation_methods: vec![],
+                            context_length: 0,
+                            max_completion_tokens: 0,
+                            supported_parameters: vec![],
+                            thinking: None,
+                            user_defined: false,
+                        })
+                        .collect();
+                    self.model_registry
+                        .register_client(&client_id, provider.name(), ext_models)
+                        .await;
+                }
+                Err(error) => {
+                    tracing::warn!("failed to list models from {}: {error}", provider.name());
+                }
+            }
+        }
+
+        let provider_count = providers.len();
+
+        {
+            let mut providers_guard = self.providers.write().await;
+            *providers_guard = providers;
+        }
+
+        {
+            let mut balancer = self.balancer.write().await;
+            let strategy = {
+                let cfg = self.config.read().await;
+                Strategy::parse(&cfg.routing.strategy)
+            };
+            *balancer = Balancer::new(strategy, provider_count);
+        }
+    }
+
     pub fn new(
         config: Config,
         accounts: Arc<AccountManager>,
@@ -66,12 +148,13 @@ impl ProxyState {
         let strategy = Strategy::parse(&config.routing.strategy);
         Self {
             config: RwLock::new(config),
-            providers: Vec::new(),
+            providers: RwLock::new(Vec::new()),
             accounts,
             model_registry,
-            balancer: Balancer::new(strategy, provider_count),
+            balancer: RwLock::new(Balancer::new(strategy, provider_count)),
             oauth_sessions: OAuthSessionStore::new(),
             zed_login_sessions: new_session_store(),
+            execution_sessions: ExecutionSessionStore::new(),
             kiro_runtime: KiroRuntimeState::default(),
         }
     }

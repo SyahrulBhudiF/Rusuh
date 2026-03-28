@@ -123,6 +123,53 @@ async fn upload_and_list_auth_file() {
     assert_eq!(files[0]["email"], "test@example.com");
 }
 
+#[tokio::test]
+async fn upload_codex_auth_file_refreshes_runtime_provider_visibility() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let codex_auth = json!({
+        "type": "codex",
+        "provider_key": "codex",
+        "email": "codex@example.com",
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "id_token": "id-token",
+        "status": "active",
+        "disabled": false
+    });
+
+    let upload_resp = app
+        .clone()
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/auth-files?name=codex-test.json",
+            codex_auth,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(upload_resp.status(), StatusCode::OK);
+
+    let config_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(config_resp.status(), StatusCode::OK);
+    let config_body = body_json(config_resp).await;
+    assert_eq!(config_body["provider_count"], 1);
+    assert!(config_body["provider_names"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .any(|entry| entry == "codex"));
+}
+
 // ── Upload validation ────────────────────────────────────────────────────────
 
 #[tokio::test]

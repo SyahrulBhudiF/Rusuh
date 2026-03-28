@@ -228,7 +228,7 @@ fn test_state_with_providers(
 ) -> Arc<ProxyState> {
     let accounts = Arc::new(AccountManager::with_dir("/tmp/rusuh_test_nonexistent"));
     let mut state = ProxyState::new(cfg, accounts, registry, providers.len());
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     Arc::new(state)
 }
 
@@ -480,7 +480,7 @@ async fn public_claude_sonnet_4_6_does_not_use_kiro_alias_routing() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
 
     let body = serde_json::json!({
@@ -518,6 +518,54 @@ async fn chat_completions_rejects_non_public_model_on_public_endpoint() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn responses_endpoint_rejects_non_public_model_on_public_endpoint() {
+    let app = test_app(Config::default());
+
+    let body = serde_json::json!({
+        "model": "gpt-4",
+        "input": "hello"
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn responses_compact_endpoint_rejects_non_public_model_on_public_endpoint() {
+    let app = test_app(Config::default());
+
+    let body = serde_json::json!({
+        "model": "gpt-4",
+        "input": "hello"
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses/compact")
                 .header("Content-Type", "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -670,7 +718,7 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
 
     // Request with generic "claude-sonnet-4.6" name
@@ -694,6 +742,93 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
     // Should get quota exceeded error since Kiro is unavailable and no other provider configured
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn responses_execution_session_sticks_selected_auth_across_requests() {
+    let first_seen = Arc::new(Mutex::new(Vec::new()));
+    let second_seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success(
+            "codex",
+            &["gpt-5-codex"],
+            first_seen.clone(),
+        )),
+        Arc::new(StubProvider::success(
+            "codex",
+            &["gpt-5-codex"],
+            second_seen.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+    registry
+        .register_client(
+            "codex_1",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let initial_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "selected_auth_id": "codex_1",
+        "execution_session_id": "session-http",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let initial_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&initial_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial_resp.status(), StatusCode::OK);
+
+    let follow_up_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "execution_session_id": "session-http",
+        "messages": [{"role": "user", "content": "continue"}]
+    });
+
+    let follow_up_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&follow_up_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up_resp.status(), StatusCode::OK);
+
+    assert!(first_seen.lock().await.is_empty());
+    assert_eq!(
+        second_seen.lock().await.as_slice(),
+        &["gpt-5-codex", "gpt-5-codex"]
+    );
 }
 
 #[tokio::test]
@@ -856,7 +991,7 @@ async fn kiro_routing_skips_quota_exceeded_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
 
     // Make a request - should use kiro_1, not kiro_0
@@ -992,7 +1127,7 @@ async fn kiro_routing_skips_suspended_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
 
     // Make a request - should use kiro_1, not kiro_0
@@ -1104,7 +1239,7 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
+    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
 
     // Make a request - should return error

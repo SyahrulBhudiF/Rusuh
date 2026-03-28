@@ -7,6 +7,16 @@ use crate::auth::zed_callback::start_callback_server;
 use crate::auth::zed_login::{build_login_url, decrypt_credential, generate_keypair};
 use crate::auth::zed_session::{cleanup_expired_sessions, ZedLoginSession, ZedLoginSessionStatus};
 use crate::proxy::ProxyState;
+
+async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> Result<(), String> {
+    state
+        .accounts
+        .reload()
+        .await
+        .map_err(|error| format!("reload accounts: {error}"))?;
+    state.refresh_provider_runtime().await;
+    Ok(())
+}
 use axum::{
     extract::{ConnectInfo, Query, Request, State},
     http::StatusCode,
@@ -50,6 +60,10 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/auth-files/fields", patch(patch_auth_file_fields))
         // ── OAuth trigger ────────────────────────────────────────────────────
         .route("/oauth/start", get(crate::proxy::oauth::start_oauth))
+        .route(
+            "/oauth-callback",
+            axum::routing::post(crate::proxy::oauth::post_oauth_callback),
+        )
         .route("/oauth/status", get(crate::proxy::oauth::get_auth_status))
         .route(
             "/kiro/builder-id/start",
@@ -61,6 +75,8 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
             axum::routing::post(import_kiro_social_refresh_token),
         )
         .route("/kiro/check-quota", axum::routing::post(check_kiro_quota))
+        // ── Codex ────────────────────────────────────────────────────────────
+        .route("/codex/check-quota", axum::routing::post(check_codex_quota))
         // ── Zed ──────────────────────────────────────────────────────────────
         .route(
             "/zed/login/initiate",
@@ -224,10 +240,11 @@ async fn rate_limit(req: Request, next: Next) -> Response {
 
 async fn status(State(state): State<Arc<ProxyState>>) -> Json<Value> {
     let cfg = state.config.read().await;
+    let providers = state.providers.read().await;
     Json(json!({
         "status": "running",
         "port": cfg.port,
-        "providers": state.providers.len(),
+        "providers": providers.len(),
     }))
 }
 
@@ -570,11 +587,10 @@ async fn upload_auth_file(
         let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
-    // Reload accounts
-    if let Err(e) = state.accounts.reload().await {
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("reload accounts: {e}")})),
+            Json(json!({"error": error})),
         );
     }
 
@@ -681,10 +697,10 @@ async fn import_kiro_social_refresh_token(
         );
     }
 
-    if let Err(error) = state.accounts.reload().await {
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("reload accounts: {error}")})),
+            Json(json!({"error": error})),
         );
     }
 
@@ -844,10 +860,10 @@ async fn import_kiro_auth_file(
             Json(json!({"error": format!("save auth file: {e}")})),
         );
     }
-    if let Err(e) = state.accounts.reload().await {
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("reload accounts: {e}")})),
+            Json(json!({"error": error})),
         );
     }
 
@@ -1126,6 +1142,181 @@ struct RefreshedToken {
     expires_at: String,
 }
 
+// ── Codex quota check ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CheckCodexQuotaBody {
+    name: Option<String>,
+}
+
+/// `POST /v0/management/codex/check-quota` — check quota for a Codex auth file.
+async fn check_codex_quota(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckCodexQuotaBody>,
+) -> impl IntoResponse {
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Find the auth record
+    let accounts = state.accounts.accounts_for("codex").await;
+    let record = accounts
+        .iter()
+        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+
+    let Some(record) = record else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Codex auth file not found"})),
+        );
+    };
+
+    // Extract account_id, access_token, optional base_url, and optional plan_type from metadata
+    let account_id = record
+        .metadata
+        .get("account_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&record.id);
+
+    let access_token = record.access_token().unwrap_or("");
+
+    if access_token.is_empty() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Codex auth file missing access_token"})),
+        );
+    }
+
+    let base_url = record
+        .metadata
+        .get("base_url")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://api.openai.com/v1");
+
+    let plan_type = record
+        .metadata
+        .get("plan_type")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    // Probe upstream /v1/models endpoint
+    let response = probe_codex_quota(account_id, access_token, base_url, plan_type).await;
+
+    (StatusCode::OK, Json(response))
+}
+
+/// Probe Codex upstream API to check quota status.
+async fn probe_codex_quota(
+    account: &str,
+    access_token: &str,
+    base_url: &str,
+    plan_type: Option<&str>,
+) -> Value {
+    let http_client = reqwest::Client::new();
+    let models_url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    let result = http_client
+        .get(&models_url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .header("content-type", "application/json")
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body_text = resp.text().await.unwrap_or_default();
+            let body_json: Value = serde_json::from_str(&body_text).unwrap_or_else(|_| json!({}));
+
+            if let Some(retry_after_secs) =
+                crate::auth::codex_runtime::parse_codex_retry_after_seconds(
+                    status,
+                    &body_json,
+                    chrono::Utc::now(),
+                )
+            {
+                let mut response = json!({
+                    "account": account,
+                    "status": "exhausted",
+                    "upstream_status": status,
+                    "retry_after_seconds": retry_after_secs,
+                });
+
+                if let Some(error_msg) = body_json
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                {
+                    response["detail"] = json!(error_msg);
+                }
+
+                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                    response["plan_type"] = json!(plan_type);
+                }
+
+                return response;
+            }
+
+            if status == StatusCode::OK.as_u16() {
+                let mut response = json!({
+                    "account": account,
+                    "status": "available",
+                    "upstream_status": status,
+                });
+
+                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                    response["plan_type"] = json!(plan_type);
+                }
+
+                response
+            } else {
+                let detail = body_json
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                    .unwrap_or("upstream error");
+
+                let mut response = json!({
+                    "account": account,
+                    "status": "error",
+                    "upstream_status": status,
+                    "detail": detail,
+                });
+
+                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                    response["plan_type"] = json!(plan_type);
+                }
+
+                response
+            }
+        }
+        Err(error) => {
+            let mut response = json!({
+                "account": account,
+                "status": "error",
+                "detail": format!("request failed: {error}"),
+                "upstream_status": 0,
+            });
+
+            if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                response["plan_type"] = json!(plan_type);
+            }
+
+            response
+        }
+    }
+}
+
 /// `DELETE /v0/management/auth-files` — delete auth file(s).
 ///
 /// Query: `?name=x.json` or `?all=true`
@@ -1155,10 +1346,10 @@ async fn delete_auth_file(
                 }
             }
         }
-        if let Err(e) = state.accounts.reload().await {
+        if let Err(error) = refresh_runtime_after_auth_change(&state).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("reload accounts: {e}")})),
+                Json(json!({"error": error})),
             );
         }
         return (
@@ -1187,10 +1378,10 @@ async fn delete_auth_file(
         );
     }
 
-    if let Err(e) = state.accounts.reload().await {
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("reload accounts: {e}")})),
+            Json(json!({"error": error})),
         );
     }
 
@@ -1323,8 +1514,12 @@ async fn patch_auth_file_status(
         );
     }
 
-    // Reload
-    let _ = state.accounts.reload().await;
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error})),
+        );
+    }
 
     (
         StatusCode::OK,
@@ -1425,8 +1620,12 @@ async fn patch_auth_file_fields(
         );
     }
 
-    // Reload
-    let _ = state.accounts.reload().await;
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error})),
+        );
+    }
 
     (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
 }
@@ -1472,11 +1671,10 @@ async fn import_zed_credential(
 
     match import_zed_credential(&auth_dir, name, user_id, credential_json) {
         Ok(filename) => {
-            // Reload accounts
-            if let Err(error) = state.accounts.reload().await {
+            if let Err(error) = refresh_runtime_after_auth_change(&state).await {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("reload accounts: {error}")})),
+                    Json(json!({"error": error})),
                 );
             }
 
@@ -1619,7 +1817,10 @@ async fn get_zed_login_status(
             );
         }
 
-        (session.private_key.clone(), Arc::clone(&session.callback_state))
+        (
+            session.private_key.clone(),
+            Arc::clone(&session.callback_state),
+        )
     };
 
     let user_id = match callback_state.user_id.lock().await.clone() {
@@ -1692,7 +1893,8 @@ async fn get_zed_login_status(
 
         match stored_records.into_iter().find(|record| {
             record.id == existing_filename
-                || record.path.file_name().and_then(|f| f.to_str()) == Some(existing_filename.as_str())
+                || record.path.file_name().and_then(|f| f.to_str())
+                    == Some(existing_filename.as_str())
         }) {
             Some(record) => Some(record),
             None => {
@@ -1725,16 +1927,15 @@ async fn get_zed_login_status(
             Json(json!({"error": error_msg})),
         );
     }
-    if let Err(error) = state.accounts.reload().await {
-        let error_msg = format!("reload accounts: {error}");
+    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         let mut sessions = state.zed_login_sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
-            session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+            session.status = ZedLoginSessionStatus::Failed(error.clone());
             session.server_handle.abort();
         }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error_msg})),
+            Json(json!({"error": error})),
         );
     }
 

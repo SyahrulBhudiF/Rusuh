@@ -70,10 +70,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::CodexLogin => {
-            println!("Codex OAuth login not yet implemented (milestone 2)");
+            let auth_dir = resolve_auth_dir(&cfg);
+            let store = auth::store::FileTokenStore::new(&auth_dir);
+            let saved = auth::codex_login::login(&store).await?;
+            println!("\n✓ Codex credentials saved to: {}", saved.display());
         }
         Commands::CodexDeviceLogin => {
-            println!("Codex device-code login not yet implemented (milestone 2)");
+            run_codex_device_login(&cfg).await?;
         }
         Commands::ClaudeLogin => {
             println!("Claude Code login not yet implemented (milestone 2)");
@@ -97,6 +100,14 @@ fn resolve_auth_dir(cfg: &config::Config) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rusuh")
+}
+
+async fn run_codex_device_login(cfg: &config::Config) -> anyhow::Result<()> {
+    let auth_dir = resolve_auth_dir(cfg);
+    let store = auth::store::FileTokenStore::new(&auth_dir);
+    let saved = auth::codex_device::device_login(&store).await?;
+    println!("\n✓ Codex device credentials saved to: {}", saved.display());
+    Ok(())
 }
 
 /// Generate a random API key in `rsk-<uuid>` format.
@@ -212,7 +223,10 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     let provider_count = providers.len();
     let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, provider_count);
     state.kiro_runtime = kiro_runtime;
-    state.providers = providers;
+    {
+        let mut providers_guard = state.providers.write().await;
+        *providers_guard = providers;
+    }
     let state = Arc::new(state);
 
     info!("Rusuh starting on http://{}", addr);
@@ -233,8 +247,8 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_config_or_default;
-    use tempfile::NamedTempFile;
+    use super::{load_config_or_default, run_codex_device_login};
+    use tempfile::{NamedTempFile, TempDir};
 
     #[test]
     fn load_config_or_default_uses_defaults_when_file_is_missing() {
@@ -264,5 +278,86 @@ mod tests {
 
         assert!(message.contains("host:"));
         assert!(message.contains("expected a string"));
+    }
+
+    #[tokio::test]
+    async fn codex_device_login_command_persists_credentials_from_real_device_endpoints() {
+        let temp = TempDir::new().expect("create temp dir");
+        let cfg = rusuh::config::Config {
+            auth_dir: temp.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        let app = axum::Router::new()
+            .route(
+                "/api/accounts/deviceauth/usercode",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "device_auth_id": "dev_123",
+                            "user_code": "ABC-123",
+                            "interval": 1
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/accounts/deviceauth/token",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "authorization_code": "auth_code",
+                            "code_verifier": "verifier",
+                            "code_challenge": "challenge"
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/oauth/token",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "access_token": "device_access",
+                            "refresh_token": "device_refresh",
+                            "id_token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF8xMjMiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6IlRlYW0ifX0.sig",
+                            "expires_in": 3600
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let addr = listener.local_addr().expect("read mock server addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        std::env::set_var("RUSUH_CODEX_AUTH_BASE_URL", format!("http://{addr}"));
+
+        let login_result = run_codex_device_login(&cfg).await;
+
+        std::env::remove_var("RUSUH_CODEX_AUTH_BASE_URL");
+
+        login_result.expect("device login command should succeed");
+
+        let saved_count = std::fs::read_dir(temp.path())
+            .expect("read auth directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("codex-") && name.ends_with(".json"))
+            })
+            .count();
+
+        assert_eq!(saved_count, 1);
     }
 }

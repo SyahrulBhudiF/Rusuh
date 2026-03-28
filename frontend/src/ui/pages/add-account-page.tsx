@@ -1,13 +1,9 @@
-import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useEffect, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -19,11 +15,18 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 
+import { useUploadAuthFileMutation } from '../../lib/management-auth-files'
 import {
-  useUploadAuthFileMutation,
-} from '../../lib/management-auth-files'
-import { useImportKiroMutation, useImportKiroSocialMutation, useStartKiroBuilderIdMutation } from '../../lib/management-kiro'
-import { useOAuthStatusQuery, useStartOAuthMutation } from '../../lib/management-oauth'
+  useImportKiroMutation,
+  useImportKiroSocialMutation,
+  useStartKiroBuilderIdMutation,
+} from '../../lib/management-kiro'
+import {
+  useOAuthStatusQuery,
+  useStartOAuthMutation,
+  useSubmitOAuthCallbackMutation,
+} from '../../lib/management-oauth'
+import { buildOAuthTerminalFeedback } from '../../lib/oauth-feedback'
 import { toastError, toastInfo, toastSuccess } from '../../lib/toast'
 import { PageShell } from '../page-shell'
 
@@ -35,14 +38,21 @@ const MAX_UPLOAD_FILE_SIZE = 1024 * 1024
 export function AddAccountPage() {
   const uploadAuthFile = useUploadAuthFileMutation()
   const startOAuth = useStartOAuthMutation()
+  const submitOAuthCallback = useSubmitOAuthCallbackMutation()
   const startKiroBuilderId = useStartKiroBuilderIdMutation()
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
 
   const [oauthState, setOauthState] = useState<string | null>(null)
-  const [provider, setProvider] = useState<'kiro' | 'antigravity'>('kiro')
+  const [provider, setProvider] = useState<'kiro' | 'antigravity' | 'codex'>('kiro')
 
   const [antigravityLabel, setAntigravityLabel] = useState('')
+  const [antigravityAuthUrl, setAntigravityAuthUrl] = useState('')
+  const [antigravityCallbackUrl, setAntigravityCallbackUrl] = useState('')
+
+  const [codexLabel, setCodexLabel] = useState('')
+  const [codexAuthUrl, setCodexAuthUrl] = useState('')
+  const [codexCallbackUrl, setCodexCallbackUrl] = useState('')
 
   const [kiroLabel, setKiroLabel] = useState('')
   const [kiroImportMode, setKiroImportMode] = useState<'structured' | 'json'>('structured')
@@ -69,6 +79,31 @@ export function AddAccountPage() {
   const oauthStatusSummary = oauthState
     ? (oauthStatusData?.status ?? (oauthStatus.isFetching ? 'wait' : 'idle'))
     : 'idle'
+  const oauthTerminalStatus = oauthStatusData?.status
+  const lastNotifiedOauthState = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!oauthState || !oauthTerminalStatus || oauthTerminalStatus === 'wait') {
+      return
+    }
+
+    if (lastNotifiedOauthState.current === oauthState) {
+      return
+    }
+
+    const feedback = buildOAuthTerminalFeedback(oauthTerminalStatus, oauthStatusData?.error)
+    if (!feedback) {
+      return
+    }
+
+    if (feedback.type === 'success') {
+      toastSuccess(feedback.title, feedback.detail)
+    } else {
+      toastError(feedback.title, feedback.detail)
+    }
+
+    lastNotifiedOauthState.current = oauthState
+  }, [oauthState, oauthTerminalStatus, oauthStatusData?.error])
 
   function submitKiroStructuredImport() {
     importKiro.mutate(
@@ -137,7 +172,7 @@ export function AddAccountPage() {
       }
     >
       <div className='space-y-8'>
-        <section className='dashboard-enter-delay-1 motion-panel rounded-3xl border border-border bg-muted/30 p-5'>
+        <section className='dashboard-enter-delay-1 motion-panel border-border bg-muted/30 rounded-3xl border p-5'>
           <p className='text-sm font-medium'>Start here</p>
           <ol className='text-muted-foreground mt-3 grid gap-2 text-sm md:grid-cols-3'>
             <li>1. Choose a provider</li>
@@ -147,13 +182,19 @@ export function AddAccountPage() {
         </section>
 
         <section className='space-y-4'>
-          <Tabs value={provider} onValueChange={(value) => setProvider(value as 'kiro' | 'antigravity')}>
-            <TabsList className='motion-panel grid w-full max-w-md grid-cols-2 rounded-2xl p-1'>
+          <Tabs
+            value={provider}
+            onValueChange={(value) => setProvider(value as 'kiro' | 'antigravity' | 'codex')}
+          >
+            <TabsList className='motion-panel grid w-full max-w-md grid-cols-3 rounded-2xl p-1'>
               <TabsTrigger value='kiro' className='rounded-xl'>
                 Kiro
               </TabsTrigger>
               <TabsTrigger value='antigravity' className='rounded-xl'>
                 Antigravity
+              </TabsTrigger>
+              <TabsTrigger value='codex' className='rounded-xl'>
+                Codex
               </TabsTrigger>
             </TabsList>
 
@@ -174,7 +215,9 @@ export function AddAccountPage() {
                 <div className='motion-panel flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between'>
                   <div>
                     <p className='font-medium'>Builder ID</p>
-                    <p className='text-muted-foreground text-sm'>Opens a sign-in flow in a new tab.</p>
+                    <p className='text-muted-foreground text-sm'>
+                      Opens a sign-in flow in a new tab.
+                    </p>
                   </div>
                   <Button
                     type='button'
@@ -184,7 +227,10 @@ export function AddAccountPage() {
                         {
                           onSuccess: (data) => {
                             setOauthState(data.session_id)
-                            toastSuccess('Kiro sign-in started', 'Finish the flow, then open Accounts.')
+                            toastSuccess(
+                              'Kiro sign-in started',
+                              'Finish the flow, then open Accounts.',
+                            )
                             window.open(data.auth_url, '_blank', 'noopener,noreferrer')
                           },
                           onError: (error) => {
@@ -200,7 +246,7 @@ export function AddAccountPage() {
                   </Button>
                 </div>
 
-                <div className='motion-panel rounded-2xl border border-border bg-background/60 p-4 text-muted-foreground text-sm leading-6'>
+                <div className='motion-panel border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
                   {oauthState ? (
                     <>
                       <p>
@@ -213,7 +259,9 @@ export function AddAccountPage() {
                   ) : (
                     <p>No sign-in session started yet.</p>
                   )}
-                  {oauthStatusData?.error ? <p className='text-destructive mt-2'>{oauthStatusData.error}</p> : null}
+                  {oauthStatusData?.error ? (
+                    <p className='text-destructive mt-2'>{oauthStatusData.error}</p>
+                  ) : null}
                 </div>
               </section>
 
@@ -221,9 +269,14 @@ export function AddAccountPage() {
                 <div className='flex flex-wrap items-center justify-between gap-3'>
                   <div>
                     <h4 className='font-medium'>Import tokens</h4>
-                    <p className='text-muted-foreground text-sm'>Paste token fields or full JSON.</p>
+                    <p className='text-muted-foreground text-sm'>
+                      Paste token fields or full JSON.
+                    </p>
                   </div>
-                  <Select value={kiroImportMode} onValueChange={(value) => setKiroImportMode(value as 'structured' | 'json')}>
+                  <Select
+                    value={kiroImportMode}
+                    onValueChange={(value) => setKiroImportMode(value as 'structured' | 'json')}
+                  >
                     <SelectTrigger className='h-10 w-[180px] rounded-xl'>
                       <SelectValue />
                     </SelectTrigger>
@@ -245,16 +298,66 @@ export function AddAccountPage() {
 
                 {kiroImportMode === 'structured' ? (
                   <div className='grid gap-3 lg:grid-cols-2'>
-                    <Input value={kiroAccessToken} onChange={(event) => setKiroAccessToken(event.target.value)} placeholder='access_token' className='h-11 rounded-2xl' />
-                    <Input value={kiroRefreshToken} onChange={(event) => setKiroRefreshToken(event.target.value)} placeholder='refresh_token' className='h-11 rounded-2xl' />
-                    <Input value={kiroExpiresAt} onChange={(event) => setKiroExpiresAt(event.target.value)} placeholder='expires_at (RFC3339)' className='h-11 rounded-2xl' />
-                    <Input value={kiroClientId} onChange={(event) => setKiroClientId(event.target.value)} placeholder='client_id' className='h-11 rounded-2xl' />
-                    <Input value={kiroClientSecret} onChange={(event) => setKiroClientSecret(event.target.value)} placeholder='client_secret' className='h-11 rounded-2xl' />
-                    <Input value={kiroProfileArn} onChange={(event) => setKiroProfileArn(event.target.value)} placeholder='profile_arn (optional)' className='h-11 rounded-2xl' />
-                    <Input value={kiroProvider} onChange={(event) => setKiroProvider(event.target.value)} placeholder='provider' className='h-11 rounded-2xl' />
-                    <Input value={kiroRegion} onChange={(event) => setKiroRegion(event.target.value)} placeholder='region' className='h-11 rounded-2xl' />
-                    <Input value={kiroStartUrl} onChange={(event) => setKiroStartUrl(event.target.value)} placeholder='start_url' className='h-11 rounded-2xl lg:col-span-2' />
-                    <Input value={kiroEmail} onChange={(event) => setKiroEmail(event.target.value)} placeholder='email (optional)' className='h-11 rounded-2xl lg:col-span-2' />
+                    <Input
+                      value={kiroAccessToken}
+                      onChange={(event) => setKiroAccessToken(event.target.value)}
+                      placeholder='access_token'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroRefreshToken}
+                      onChange={(event) => setKiroRefreshToken(event.target.value)}
+                      placeholder='refresh_token'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroExpiresAt}
+                      onChange={(event) => setKiroExpiresAt(event.target.value)}
+                      placeholder='expires_at (RFC3339)'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroClientId}
+                      onChange={(event) => setKiroClientId(event.target.value)}
+                      placeholder='client_id'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroClientSecret}
+                      onChange={(event) => setKiroClientSecret(event.target.value)}
+                      placeholder='client_secret'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroProfileArn}
+                      onChange={(event) => setKiroProfileArn(event.target.value)}
+                      placeholder='profile_arn (optional)'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroProvider}
+                      onChange={(event) => setKiroProvider(event.target.value)}
+                      placeholder='provider'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroRegion}
+                      onChange={(event) => setKiroRegion(event.target.value)}
+                      placeholder='region'
+                      className='h-11 rounded-2xl'
+                    />
+                    <Input
+                      value={kiroStartUrl}
+                      onChange={(event) => setKiroStartUrl(event.target.value)}
+                      placeholder='start_url'
+                      className='h-11 rounded-2xl lg:col-span-2'
+                    />
+                    <Input
+                      value={kiroEmail}
+                      onChange={(event) => setKiroEmail(event.target.value)}
+                      placeholder='email (optional)'
+                      className='h-11 rounded-2xl lg:col-span-2'
+                    />
                   </div>
                 ) : (
                   <Textarea
@@ -293,7 +396,9 @@ export function AddAccountPage() {
               <section className='space-y-3'>
                 <div>
                   <h4 className='font-medium'>Import social token</h4>
-                  <p className='text-muted-foreground text-sm'>Use this only if you already have a refresh token.</p>
+                  <p className='text-muted-foreground text-sm'>
+                    Use this only if you already have a refresh token.
+                  </p>
                 </div>
                 <Textarea
                   value={kiroSocialRefreshToken}
@@ -332,10 +437,12 @@ export function AddAccountPage() {
             <TabsContent value='antigravity' className='space-y-6 pt-2'>
               <section className='space-y-3'>
                 <h3 className='text-lg font-semibold'>Antigravity</h3>
-                <p className='text-muted-foreground max-w-2xl text-sm'>Start sign-in here, then review the account on the Accounts page.</p>
+                <p className='text-muted-foreground max-w-2xl text-sm'>
+                  Start sign-in here, then review the account on the Accounts page.
+                </p>
               </section>
 
-              <section className='space-y-4 max-w-xl'>
+              <section className='max-w-xl space-y-4'>
                 <Input
                   type='text'
                   value={antigravityLabel}
@@ -356,8 +463,11 @@ export function AddAccountPage() {
                         {
                           onSuccess: (data) => {
                             setOauthState(data.state)
-                            toastSuccess('Antigravity sign-in started', 'Finish the flow, then open Accounts.')
-                            window.open(data.url, '_blank', 'noopener,noreferrer')
+                            setAntigravityAuthUrl(data.url)
+                            toastSuccess(
+                              'Antigravity OAuth link ready',
+                              'Open the link, login, then paste localhost callback URL below.',
+                            )
                           },
                           onError: (error) => {
                             toastError('Could not start Antigravity sign-in', error.message)
@@ -368,8 +478,174 @@ export function AddAccountPage() {
                     disabled={startOAuth.isPending}
                     className='h-11 rounded-xl px-4'
                   >
-                    {startOAuth.isPending ? 'Launching…' : 'Start OAuth'}
+                    {startOAuth.isPending ? 'Generating link…' : 'Start OAuth'}
                   </Button>
+                </div>
+
+                {antigravityAuthUrl ? (
+                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                    <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
+                    <Input value={antigravityAuthUrl} readOnly className='h-11 rounded-2xl' />
+                    <div className='flex justify-end'>
+                      <Button
+                        asChild
+                        type='button'
+                        variant='outline'
+                        className='h-11 rounded-xl px-4'
+                      >
+                        <a href={antigravityAuthUrl} target='_blank' rel='noopener noreferrer'>
+                          Open login link
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>
+                    Paste localhost callback URL after login:
+                  </p>
+                  <Textarea
+                    value={antigravityCallbackUrl}
+                    onChange={(event) => setAntigravityCallbackUrl(event.target.value)}
+                    placeholder='http://localhost:3456/antigravity/callback?code=...&state=...'
+                    className='min-h-24 rounded-2xl px-4 py-3'
+                  />
+                  <div className='flex justify-end'>
+                    <Button
+                      type='button'
+                      onClick={() =>
+                        submitOAuthCallback.mutate(
+                          {
+                            provider: 'antigravity',
+                            redirectUrl: antigravityCallbackUrl,
+                          },
+                          {
+                            onSuccess: () => {
+                              toastSuccess('Callback submitted', 'Polling OAuth status...')
+                            },
+                            onError: (error) => {
+                              toastError('Could not submit callback URL', error.message)
+                            },
+                          },
+                        )
+                      }
+                      disabled={
+                        submitOAuthCallback.isPending || antigravityCallbackUrl.trim().length === 0
+                      }
+                      className='h-11 rounded-xl px-4'
+                    >
+                      {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
+                    </Button>
+                  </div>
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value='codex' className='space-y-6 pt-2'>
+              <section className='space-y-3'>
+                <h3 className='text-lg font-semibold'>Codex</h3>
+                <p className='text-muted-foreground max-w-2xl text-sm'>
+                  Start sign-in here, then review the account on the Accounts page.
+                </p>
+              </section>
+
+              <section className='max-w-xl space-y-4'>
+                <Input
+                  type='text'
+                  value={codexLabel}
+                  onChange={(event) => setCodexLabel(event.target.value)}
+                  className='h-11 rounded-2xl'
+                  placeholder='Optional label'
+                  maxLength={MAX_LABEL_LENGTH}
+                />
+                <div className='flex justify-end'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      startOAuth.mutate(
+                        {
+                          provider: 'codex',
+                          label: codexLabel.trim() || undefined,
+                        },
+                        {
+                          onSuccess: (data) => {
+                            setOauthState(data.state)
+                            setCodexAuthUrl(data.url)
+                            toastSuccess(
+                              'Codex OAuth link ready',
+                              'Open the link, login, then paste localhost callback URL below.',
+                            )
+                          },
+                          onError: (error) => {
+                            toastError('Could not start Codex sign-in', error.message)
+                          },
+                        },
+                      )
+                    }
+                    disabled={startOAuth.isPending}
+                    className='h-11 rounded-xl px-4'
+                  >
+                    {startOAuth.isPending ? 'Generating link…' : 'Start OAuth'}
+                  </Button>
+                </div>
+
+                {codexAuthUrl ? (
+                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                    <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
+                    <Input value={codexAuthUrl} readOnly className='h-11 rounded-2xl' />
+                    <div className='flex justify-end'>
+                      <Button
+                        asChild
+                        type='button'
+                        variant='outline'
+                        className='h-11 rounded-xl px-4'
+                      >
+                        <a href={codexAuthUrl} target='_blank' rel='noopener noreferrer'>
+                          Open login link
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <p className='text-muted-foreground text-sm'>
+                    Paste localhost callback URL after login:
+                  </p>
+                  <Textarea
+                    value={codexCallbackUrl}
+                    onChange={(event) => setCodexCallbackUrl(event.target.value)}
+                    placeholder='http://localhost:3456/codex/callback?code=...&state=...'
+                    className='min-h-24 rounded-2xl px-4 py-3'
+                  />
+                  <div className='flex justify-end'>
+                    <Button
+                      type='button'
+                      onClick={() =>
+                        submitOAuthCallback.mutate(
+                          {
+                            provider: 'codex',
+                            redirectUrl: codexCallbackUrl,
+                          },
+                          {
+                            onSuccess: () => {
+                              toastSuccess('Callback submitted', 'Polling OAuth status...')
+                            },
+                            onError: (error) => {
+                              toastError('Could not submit callback URL', error.message)
+                            },
+                          },
+                        )
+                      }
+                      disabled={
+                        submitOAuthCallback.isPending || codexCallbackUrl.trim().length === 0
+                      }
+                      className='h-11 rounded-xl px-4'
+                    >
+                      {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
+                    </Button>
+                  </div>
                 </div>
               </section>
             </TabsContent>
@@ -381,7 +657,9 @@ export function AddAccountPage() {
             <div className='motion-panel flex items-center justify-between gap-3'>
               <div>
                 <h3 className='text-base font-semibold'>Manual recovery</h3>
-                <p className='text-muted-foreground text-sm'>Use this only if sign-in or token import is not an option.</p>
+                <p className='text-muted-foreground text-sm'>
+                  Use this only if sign-in or token import is not an option.
+                </p>
               </div>
               <CollapsibleTrigger asChild>
                 <Button type='button' variant='outline' className='rounded-xl'>
@@ -420,7 +698,10 @@ export function AddAccountPage() {
                           : null,
                       )
                       if (body.length > MAX_UPLOAD_BODY_LENGTH) {
-                        toastInfo('File truncated', `Limited to ${MAX_UPLOAD_BODY_LENGTH.toLocaleString()} characters.`)
+                        toastInfo(
+                          'File truncated',
+                          `Limited to ${MAX_UPLOAD_BODY_LENGTH.toLocaleString()} characters.`,
+                        )
                       }
 
                       if (nextName.trim().length === 0 || nextBody.trim().length === 0) {
@@ -447,7 +728,9 @@ export function AddAccountPage() {
                   }}
                   className='h-11 rounded-2xl file:mr-4 file:border-0 file:bg-transparent file:text-sm file:font-medium'
                 />
-                {uploadFileError ? <p className='text-destructive text-sm'>{uploadFileError}</p> : null}
+                {uploadFileError ? (
+                  <p className='text-destructive text-sm'>{uploadFileError}</p>
+                ) : null}
                 <Input
                   type='text'
                   value={uploadName}

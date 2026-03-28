@@ -4,7 +4,7 @@ import { managementRequest } from './management-api'
 import { useManagementAuth } from './management-auth'
 import { queryKeys } from './query'
 
-export type OAuthProvider = 'antigravity' | 'kiro-google' | 'kiro-github'
+export type OAuthProvider = 'antigravity' | 'kiro-google' | 'kiro-github' | 'codex'
 
 export type StartOAuthResponse = {
   status: string
@@ -16,6 +16,11 @@ export type StartOAuthResponse = {
 export type OAuthStatusResponse = {
   status: 'wait' | 'ok' | 'error'
   provider?: string
+  error?: string
+}
+
+export type SubmitOAuthCallbackResponse = {
+  status: string
   error?: string
 }
 
@@ -34,6 +39,24 @@ export function useStartOAuthMutation() {
         secret,
       )
     },
+  })
+}
+
+export function useSubmitOAuthCallbackMutation() {
+  const { secret } = useManagementAuth()
+
+  return useMutation({
+    mutationFn: ({ provider, redirectUrl }: { provider: OAuthProvider; redirectUrl: string }) =>
+      managementRequest<SubmitOAuthCallbackResponse>('/v0/management/oauth-callback', secret, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          provider,
+          redirect_url: redirectUrl.trim(),
+        }),
+      }),
   })
 }
 

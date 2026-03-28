@@ -8,7 +8,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     error::AppError,
-    models::{ChatCompletionRequest, ModelInfo, ModelsResponse},
+    models::{ChatCompletionRequest, ChatMessage, MessageContent, ModelInfo, ModelsResponse},
     proxy::ProxyState,
 };
 
@@ -45,6 +45,24 @@ pub async fn chat_completions(
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Response, AppError> {
+    route_chat(state, req, None).await
+}
+
+/// POST /v1/responses
+pub async fn responses(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<Value>,
+) -> Result<Response, AppError> {
+    let req = responses_body_to_chat_request(body)?;
+    route_chat(state, req, None).await
+}
+
+/// POST /v1/responses/compact
+pub async fn responses_compact(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<Value>,
+) -> Result<Response, AppError> {
+    let req = responses_body_to_chat_request(body)?;
     route_chat(state, req, None).await
 }
 
@@ -122,8 +140,9 @@ pub async fn amp_claude_messages(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
+    let providers = state.providers.read().await;
     let mut models = Vec::new();
-    for provider in &state.providers {
+    for provider in providers.iter() {
         if let Ok(mut pm) = provider.list_models().await {
             models.append(&mut pm);
         }
@@ -132,10 +151,11 @@ async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
 }
 
 async fn collect_provider_models(state: &ProxyState, provider_name: &str) -> Vec<ModelInfo> {
+    let providers = state.providers.read().await;
     let mut models = Vec::new();
     let mut seen_ids = HashSet::new();
 
-    for provider in &state.providers {
+    for provider in providers.iter() {
         if !provider.name().eq_ignore_ascii_case(provider_name) {
             continue;
         }
@@ -236,6 +256,65 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
     model.to_string()
 }
 
+fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, AppError> {
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::BadRequest("responses request missing model".to_string()))?
+        .to_string();
+
+    let input = body.get("input").cloned().unwrap_or(Value::Null);
+    let text = match input {
+        Value::String(s) => s,
+        Value::Null => String::new(),
+        Value::Array(items) => {
+            let mut segments = Vec::new();
+            for item in items {
+                match item {
+                    Value::String(s) => segments.push(s),
+                    Value::Object(map) => {
+                        if let Some(s) = map.get("text").and_then(Value::as_str) {
+                            segments.push(s.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            segments.join("\n")
+        }
+        _ => String::new(),
+    };
+
+    let stream = body.get("stream").and_then(Value::as_bool);
+
+    let mut extra = match body {
+        Value::Object(map) => map.into_iter().collect::<std::collections::HashMap<_, _>>(),
+        _ => std::collections::HashMap::new(),
+    };
+    extra.remove("model");
+    extra.remove("input");
+    extra.remove("stream");
+
+    Ok(ChatCompletionRequest {
+        model,
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text(text),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        stream,
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        tools: None,
+        tool_choice: None,
+        stop: None,
+        extra,
+    })
+}
+
 async fn route_chat(
     state: Arc<ProxyState>,
     req: ChatCompletionRequest,
@@ -276,8 +355,51 @@ async fn try_route_with_model(
     provider_hint: &Option<String>,
     is_stream: bool,
 ) -> Result<Response, AppError> {
-    let candidates = resolve_candidates_for_model(&state, &req.model, provider_hint).await;
-    execute_candidates(state, req, candidates, is_stream).await
+    let request_selected_auth_id = req
+        .extra
+        .get("selected_auth_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let execution_session_id = req
+        .extra
+        .get("execution_session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let effective_selected_auth_id = if let Some(selected_auth_id) = request_selected_auth_id {
+        if let Some(session_id) = execution_session_id.as_ref() {
+            state
+                .execution_sessions
+                .set_selected_auth(session_id.clone(), selected_auth_id.clone())
+                .await;
+        }
+        Some(selected_auth_id)
+    } else if let Some(session_id) = execution_session_id.as_ref() {
+        state.execution_sessions.get_selected_auth(session_id).await
+    } else {
+        None
+    };
+
+    let candidates = resolve_candidates_for_model(
+        &state,
+        &req.model,
+        provider_hint,
+        effective_selected_auth_id.as_deref(),
+    )
+    .await;
+    execute_candidates(
+        state,
+        req,
+        candidates,
+        is_stream,
+        execution_session_id.as_deref(),
+    )
+    .await
 }
 
 async fn try_route_with_targets(
@@ -287,12 +409,47 @@ async fn try_route_with_targets(
     is_stream: bool,
 ) -> Result<Response, AppError> {
     let mut last_error = None;
+    let execution_session_id = req
+        .extra
+        .get("execution_session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
 
     for target in targets {
         let mut upstream_req = req.clone();
         upstream_req.model = target.model.to_string();
         let provider_hint = Some(target.provider.to_string());
-        let candidates = resolve_candidates_for_model(&state, target.model, &provider_hint).await;
+        let request_selected_auth_id = req
+            .extra
+            .get("selected_auth_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+
+        let effective_selected_auth_id = if let Some(selected_auth_id) = request_selected_auth_id {
+            if let Some(session_id) = execution_session_id.as_ref() {
+                state
+                    .execution_sessions
+                    .set_selected_auth(session_id.clone(), selected_auth_id.clone())
+                    .await;
+            }
+            Some(selected_auth_id)
+        } else if let Some(session_id) = execution_session_id.as_ref() {
+            state.execution_sessions.get_selected_auth(session_id).await
+        } else {
+            None
+        };
+
+        let candidates = resolve_candidates_for_model(
+            &state,
+            target.model,
+            &provider_hint,
+            effective_selected_auth_id.as_deref(),
+        )
+        .await;
 
         if candidates.is_empty() {
             last_error = Some(AppError::QuotaExceeded(format!(
@@ -302,7 +459,15 @@ async fn try_route_with_targets(
             continue;
         }
 
-        match execute_candidates(state.clone(), &upstream_req, candidates, is_stream).await {
+        match execute_candidates(
+            state.clone(),
+            &upstream_req,
+            candidates,
+            is_stream,
+            execution_session_id.as_deref(),
+        )
+        .await
+        {
             Ok(response) => return Ok(response),
             Err(e) if e.is_quota_or_unavailable() || e.is_account_error() => {
                 last_error = Some(e);
@@ -324,20 +489,20 @@ async fn resolve_candidates_for_model(
     state: &ProxyState,
     model_id: &str,
     provider_hint: &Option<String>,
+    selected_auth_id: Option<&str>,
 ) -> Vec<usize> {
+    let providers = state.providers.read().await;
     let model_providers = state.model_registry.get_model_providers(model_id).await;
 
     let candidates: Vec<usize> = if let Some(hint) = provider_hint {
-        state
-            .providers
+        providers
             .iter()
             .enumerate()
             .filter(|(_, p)| p.name().eq_ignore_ascii_case(hint))
             .map(|(i, _)| i)
             .collect()
     } else if !model_providers.is_empty() {
-        state
-            .providers
+        providers
             .iter()
             .enumerate()
             .filter(|(_, p)| {
@@ -348,13 +513,20 @@ async fn resolve_candidates_for_model(
             .map(|(i, _)| i)
             .collect()
     } else {
-        (0..state.providers.len()).collect()
+        (0..providers.len()).collect()
     };
 
     let mut available_candidates = Vec::new();
     for idx in candidates {
-        let provider = &state.providers[idx];
+        let provider = &providers[idx];
         let client_id = format!("{}_{}", provider.name(), idx);
+
+        if let Some(selected) = selected_auth_id {
+            if !client_id.eq_ignore_ascii_case(selected) {
+                continue;
+            }
+        }
+
         if state
             .model_registry
             .client_is_effectively_available(&client_id, model_id)
@@ -372,6 +544,7 @@ async fn execute_candidates(
     req: &ChatCompletionRequest,
     candidates: Vec<usize>,
     is_stream: bool,
+    execution_session_id: Option<&str>,
 ) -> Result<Response, AppError> {
     if candidates.is_empty() {
         return Err(AppError::QuotaExceeded(format!(
@@ -384,15 +557,19 @@ async fn execute_candidates(
         let config = state.config.read().await;
         config.request_retry.max(1) as usize
     };
-    let start_idx = state.balancer.pick(&candidates);
+    let start_idx = {
+        let balancer = state.balancer.read().await;
+        balancer.pick(&candidates)
+    };
     let start_pos = candidates.iter().position(|&c| c == start_idx).unwrap_or(0);
     let ordered: Vec<usize> = (0..candidates.len())
         .map(|i| candidates[(start_pos + i) % candidates.len()])
         .collect();
     let mut last_error = None;
 
+    let providers = state.providers.read().await;
     for &idx in &ordered {
-        let provider = &state.providers[idx];
+        let provider = &providers[idx];
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));
@@ -419,7 +596,16 @@ async fn execute_candidates(
             };
 
             match result {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    if let Some(session_id) = execution_session_id {
+                        let selected_auth_id = format!("{}_{}", provider.name(), idx);
+                        state
+                            .execution_sessions
+                            .set_selected_auth(session_id.to_string(), selected_auth_id)
+                            .await;
+                    }
+                    return Ok(resp);
+                }
                 Err(e) => {
                     if e.is_account_error() {
                         tracing::warn!(

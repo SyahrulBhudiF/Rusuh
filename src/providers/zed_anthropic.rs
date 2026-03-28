@@ -281,10 +281,9 @@ mod tests {
         });
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("System messages are only supported at the start of the conversation")
-        );
+        assert!(err
+            .to_string()
+            .contains("System messages are only supported at the start of the conversation"));
     }
 
     #[test]
@@ -297,10 +296,9 @@ mod tests {
         });
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("Missing required field: max_tokens")
-        );
+        assert!(err
+            .to_string()
+            .contains("Missing required field: max_tokens"));
     }
 
     #[test]
@@ -314,10 +312,9 @@ mod tests {
         });
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("max_tokens must be a positive integer")
-        );
+        assert!(err
+            .to_string()
+            .contains("max_tokens must be a positive integer"));
     }
 
     #[test]
@@ -331,7 +328,9 @@ mod tests {
         });
 
         let err = convert_openai_to_anthropic(&request).unwrap_err();
-        assert!(err.to_string().contains("max_tokens must be greater than 0"));
+        assert!(err
+            .to_string()
+            .contains("max_tokens must be greater than 0"));
     }
 
     #[test]
@@ -361,6 +360,9 @@ mod tests {
         });
 
         let result = convert_openai_to_anthropic(&request).unwrap();
-        assert_eq!(result["stop_sequences"], json!(["END", "42", "true", "null"]));
+        assert_eq!(
+            result["stop_sequences"],
+            json!(["END", "42", "true", "null"])
+        );
     }
 }

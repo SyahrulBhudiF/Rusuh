@@ -85,8 +85,16 @@ body,
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top left, color-mix(in oklch, var(--primary) 14%, transparent), transparent 26%),
-    radial-gradient(circle at top right, color-mix(in oklch, var(--accent) 10%, transparent), transparent 24%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in oklch, var(--primary) 14%, transparent),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at top right,
+      color-mix(in oklch, var(--accent) 10%, transparent),
+      transparent 24%
+    ),
     var(--background);
   color: var(--foreground);
 }
