@@ -87,6 +87,8 @@ pub fn prepare_codex_request(mut request: ChatCompletionRequest) -> ChatCompleti
     request.extra.remove("previous_response_id");
     request.extra.remove("prompt_cache_retention");
     request.extra.remove("safety_identifier");
+    request.extra.remove("selected_auth_id");
+    request.extra.remove("execution_session_id");
 
     request
         .extra

@@ -117,6 +117,8 @@ fn codex_chat_request(stream: Option<bool>) -> ChatCompletionRequest {
     extra.insert("previous_response_id".to_string(), json!("resp_123"));
     extra.insert("prompt_cache_retention".to_string(), json!("ephemeral"));
     extra.insert("safety_identifier".to_string(), json!("safe_1"));
+    extra.insert("selected_auth_id".to_string(), json!("codex_1"));
+    extra.insert("execution_session_id".to_string(), json!("session-123"));
 
     ChatCompletionRequest {
         model: "gpt-5-codex-thinking".to_string(),
@@ -261,6 +263,8 @@ fn codex_prepare_request_removes_unsupported_fields_and_sets_instructions() {
     extra.insert("previous_response_id".to_string(), json!("resp_123"));
     extra.insert("prompt_cache_retention".to_string(), json!("ephemeral"));
     extra.insert("safety_identifier".to_string(), json!("safe_1"));
+    extra.insert("selected_auth_id".to_string(), json!("codex_1"));
+    extra.insert("execution_session_id".to_string(), json!("session-123"));
 
     let request = rusuh::models::ChatCompletionRequest {
         model: "gpt-5-codex-thinking".to_string(),
@@ -287,6 +291,8 @@ fn codex_prepare_request_removes_unsupported_fields_and_sets_instructions() {
     assert!(!prepared.extra.contains_key("previous_response_id"));
     assert!(!prepared.extra.contains_key("prompt_cache_retention"));
     assert!(!prepared.extra.contains_key("safety_identifier"));
+    assert!(!prepared.extra.contains_key("selected_auth_id"));
+    assert!(!prepared.extra.contains_key("execution_session_id"));
     assert_eq!(
         prepared
             .extra
@@ -372,6 +378,8 @@ async fn codex_chat_completion_executes_against_upstream_and_normalizes_request(
     assert!(seen.get("previous_response_id").is_none());
     assert!(seen.get("prompt_cache_retention").is_none());
     assert!(seen.get("safety_identifier").is_none());
+    assert!(seen.get("selected_auth_id").is_none());
+    assert!(seen.get("execution_session_id").is_none());
     assert_eq!(seen.get("instructions").and_then(Value::as_str), Some(""));
 }
 
