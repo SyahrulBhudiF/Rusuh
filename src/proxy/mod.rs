@@ -6,7 +6,7 @@ pub mod oauth;
 pub mod stream;
 pub mod zed_import;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -87,6 +87,7 @@ impl ProxyState {
             .enumerate()
             .map(|(idx, provider)| format!("{}_{}", provider.name(), idx))
             .collect();
+        let mut replacement_models: HashMap<String, (String, Vec<ExtModelInfo>)> = HashMap::new();
 
         for (idx, provider) in providers.iter().enumerate() {
             let client_id = format!("{}_{}", provider.name(), idx);
@@ -121,15 +122,7 @@ impl ProxyState {
                     user_defined: false,
                 })
                 .collect();
-            self.model_registry
-                .register_client(&client_id, provider.name(), ext_models)
-                .await;
-        }
-
-        for client_id in &previous_client_ids {
-            if !replacement_client_ids.contains(client_id) {
-                self.model_registry.unregister_client(client_id).await;
-            }
+            replacement_models.insert(client_id, (provider.name().to_string(), ext_models));
         }
 
         let provider_count = providers.len();
@@ -146,6 +139,18 @@ impl ProxyState {
                 Strategy::parse(&cfg.routing.strategy)
             };
             *balancer = Balancer::new(strategy, provider_count);
+        }
+
+        for (client_id, (provider_name, ext_models)) in replacement_models {
+            self.model_registry
+                .register_client(&client_id, &provider_name, ext_models)
+                .await;
+        }
+
+        for client_id in &previous_client_ids {
+            if !replacement_client_ids.contains(client_id) {
+                self.model_registry.unregister_client(client_id).await;
+            }
         }
 
         Ok(())

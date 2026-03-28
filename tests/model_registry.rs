@@ -46,6 +46,60 @@ async fn spawn_failing_antigravity_models_server() -> String {
     format!("http://{addr}")
 }
 
+async fn spawn_antigravity_models_server(model_id: &str) -> String {
+    let model_id = model_id.to_string();
+    let app = Router::new().route(
+        "/v1internal:fetchAvailableModels",
+        post(move || {
+            let model_id = model_id.clone();
+            async move {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "models": {
+                            model_id: {"state": "ENABLED"}
+                        }
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+async fn spawn_failing_zed_server() -> String {
+    let app = Router::new()
+        .route(
+            "/client/llm_tokens",
+            post(|| async { (StatusCode::OK, Json(serde_json::json!({"token": "bad-token"}))) }),
+        )
+        .route(
+            "/models",
+            axum::routing::get(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [("x-zed-expired-token", "1")],
+                    Json(serde_json::json!({"error": "expired"})),
+                )
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
 #[tokio::test]
 async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_listing_fails() {
     let dir = TempDir::new().unwrap();
@@ -59,6 +113,7 @@ async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_l
         "refresh_token": "1//test",
         "project_id": "test-project",
         "base_url": failing_base_url,
+        "expired": "2030-01-01T00:00:00Z"
     });
     std::fs::write(
         dir.path().join("antigravity-test.json"),
@@ -147,6 +202,55 @@ async fn refresh_provider_runtime_removes_orphaned_clients() {
         .available_clients_for_model("gemini-2.5-pro")
         .await
         .is_empty());
+}
+
+#[tokio::test]
+async fn refresh_provider_runtime_does_not_register_partial_replacement_before_failure() {
+    let dir = TempDir::new().unwrap();
+    let antigravity_base_url = spawn_antigravity_models_server("gemini-2.5-flash").await;
+    let zed_base_url = spawn_failing_zed_server().await;
+
+    let antigravity_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": antigravity_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&antigravity_json).unwrap(),
+    )
+    .unwrap();
+
+    let zed_json = serde_json::json!({
+        "type": "zed",
+        "provider_key": "zed",
+        "user_id": "zed-user",
+        "credential_json": format!("Bearer {zed_base_url}")
+    });
+    std::fs::write(
+        dir.path().join("zed-test.json"),
+        serde_json::to_string_pretty(&zed_json).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+
+    state
+        .refresh_provider_runtime()
+        .await
+        .expect_err("later provider failure should abort refresh");
+
+    assert_eq!(registry.get_model_count("gemini-2.5-flash").await, 0);
+    assert!(!registry.has_client("antigravity_0").await);
+    assert!(state.providers.read().await.is_empty());
 }
 
 #[tokio::test]
