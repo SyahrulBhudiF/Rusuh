@@ -357,6 +357,15 @@ pub const DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device"
 pub const DEVICE_TOKEN_EXCHANGE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 /// Default polling timeout for Codex device login.
 pub const DEVICE_LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub const DEVICE_LOGIN_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn build_device_login_client() -> AppResult<Client> {
+    Client::builder()
+        .timeout(DEVICE_LOGIN_HTTP_TIMEOUT)
+        // .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| AppError::Auth(format!("failed to build codex device login client: {error}")))
+}
 
 /// Device endpoints used by Codex device login.
 #[derive(Debug, Clone)]
@@ -400,8 +409,9 @@ pub async fn device_login(store: &FileTokenStore) -> AppResult<std::path::PathBu
         Ok(base_url) => CodexDeviceEndpoints::from_auth_base_url(&base_url)?,
         Err(_) => CodexDeviceEndpoints::production(),
     };
+    let client = build_device_login_client()?;
 
-    device_login_with_endpoints(store, &reqwest::Client::new(), &endpoints).await
+    device_login_with_endpoints(store, &client, &endpoints).await
 }
 
 pub async fn device_login_with_endpoints(
@@ -449,4 +459,15 @@ pub async fn device_login_with_endpoints(
 /// Whether a status code is a successful polling result.
 pub fn codex_device_is_success_status(code: u16) -> bool {
     (200..300).contains(&code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_login_client_matches_kiro_usage_checker_timeout_pattern() {
+        let _client = build_device_login_client().expect("device login client should build");
+        assert_eq!(DEVICE_LOGIN_HTTP_TIMEOUT, Duration::from_secs(30));
+    }
 }
