@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -24,6 +25,7 @@ struct MockCodexState {
     non_stream_body: Value,
     stream_chunks: Vec<String>,
     last_request_body: Arc<Mutex<Option<Value>>>,
+    non_stream_delay: Option<Duration>,
 }
 
 async fn mock_non_stream_handler(
@@ -31,6 +33,9 @@ async fn mock_non_stream_handler(
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     *state.last_request_body.lock().await = Some(body);
+    if let Some(delay) = state.non_stream_delay {
+        tokio::time::sleep(delay).await;
+    }
     (StatusCode::OK, Json(state.non_stream_body))
 }
 
@@ -46,11 +51,20 @@ async fn spawn_codex_mock_server(
     non_stream_body: Value,
     stream_chunks: Vec<String>,
 ) -> (String, Arc<Mutex<Option<Value>>>) {
+    spawn_codex_mock_server_with_delay(non_stream_body, stream_chunks, None).await
+}
+
+async fn spawn_codex_mock_server_with_delay(
+    non_stream_body: Value,
+    stream_chunks: Vec<String>,
+    non_stream_delay: Option<Duration>,
+) -> (String, Arc<Mutex<Option<Value>>>) {
     let last_request_body = Arc::new(Mutex::new(None));
     let state = MockCodexState {
         non_stream_body,
         stream_chunks,
         last_request_body: last_request_body.clone(),
+        non_stream_delay,
     };
 
     let app = Router::new()
@@ -381,6 +395,38 @@ async fn codex_chat_completion_executes_against_upstream_and_normalizes_request(
     assert!(seen.get("selected_auth_id").is_none());
     assert!(seen.get("execution_session_id").is_none());
     assert_eq!(seen.get("instructions").and_then(Value::as_str), Some(""));
+}
+
+#[tokio::test]
+async fn codex_chat_completion_times_out_for_slow_upstream() {
+    let non_stream = json!({
+        "id": "resp_1",
+        "object": "chat.completion",
+        "created": 123,
+        "model": "gpt-5-codex",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "hello from codex"},
+            "finish_reason": "stop"
+        }]
+    });
+    let (base_url, _seen_body) =
+        spawn_codex_mock_server_with_delay(non_stream, vec!["data: [DONE]\n\n".to_string()], Some(Duration::from_secs(35))).await;
+
+    let provider =
+        match rusuh::providers::codex::CodexProvider::new(codex_provider_record(&base_url)) {
+            Ok(provider) => provider,
+            Err(error) => panic!("failed to construct codex provider: {error}"),
+        };
+
+    let start = Instant::now();
+    let error = provider
+        .chat_completion(&codex_chat_request(Some(false)))
+        .await
+        .expect_err("slow upstream should time out");
+
+    assert!(start.elapsed() < Duration::from_secs(20));
+    assert!(error.to_string().contains("codex request failed"));
 }
 
 #[tokio::test]

@@ -1,7 +1,10 @@
 //! Codex provider runtime.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::auth::store::AuthRecord;
@@ -12,6 +15,8 @@ use crate::providers::{BoxStream, Provider};
 
 pub struct CodexProvider {
     record: AuthRecord,
+    codex_client: Client,
+    codex_stream_client: Client,
 }
 
 impl CodexProvider {
@@ -20,7 +25,11 @@ impl CodexProvider {
             return Err(AppError::Auth("codex account missing access_token".into()));
         }
 
-        Ok(Self { record })
+        Ok(Self {
+            record,
+            codex_client: build_codex_client(Duration::from_secs(15))?,
+            codex_stream_client: build_codex_stream_client(Duration::from_secs(120))?,
+        })
     }
 
     fn access_token(&self) -> AppResult<&str> {
@@ -125,6 +134,23 @@ pub fn parse_usage(usage: serde_json::Value) -> Option<Usage> {
     })
 }
 
+fn build_codex_client(timeout: Duration) -> AppResult<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(timeout)
+        .build()
+        .map_err(|error| AppError::Config(format!("failed to build codex client: {error}")))
+}
+
+fn build_codex_stream_client(timeout: Duration) -> AppResult<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(timeout)
+        .read_timeout(timeout)
+        .build()
+        .map_err(|error| AppError::Config(format!("failed to build codex stream client: {error}")))
+}
+
 #[async_trait]
 impl Provider for CodexProvider {
     fn name(&self) -> &str {
@@ -157,7 +183,8 @@ impl Provider for CodexProvider {
         let prepared_request = prepare_codex_request(request.clone());
         let endpoint = format!("{}/chat/completions", self.base_url());
 
-        let response = reqwest::Client::new()
+        let response = self
+            .codex_client
             .post(endpoint)
             .bearer_auth(access_token)
             .header("content-type", "application/json")
@@ -191,7 +218,8 @@ impl Provider for CodexProvider {
         let prepared_request = prepare_codex_request(request.clone());
         let endpoint = format!("{}/chat/completions/stream", self.base_url());
 
-        let response = reqwest::Client::new()
+        let response = self
+            .codex_stream_client
             .post(endpoint)
             .bearer_auth(access_token)
             .header("content-type", "application/json")
