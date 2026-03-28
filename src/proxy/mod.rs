@@ -63,7 +63,7 @@ pub struct ProxyState {
 }
 
 impl ProxyState {
-    pub async fn refresh_provider_runtime(&self) {
+    pub async fn refresh_provider_runtime(&self) -> anyhow::Result<()> {
         let previous_client_ids = {
             let providers = self.providers.read().await;
             providers
@@ -90,42 +90,40 @@ impl ProxyState {
 
         for (idx, provider) in providers.iter().enumerate() {
             let client_id = format!("{}_{}", provider.name(), idx);
+            let models = provider.list_models().await.map_err(|error| {
+                anyhow::anyhow!("list models from {}: {error}", provider.name())
+            })?;
 
-            match provider.list_models().await {
-                Ok(models) if !models.is_empty() => {
-                    let ext_models: Vec<ExtModelInfo> = models
-                        .into_iter()
-                        .map(|model| ExtModelInfo {
-                            id: model.id.clone(),
-                            object: model.object,
-                            created: model.created,
-                            owned_by: model.owned_by,
-                            provider_type: provider.name().to_string(),
-                            display_name: Some(model.id),
-                            name: None,
-                            version: None,
-                            description: None,
-                            input_token_limit: 0,
-                            output_token_limit: 0,
-                            supported_generation_methods: vec![],
-                            context_length: 0,
-                            max_completion_tokens: 0,
-                            supported_parameters: vec![],
-                            thinking: None,
-                            user_defined: false,
-                        })
-                        .collect();
-                    self.model_registry
-                        .register_client(&client_id, provider.name(), ext_models)
-                        .await;
-                }
-                Ok(_) => {
-                    tracing::warn!("provider {} returned no models during refresh", provider.name());
-                }
-                Err(error) => {
-                    tracing::warn!("failed to list models from {}: {error}", provider.name());
-                }
+            if models.is_empty() {
+                tracing::warn!("provider {} returned no models during refresh", provider.name());
+                continue;
             }
+
+            let ext_models: Vec<ExtModelInfo> = models
+                .into_iter()
+                .map(|model| ExtModelInfo {
+                    id: model.id.clone(),
+                    object: model.object,
+                    created: model.created,
+                    owned_by: model.owned_by,
+                    provider_type: provider.name().to_string(),
+                    display_name: Some(model.id),
+                    name: None,
+                    version: None,
+                    description: None,
+                    input_token_limit: 0,
+                    output_token_limit: 0,
+                    supported_generation_methods: vec![],
+                    context_length: 0,
+                    max_completion_tokens: 0,
+                    supported_parameters: vec![],
+                    thinking: None,
+                    user_defined: false,
+                })
+                .collect();
+            self.model_registry
+                .register_client(&client_id, provider.name(), ext_models)
+                .await;
         }
 
         for client_id in &previous_client_ids {
@@ -149,6 +147,8 @@ impl ProxyState {
             };
             *balancer = Balancer::new(strategy, provider_count);
         }
+
+        Ok(())
     }
 
     pub fn new(

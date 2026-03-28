@@ -90,7 +90,7 @@ async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_l
         *providers = existing_providers;
     }
 
-    state.refresh_provider_runtime().await;
+    state.refresh_provider_runtime().await.unwrap();
 
     assert_eq!(registry.get_model_count("gemini-2.5-pro").await, 1);
     assert_eq!(
@@ -140,7 +140,7 @@ async fn refresh_provider_runtime_removes_orphaned_clients() {
         ))];
     }
 
-    state.refresh_provider_runtime().await;
+    state.refresh_provider_runtime().await.unwrap();
 
     assert_eq!(registry.get_model_count("gemini-2.5-pro").await, 0);
     assert!(registry

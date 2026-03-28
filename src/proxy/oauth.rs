@@ -21,13 +21,17 @@ use crate::auth::kiro_record::KiroRecordInput;
 use crate::auth::store::{AuthRecord, AuthStatus};
 use crate::proxy::ProxyState;
 
-async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) {
-    if let Err(error) = state.accounts.reload().await {
-        warn!("failed to reload accounts after OAuth: {error}");
-        return;
-    }
-
-    state.refresh_provider_runtime().await;
+async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> anyhow::Result<()> {
+    state
+        .accounts
+        .reload()
+        .await
+        .map_err(|error| anyhow::anyhow!("reload accounts: {error}"))?;
+    state
+        .refresh_provider_runtime()
+        .await
+        .map_err(|error| anyhow::anyhow!("refresh provider runtime: {error}"))?;
+    Ok(())
 }
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -502,7 +506,7 @@ async fn process_antigravity_callback(
         "credentials saved via web OAuth"
     );
 
-    refresh_runtime_after_auth_change(state).await;
+    refresh_runtime_after_auth_change(state).await?;
 
     // Mark session complete
     state.oauth_sessions.complete(oauth_state).await;
@@ -882,7 +886,7 @@ async fn process_codex_manual_callback(
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-    refresh_runtime_after_auth_change(state).await;
+    refresh_runtime_after_auth_change(state).await?;
 
     Ok(())
 }
@@ -1186,11 +1190,7 @@ async fn process_builder_id_callback(
         "Builder ID credentials saved via management OAuth"
     );
 
-    if let Err(error) = state.accounts.reload().await {
-        return Err(anyhow::anyhow!("reload accounts: {error}"));
-    }
-
-    state.refresh_provider_runtime().await;
+    refresh_runtime_after_auth_change(state).await?;
 
     state.oauth_sessions.complete(session_id).await;
     Ok(())
@@ -1211,4 +1211,43 @@ pub fn log_builder_id_callback_error(error: &dyn std::fmt::Display) {
         provider = "kiro",
         "Builder ID callback processing failed: {error}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_runtime_after_auth_change;
+    use crate::auth::manager::AccountManager;
+    use crate::config::{Config, ManagementConfig};
+    use crate::providers::model_registry::ModelRegistry;
+    use crate::proxy::ProxyState;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    const SECRET: &str = "test-oauth-secret";
+
+    fn test_config(auth_dir: &str) -> Config {
+        Config {
+            auth_dir: auth_dir.into(),
+            remote_management: ManagementConfig {
+                allow_remote: true,
+                secret_key: SECRET.into(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_runtime_after_auth_change_returns_error_when_account_reload_fails() {
+        let auth_file = NamedTempFile::new().unwrap();
+        let auth_path = auth_file.path().to_string_lossy().into_owned();
+        let config = test_config(&auth_path);
+        let accounts = Arc::new(AccountManager::with_dir(config.auth_dir.clone()));
+        let registry = Arc::new(ModelRegistry::new());
+        let state = Arc::new(ProxyState::new(config, accounts, registry, 0));
+
+        let result = refresh_runtime_after_auth_change(&state).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("reload accounts"));
+    }
 }

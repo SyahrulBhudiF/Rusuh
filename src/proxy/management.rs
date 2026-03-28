@@ -14,7 +14,10 @@ async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> Result<()
         .reload()
         .await
         .map_err(|error| format!("reload accounts: {error}"))?;
-    state.refresh_provider_runtime().await;
+    state
+        .refresh_provider_runtime()
+        .await
+        .map_err(|error| format!("refresh provider runtime: {error}"))?;
     Ok(())
 }
 use axum::{
