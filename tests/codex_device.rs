@@ -238,6 +238,7 @@ async fn request_device_user_code_parses_success_payload() {
     assert_eq!(response.device_auth_id, "dev_123");
     assert_eq!(response.user_code, "ABC-123");
     assert_eq!(response.interval_secs, 7);
+    assert_eq!(response.countdown_start_secs, 600);
     assert_eq!(
         response.verification_uri,
         "https://auth.openai.com/codex/device"

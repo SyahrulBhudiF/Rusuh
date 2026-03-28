@@ -35,6 +35,8 @@ pub struct DeviceUserCodeResponse {
     pub verification_uri_complete: Option<String>,
     /// Polling interval in seconds.
     pub interval_secs: u64,
+    /// Countdown/expiry hint from the server for the device code.
+    pub countdown_start_secs: u64,
 }
 
 /// Parsed device-code token polling success payload.
@@ -46,6 +48,12 @@ pub struct DeviceTokenResponse {
     pub code_verifier: String,
     /// PKCE challenge paired with authorization code.
     pub code_challenge: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceLoginResult {
+    pub saved_path: std::path::PathBuf,
+    pub user_code: DeviceUserCodeResponse,
 }
 
 /// Request device user-code bootstrap payload from upstream.
@@ -256,6 +264,13 @@ pub fn parse_device_user_code_response(value: &Value) -> AppResult<DeviceUserCod
 
     let interval_secs =
         parse_codex_device_poll_interval_secs(value.get("interval").unwrap_or(&Value::Null));
+    let countdown_start_secs = parse_codex_device_countdown_start_secs(
+        value
+            .get("expires_in")
+            .or_else(|| value.get("countdown"))
+            .or_else(|| value.get("expiresIn"))
+            .unwrap_or(&Value::Null),
+    );
 
     Ok(DeviceUserCodeResponse {
         device_auth_id,
@@ -263,6 +278,7 @@ pub fn parse_device_user_code_response(value: &Value) -> AppResult<DeviceUserCod
         verification_uri,
         verification_uri_complete,
         interval_secs,
+        countdown_start_secs,
     })
 }
 
@@ -404,7 +420,7 @@ impl CodexDeviceEndpoints {
 }
 
 /// Codex device-login entrypoint.
-pub async fn device_login(store: &FileTokenStore) -> AppResult<std::path::PathBuf> {
+pub async fn device_login(store: &FileTokenStore) -> AppResult<DeviceLoginResult> {
     let endpoints = match std::env::var("RUSUH_CODEX_AUTH_BASE_URL") {
         Ok(base_url) => CodexDeviceEndpoints::from_auth_base_url(&base_url)?,
         Err(_) => CodexDeviceEndpoints::production(),
@@ -418,7 +434,7 @@ pub async fn device_login_with_endpoints(
     store: &FileTokenStore,
     client: &reqwest::Client,
     endpoints: &CodexDeviceEndpoints,
-) -> AppResult<std::path::PathBuf> {
+) -> AppResult<DeviceLoginResult> {
     let user_code = request_codex_device_user_code(
         client,
         &endpoints.user_code_url,
@@ -426,18 +442,19 @@ pub async fn device_login_with_endpoints(
     )
     .await?;
 
-    let _countdown_secs = parse_codex_device_countdown_start_secs(&Value::Null);
+    let countdown_secs = user_code.countdown_start_secs;
     let approval_url = codex_device_approval_url(&user_code);
     let _ = open::that(approval_url);
 
     let poll_interval = Duration::from_secs(user_code.interval_secs.max(1));
+    let poll_timeout = Duration::from_secs(countdown_secs.max(1)).min(DEVICE_LOGIN_TIMEOUT);
     let token_payload = poll_codex_device_token(
         client,
         &endpoints.token_url,
         &user_code.device_auth_id,
         &user_code.user_code,
         poll_interval,
-        DEVICE_LOGIN_TIMEOUT,
+        poll_timeout,
     )
     .await?;
 
@@ -453,7 +470,12 @@ pub async fn device_login_with_endpoints(
     )
     .await?;
 
-    save_auth_bundle(store, &bundle, true).await
+    let saved_path = save_auth_bundle(store, &bundle, true).await?;
+
+    Ok(DeviceLoginResult {
+        saved_path,
+        user_code,
+    })
 }
 
 /// Whether a status code is a successful polling result.

@@ -295,10 +295,13 @@ async fn device_login_persists_canonical_codex_record_from_explicit_endpoints() 
         .expect("mock endpoint base url should be accepted");
     let client = reqwest::Client::new();
 
-    let saved = device_login_with_endpoints(&store, &client, &endpoints)
+    let login = device_login_with_endpoints(&store, &client, &endpoints)
         .await
         .expect("device login should succeed");
+    let saved = login.saved_path;
 
+    assert_eq!(login.user_code.user_code, "ABC-123");
+    assert_eq!(login.user_code.countdown_start_secs, 600);
     assert!(saved
         .file_name()
         .and_then(|v| v.to_str())

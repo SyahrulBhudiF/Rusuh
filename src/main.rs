@@ -105,8 +105,8 @@ fn resolve_auth_dir(cfg: &config::Config) -> PathBuf {
 async fn run_codex_device_login(cfg: &config::Config) -> anyhow::Result<()> {
     let auth_dir = resolve_auth_dir(cfg);
     let store = auth::store::FileTokenStore::new(&auth_dir);
-    let saved = auth::codex_device::device_login(&store).await?;
-    println!("\n✓ Codex device credentials saved to: {}", saved.display());
+    let login = auth::codex_device::device_login(&store).await?;
+    println!("\n✓ Codex device credentials saved to: {}", login.saved_path.display());
     Ok(())
 }
 
