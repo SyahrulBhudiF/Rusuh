@@ -22,6 +22,7 @@ use rusuh::router::build_router;
 #[derive(Debug)]
 struct StubProvider {
     name: &'static str,
+    client_id: String,
     models: Vec<ModelInfo>,
     observed_models: Arc<Mutex<Vec<String>>>,
     response_label: &'static str,
@@ -30,12 +31,14 @@ struct StubProvider {
 impl StubProvider {
     fn success(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
         response_label: &'static str,
     ) -> Self {
         Self {
             name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -55,6 +58,10 @@ impl StubProvider {
 impl Provider for StubProvider {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
@@ -163,12 +170,14 @@ async fn selected_auth_id_routes_to_requested_codex_client() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "codex",
+            "codex_0",
             &["gpt-5-codex"],
             first_seen.clone(),
             "handled by first",
         )),
         Arc::new(StubProvider::success(
             "codex",
+            "codex_1",
             &["gpt-5-codex"],
             second_seen.clone(),
             "handled by second",
@@ -225,6 +234,7 @@ async fn unknown_selected_auth_id_is_rejected() {
     let first_seen = Arc::new(Mutex::new(Vec::new()));
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         first_seen.clone(),
         "handled by first",
@@ -268,6 +278,73 @@ async fn unknown_selected_auth_id_is_rejected() {
 }
 
 #[tokio::test]
+async fn stable_selected_auth_file_id_routes_to_requested_codex_client() {
+    let first_seen = Arc::new(Mutex::new(Vec::new()));
+    let second_seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success(
+            "codex",
+            "codex-first.json",
+            &["gpt-5-codex"],
+            first_seen.clone(),
+            "handled by first",
+        )),
+        Arc::new(StubProvider::success(
+            "codex",
+            "codex-second.json",
+            &["gpt-5-codex"],
+            second_seen.clone(),
+            "handled by second",
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex-first.json",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+    registry
+        .register_client(
+            "codex-second.json",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "selected_auth_id": "codex-second.json",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(first_seen.lock().await.is_empty());
+    assert_eq!(second_seen.lock().await.as_slice(), &["gpt-5-codex"]);
+}
+
+#[tokio::test]
 async fn execution_session_sticks_to_first_selected_auth() {
     let first_seen = Arc::new(Mutex::new(Vec::new()));
     let second_seen = Arc::new(Mutex::new(Vec::new()));
@@ -275,12 +352,14 @@ async fn execution_session_sticks_to_first_selected_auth() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "codex",
+            "codex_0",
             &["gpt-5-codex"],
             first_seen.clone(),
             "handled by first",
         )),
         Arc::new(StubProvider::success(
             "codex",
+            "codex_1",
             &["gpt-5-codex"],
             second_seen.clone(),
             "handled by second",
@@ -361,6 +440,7 @@ async fn failed_selected_auth_request_does_not_poison_execution_session() {
 
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         seen.clone(),
         "handled by first",
@@ -431,12 +511,14 @@ async fn responses_execution_session_prefers_previous_selected_auth() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "codex",
+            "codex_0",
             &["gpt-5-codex"],
             first_seen.clone(),
             "handled by first",
         )),
         Arc::new(StubProvider::success(
             "codex",
+            "codex_1",
             &["gpt-5-codex"],
             second_seen.clone(),
             "handled by second",

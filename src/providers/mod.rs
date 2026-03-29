@@ -30,6 +30,9 @@ pub trait Provider: Send + Sync {
     /// Human-readable name for logging
     fn name(&self) -> &str;
 
+    /// Stable auth/file-backed client identifier used for routing and registry lookups.
+    fn client_id(&self) -> &str;
+
     /// List models this provider exposes
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>>;
 

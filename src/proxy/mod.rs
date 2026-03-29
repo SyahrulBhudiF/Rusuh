@@ -68,8 +68,7 @@ impl ProxyState {
             let providers = self.providers.read().await;
             providers
                 .iter()
-                .enumerate()
-                .map(|(idx, provider)| format!("{}_{}", provider.name(), idx))
+                .map(|provider| provider.client_id().to_string())
                 .collect::<Vec<_>>()
         };
 
@@ -84,13 +83,12 @@ impl ProxyState {
 
         let replacement_client_ids: HashSet<String> = providers
             .iter()
-            .enumerate()
-            .map(|(idx, provider)| format!("{}_{}", provider.name(), idx))
+            .map(|provider| provider.client_id().to_string())
             .collect();
         let mut replacement_models: HashMap<String, (String, Vec<ExtModelInfo>)> = HashMap::new();
 
-        for (idx, provider) in providers.iter().enumerate() {
-            let client_id = format!("{}_{}", provider.name(), idx);
+        for provider in &providers {
+            let client_id = provider.client_id().to_string();
             let models = provider.list_models().await.map_err(|error| {
                 anyhow::anyhow!("list models from {}: {error}", provider.name())
             })?;
@@ -150,8 +148,12 @@ impl ProxyState {
         for client_id in &previous_client_ids {
             if !replacement_client_ids.contains(client_id) {
                 self.model_registry.unregister_client(client_id).await;
+                self.execution_sessions.invalidate_selected_auth(client_id).await;
             }
         }
+        self.execution_sessions
+            .invalidate_unknown_selected_auths(&replacement_client_ids)
+            .await;
 
         Ok(())
     }

@@ -254,6 +254,48 @@ async fn refresh_provider_runtime_does_not_register_partial_replacement_before_f
 }
 
 #[tokio::test]
+async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_provider_ids_change() {
+    let dir = TempDir::new().unwrap();
+    let first_auth = serde_json::json!({
+        "type": "codex",
+        "provider_key": "codex",
+        "access_token": "access-1",
+        "refresh_token": "refresh-1",
+        "id_token": "id-1",
+        "account_id": "acct-1",
+        "email": "first@example.com",
+        "expired": "2030-01-01T00:00:00Z",
+        "last_refresh": "2026-03-18T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("codex-first.json"),
+        serde_json::to_string_pretty(&first_auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts.clone(), registry.clone(), 0);
+
+    state
+        .execution_sessions
+        .set_selected_auth(
+            "session-stale".to_string(),
+            "codex-missing.json".to_string(),
+        )
+        .await;
+
+    state.refresh_provider_runtime().await.unwrap();
+
+    assert_eq!(
+        state.execution_sessions.get_selected_auth("session-stale").await,
+        None
+    );
+    assert!(registry.has_client("codex-first.json").await);
+}
+
+#[tokio::test]
 async fn register_and_list_models() {
     let reg = ModelRegistry::new();
     let models = vec![

@@ -34,6 +34,7 @@ fn test_app(cfg: Config) -> axum::Router {
 #[derive(Debug)]
 struct StubProvider {
     name: &'static str,
+    client_id: String,
     models: Vec<ModelInfo>,
     observed_models: Arc<Mutex<Vec<String>>>,
     result: StubCompletionResult,
@@ -49,11 +50,13 @@ enum StubCompletionResult {
 impl StubProvider {
     fn success(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
     ) -> Self {
         Self {
             name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -70,12 +73,14 @@ impl StubProvider {
 
     fn success_with_tool_calls(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
         tool_calls: Vec<serde_json::Value>,
     ) -> Self {
         Self {
             name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -92,12 +97,14 @@ impl StubProvider {
 
     fn quota_exceeded(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
         message: &str,
     ) -> Self {
         Self {
             name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -117,6 +124,10 @@ impl StubProvider {
 impl Provider for StubProvider {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
@@ -280,6 +291,10 @@ impl BlockingProvider {
 #[async_trait]
 impl Provider for BlockingProvider {
     fn name(&self) -> &str {
+        self.name
+    }
+
+    fn client_id(&self) -> &str {
         self.name
     }
 
@@ -687,11 +702,13 @@ async fn gemini_models_fallback_uses_provider_models_when_registry_is_empty() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6"],
             zed_observed,
         )),
@@ -837,6 +854,7 @@ async fn public_route_failed_selected_auth_request_does_not_poison_execution_ses
 
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
         "zed",
+        "zed_0",
         &["claude-sonnet-4-6"],
         seen.clone(),
     ))];
@@ -906,11 +924,13 @@ async fn responses_execution_session_sticks_selected_auth_across_requests() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "codex",
+            "codex_0",
             &["gpt-5-codex"],
             first_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "codex",
+            "codex_1",
             &["gpt-5-codex"],
             second_seen.clone(),
         )),
@@ -1491,16 +1511,19 @@ async fn provider_pinned_kiro_models_expose_only_raw_kiro_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_first_observed,
         )),
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_1",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_second_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_observed,
         )),
@@ -1551,16 +1574,19 @@ async fn provider_pinned_zed_models_expose_only_raw_zed_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_first_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_second_observed,
         )),
@@ -1610,11 +1636,13 @@ async fn public_endpoint_rejects_provider_native_model_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1671,11 +1699,13 @@ async fn public_claude_sonnet_4_6_routes_only_to_zed_native_model() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-6"],
             kiro_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-6"],
             zed_seen.clone(),
         )),
@@ -1727,12 +1757,14 @@ async fn public_claude_sonnet_4_5_routes_kiro_first_then_falls_back_to_zed() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_seen.clone(),
             "kiro unavailable",
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1788,17 +1820,20 @@ async fn public_thinking_model_stays_on_kiro_without_zed_fallback() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5-agentic"],
             kiro_first_seen.clone(),
             "first kiro unavailable",
         )),
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_1",
             &["kiro-claude-sonnet-4-5-agentic"],
             kiro_second_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1870,6 +1905,7 @@ async fn public_claude_sonnet_4_5_non_stream_returns_chat_completion_response() 
     let kiro_seen = Arc::new(Mutex::new(Vec::new()));
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
         "kiro",
+        "kiro_0",
         &["kiro-claude-sonnet-4-5"],
         kiro_seen.clone(),
     ))];
@@ -1934,6 +1970,7 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
     })];
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_tool_calls(
         "kiro",
+        "kiro_0",
         &["kiro-claude-sonnet-4-5"],
         kiro_seen.clone(),
         tool_calls.clone(),

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use moka::{policy::EvictionPolicy, sync::Cache};
@@ -40,6 +41,41 @@ impl ExecutionSessionStore {
     pub async fn set_selected_auth(&self, session_id: String, selected_auth_id: String) {
         self.selected_auth_by_session
             .insert(session_id, selected_auth_id);
+        self.selected_auth_by_session.run_pending_tasks();
+    }
+
+    pub async fn invalidate_selected_auth(&self, selected_auth_id: &str) {
+        let mut stale_sessions = Vec::new();
+
+        for (session_id, cached_auth_id) in self.selected_auth_by_session.iter() {
+            if cached_auth_id.eq_ignore_ascii_case(selected_auth_id) {
+                stale_sessions.push(session_id.to_string());
+            }
+        }
+
+        for session_id in stale_sessions {
+            self.selected_auth_by_session.invalidate(session_id.as_str());
+        }
+
+        self.selected_auth_by_session.run_pending_tasks();
+    }
+
+    pub async fn invalidate_unknown_selected_auths(&self, valid_selected_auth_ids: &HashSet<String>) {
+        let mut stale_sessions = Vec::new();
+
+        for (session_id, cached_auth_id) in self.selected_auth_by_session.iter() {
+            let is_valid = valid_selected_auth_ids
+                .iter()
+                .any(|valid_id| valid_id.eq_ignore_ascii_case(cached_auth_id.as_str()));
+            if !is_valid {
+                stale_sessions.push(session_id.to_string());
+            }
+        }
+
+        for session_id in stale_sessions {
+            self.selected_auth_by_session.invalidate(session_id.as_str());
+        }
+
         self.selected_auth_by_session.run_pending_tasks();
     }
 }

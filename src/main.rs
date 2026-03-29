@@ -184,8 +184,8 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     )
     .await;
     // Register all provider models
-    for (idx, provider) in providers.iter().enumerate() {
-        let client_id = format!("{}_{}", provider.name(), idx);
+    for provider in &providers {
+        let client_id = provider.client_id().to_string();
         match provider.list_models().await {
             Ok(models) => {
                 let ext_models: Vec<_> = models

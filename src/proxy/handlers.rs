@@ -541,26 +541,26 @@ async fn resolve_candidates_for_model(
     selected_auth_id: Option<&str>,
 ) -> Vec<usize> {
     let model_providers = state.model_registry.get_model_providers(model_id).await;
-    let provider_names = {
+    let provider_entries = {
         let providers = state.providers.read().await;
         providers
             .iter()
-            .map(|provider| provider.name().to_string())
+            .map(|provider| (provider.name().to_string(), provider.client_id().to_string()))
             .collect::<Vec<_>>()
     };
 
     let candidates: Vec<usize> = if let Some(hint) = provider_hint {
-        provider_names
+        provider_entries
             .iter()
             .enumerate()
-            .filter(|(_, name)| name.eq_ignore_ascii_case(hint))
+            .filter(|(_, (name, _))| name.eq_ignore_ascii_case(hint))
             .map(|(i, _)| i)
             .collect()
     } else if !model_providers.is_empty() {
-        provider_names
+        provider_entries
             .iter()
             .enumerate()
-            .filter(|(_, name)| {
+            .filter(|(_, (name, _))| {
                 model_providers
                     .iter()
                     .any(|mp| mp.eq_ignore_ascii_case(name))
@@ -568,12 +568,12 @@ async fn resolve_candidates_for_model(
             .map(|(i, _)| i)
             .collect()
     } else {
-        (0..provider_names.len()).collect()
+        (0..provider_entries.len()).collect()
     };
 
     let mut available_candidates = Vec::new();
     for idx in candidates {
-        let client_id = format!("{}_{}", provider_names[idx], idx);
+        let client_id = &provider_entries[idx].1;
 
         if let Some(selected) = selected_auth_id {
             if !client_id.eq_ignore_ascii_case(selected) {
@@ -583,7 +583,7 @@ async fn resolve_candidates_for_model(
 
         if state
             .model_registry
-            .client_is_effectively_available(&client_id, model_id)
+            .client_is_effectively_available(client_id, model_id)
             .await
         {
             available_candidates.push(idx);
@@ -625,11 +625,11 @@ async fn execute_candidates(
         let providers = state.providers.read().await;
         ordered
             .iter()
-            .filter_map(|&idx| providers.get(idx).cloned().map(|provider| (idx, provider)))
+            .filter_map(|&idx| providers.get(idx).cloned())
             .collect::<Vec<_>>()
     };
 
-    for (idx, provider) in providers {
+    for provider in providers {
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));
@@ -658,7 +658,7 @@ async fn execute_candidates(
             match result {
                 Ok(resp) => {
                     if let Some(session_id) = execution_session_id {
-                        let selected_auth_id = format!("{}_{}", provider.name(), idx);
+                        let selected_auth_id = provider.client_id().to_string();
                         state
                             .execution_sessions
                             .set_selected_auth(session_id.to_string(), selected_auth_id)

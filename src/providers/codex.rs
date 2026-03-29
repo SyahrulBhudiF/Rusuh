@@ -157,6 +157,10 @@ impl Provider for CodexProvider {
         "codex"
     }
 
+    fn client_id(&self) -> &str {
+        &self.record.id
+    }
+
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         let now = chrono::Utc::now().timestamp();
 
