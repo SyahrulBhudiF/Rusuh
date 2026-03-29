@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{http::StatusCode, routing::post, Json, Router};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::Config;
@@ -54,6 +55,42 @@ async fn spawn_antigravity_models_server(model_id: &str) -> String {
         post(move || {
             let model_id = model_id.clone();
             async move {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "models": {
+                            model_id: {"state": "ENABLED"}
+                        }
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+async fn spawn_blocked_antigravity_models_server(
+    model_id: &str,
+    request_started: Arc<Notify>,
+    release_request: Arc<Notify>,
+) -> String {
+    let model_id = model_id.to_string();
+    let app = Router::new().route(
+        "/v1internal:fetchAvailableModels",
+        post(move || {
+            let model_id = model_id.clone();
+            let request_started = request_started.clone();
+            let release_request = release_request.clone();
+            async move {
+                request_started.notify_one();
+                release_request.notified().await;
                 (
                     StatusCode::OK,
                     Json(serde_json::json!({
@@ -307,6 +344,102 @@ async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_
         None
     );
     assert!(registry.has_client("codex-first.json").await);
+}
+
+#[tokio::test]
+async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_providers() {
+    let dir = TempDir::new().unwrap();
+    let first_request_started = Arc::new(Notify::new());
+    let release_first_request = Arc::new(Notify::new());
+    let first_base_url = spawn_blocked_antigravity_models_server(
+        "gemini-2.5-flash",
+        first_request_started.clone(),
+        release_first_request.clone(),
+    )
+    .await;
+    let second_base_url = spawn_antigravity_models_server("gemini-2.5-pro-preview").await;
+    let first_path = dir.path().join("antigravity-first.json");
+    let second_path = dir.path().join("antigravity-second.json");
+
+    let first_auth = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "first@example.com",
+        "access_token": "ya29.first",
+        "refresh_token": "1//first",
+        "project_id": "first-project",
+        "base_url": first_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        &first_path,
+        serde_json::to_string_pretty(&first_auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(
+        Config::default(),
+        accounts.clone(),
+        registry.clone(),
+        0,
+    ));
+
+    let first_refresh = {
+        let state = state.clone();
+        tokio::spawn(async move { state.refresh_provider_runtime().await })
+    };
+
+    first_request_started.notified().await;
+
+    std::fs::remove_file(&first_path).unwrap();
+
+    let second_auth = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "second@example.com",
+        "access_token": "ya29.second",
+        "refresh_token": "1//second",
+        "project_id": "second-project",
+        "base_url": second_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(&second_path, serde_json::to_string_pretty(&second_auth).unwrap()).unwrap();
+    accounts.reload().await.unwrap();
+
+    state.refresh_provider_runtime().await.unwrap();
+
+    release_first_request.notify_one();
+    first_refresh.await.unwrap().unwrap();
+
+    let provider_ids: Vec<String> = state
+        .providers
+        .read()
+        .await
+        .iter()
+        .map(|provider| provider.client_id().to_string())
+        .collect();
+
+    for client_id in &provider_ids {
+        assert!(registry.has_client(client_id).await);
+    }
+    assert!(registry.has_client("antigravity-first.json").await);
+    assert!(
+        !provider_ids.iter().any(|client_id| client_id == "antigravity-second.json"),
+        "providers should come from the stale first refresh"
+    );
+    assert!(
+        !registry.has_client("antigravity-second.json").await,
+        "registry should not stay ahead of providers after concurrent refresh"
+    );
+    assert_eq!(
+        registry
+            .available_clients_for_model("gemini-2.5-pro-preview")
+            .await,
+        Vec::<String>::new()
+    );
 }
 
 #[tokio::test]

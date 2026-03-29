@@ -9,7 +9,7 @@ pub mod zed_import;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, NoOpQuotaChecker, QuotaChecker};
 use crate::auth::manager::AccountManager;
@@ -61,10 +61,14 @@ pub struct ProxyState {
     pub execution_sessions: ExecutionSessionStore,
     /// Kiro-specific cooldown, rate-limit, and quota probing state
     pub kiro_runtime: KiroRuntimeState,
+    /// Serializes provider runtime refreshes so runtime state is swapped atomically.
+    runtime_refresh_lock: Mutex<()>,
 }
 
 impl ProxyState {
     pub async fn refresh_provider_runtime(&self) -> AppResult<()> {
+        let _refresh_guard = self.runtime_refresh_lock.lock().await;
+
         let previous_client_ids = {
             let providers = self.providers.read().await;
             providers
@@ -178,6 +182,7 @@ impl ProxyState {
             zed_login_sessions: new_session_store(),
             execution_sessions: ExecutionSessionStore::new(),
             kiro_runtime: KiroRuntimeState::default(),
+            runtime_refresh_lock: Mutex::new(()),
         }
     }
 }
