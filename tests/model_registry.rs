@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use rusuh::auth::manager::AccountManager;
 use rusuh::config::Config;
+use rusuh::error::AppError;
 use rusuh::providers::model_info::ExtModelInfo;
 use rusuh::providers::model_registry::ModelRegistry;
 use rusuh::proxy::ProxyState;
@@ -243,10 +244,23 @@ async fn refresh_provider_runtime_does_not_register_partial_replacement_before_f
     let registry = Arc::new(ModelRegistry::new());
     let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
 
-    state
+    let error = state
         .refresh_provider_runtime()
         .await
         .expect_err("later provider failure should abort refresh");
+
+    match error {
+        AppError::ProviderOperation {
+            op,
+            provider,
+            source,
+        } => {
+            assert_eq!(op, "list_models");
+            assert_eq!(provider, "zed");
+            assert!(!source.to_string().is_empty());
+        }
+        other => panic!("expected provider operation error, got {other}"),
+    }
 
     assert_eq!(registry.get_model_count("gemini-2.5-flash").await, 0);
     assert!(!registry.has_client("antigravity_0").await);

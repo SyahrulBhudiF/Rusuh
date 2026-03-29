@@ -15,6 +15,7 @@ use crate::auth::kiro_runtime::{CooldownManager, KiroRateLimiter, NoOpQuotaCheck
 use crate::auth::manager::AccountManager;
 use crate::auth::zed_session::{new_session_store, ZedLoginSessionStore};
 use crate::config::Config;
+use crate::error::{AppError, AppResult};
 use crate::providers::model_info::ExtModelInfo;
 use crate::providers::model_registry::ModelRegistry;
 use crate::providers::Provider;
@@ -63,7 +64,7 @@ pub struct ProxyState {
 }
 
 impl ProxyState {
-    pub async fn refresh_provider_runtime(&self) -> anyhow::Result<()> {
+    pub async fn refresh_provider_runtime(&self) -> AppResult<()> {
         let previous_client_ids = {
             let providers = self.providers.read().await;
             providers
@@ -89,8 +90,10 @@ impl ProxyState {
 
         for provider in &providers {
             let client_id = provider.client_id().to_string();
-            let models = provider.list_models().await.map_err(|error| {
-                anyhow::anyhow!("list models from {}: {error}", provider.name())
+            let models = provider.list_models().await.map_err(|error| AppError::ProviderOperation {
+                op: "list_models",
+                provider: provider.name().to_string(),
+                source: error.into(),
             })?;
 
             if models.is_empty() {
