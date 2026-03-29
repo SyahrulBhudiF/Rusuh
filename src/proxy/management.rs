@@ -1242,7 +1242,7 @@ async fn check_codex_quota(
 
 /// Probe Codex upstream API to check quota status.
 async fn probe_codex_quota(state: &Arc<ProxyState>, mut record: AuthRecord) -> Value {
-    let account = codex_account_id_from_record(&record);
+    let mut account = codex_account_id_from_record(&record);
     let base_url = codex_base_url_from_record(&record);
     let plan_type = record
         .metadata
@@ -1292,6 +1292,7 @@ async fn probe_codex_quota(state: &Arc<ProxyState>, mut record: AuthRecord) -> V
                 match state.accounts.get_by_id(&record.id).await {
                     Some(updated_record) => {
                         record = updated_record;
+                        account = codex_account_id_from_record(&record);
                     }
                     None => {
                         return json!({
@@ -2441,12 +2442,16 @@ fn normalize_zed_limit(value: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_refreshed_codex_record, refresh_runtime_after_auth_change};
+    use super::{
+        apply_refreshed_codex_record, build_codex_headers, codex_account_id_from_record,
+        refresh_runtime_after_auth_change,
+    };
     use crate::auth::manager::AccountManager;
     use crate::auth::store::{AuthRecord, AuthStatus};
     use crate::config::Config;
     use crate::error::AppError;
     use crate::proxy::ProxyState;
+    use reqwest::header::HeaderMap;
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -2570,5 +2575,32 @@ mod tests {
             .expect_err("file auth path should fail reload");
 
         assert!(matches!(error, AppError::Config(message) if message.contains("read auth dir")));
+    }
+
+    #[test]
+    fn codex_account_id_is_recomputed_after_record_refresh_for_headers() {
+        let dir = TempDir::new().expect("create temp dir");
+        let mut record = codex_record(dir.path(), "codex-refresh.json");
+        let stale_account = codex_account_id_from_record(&record);
+        assert_eq!(stale_account, "acct_old");
+
+        record.metadata.insert("account_id".to_string(), json!("acct_new"));
+
+        let headers_with_stale_account =
+            build_codex_headers("access-token", &stale_account, "application/json")
+                .expect("stale headers should build");
+        assert_eq!(header_account_id(&headers_with_stale_account), Some("acct_old"));
+
+        let account = codex_account_id_from_record(&record);
+        let headers = build_codex_headers("access-token", &account, "application/json")
+            .expect("headers should build");
+
+        assert_eq!(header_account_id(&headers), Some("acct_new"));
+    }
+
+    fn header_account_id(headers: &HeaderMap) -> Option<&str> {
+        headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok())
     }
 }
