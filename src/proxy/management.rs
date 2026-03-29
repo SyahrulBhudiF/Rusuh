@@ -7,19 +7,15 @@ use crate::auth::zed::{canonical_zed_login_filename, zed_user_ids_match};
 use crate::auth::zed_callback::start_callback_server;
 use crate::auth::zed_login::{build_login_url, decrypt_credential, generate_keypair};
 use crate::auth::zed_session::{cleanup_expired_sessions, ZedLoginSession, ZedLoginSessionStatus};
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::proxy::ProxyState;
 
-async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> Result<(), String> {
-    state
-        .accounts
-        .reload()
-        .await
-        .map_err(|error| format!("reload accounts: {error}"))?;
+async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> AppResult<()> {
+    state.accounts.reload().await.map_err(AppError::from)?;
     state
         .refresh_provider_runtime()
         .await
-        .map_err(|error| format!("refresh provider runtime: {error}"))?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 use axum::{
@@ -597,7 +593,7 @@ async fn upload_auth_file(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -707,7 +703,7 @@ async fn import_kiro_social_refresh_token(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -870,7 +866,7 @@ async fn import_kiro_auth_file(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -1452,7 +1448,7 @@ async fn apply_refreshed_codex_record(
     state: &Arc<ProxyState>,
     record_id: &str,
     refreshed: &crate::auth::codex::CodexTokenData,
-) -> Result<(), String> {
+) -> AppResult<()> {
     let refreshed_at = chrono::Utc::now();
     let refreshed_at_rfc3339 = refreshed_at.to_rfc3339();
     let updated = state
@@ -1493,10 +1489,10 @@ async fn apply_refreshed_codex_record(
                 .insert("last_refreshed_at".to_string(), json!(refreshed_at_rfc3339.clone()));
         })
         .await
-        .map_err(|error| format!("update codex auth record: {error}"))?;
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("update codex auth record: {error}")))?;
 
     if !updated {
-        return Err(format!("codex auth record not found: {record_id}"));
+        return Err(AppError::NotFound(format!("codex auth record not found: {record_id}")));
     }
 
     refresh_runtime_after_auth_change(state).await
@@ -1597,7 +1593,7 @@ async fn delete_auth_file(
         if let Err(error) = refresh_runtime_after_auth_change(&state).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": error})),
+                Json(json!({"error": error.to_string()})),
             );
         }
         return (
@@ -1629,7 +1625,7 @@ async fn delete_auth_file(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -1765,7 +1761,7 @@ async fn patch_auth_file_status(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -1871,7 +1867,7 @@ async fn patch_auth_file_fields(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -1922,7 +1918,7 @@ async fn import_zed_credential(
             if let Err(error) = refresh_runtime_after_auth_change(&state).await {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": error})),
+                    Json(json!({"error": error.to_string()})),
                 );
             }
 
@@ -2178,12 +2174,12 @@ async fn get_zed_login_status(
     if let Err(error) = refresh_runtime_after_auth_change(&state).await {
         let mut sessions = state.zed_login_sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
-            session.status = ZedLoginSessionStatus::Failed(error.clone());
+            session.status = ZedLoginSessionStatus::Failed(error.to_string());
             session.server_handle.abort();
         }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
+            Json(json!({"error": error.to_string()})),
         );
     }
 
@@ -2445,10 +2441,11 @@ fn normalize_zed_limit(value: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_refreshed_codex_record;
+    use super::{apply_refreshed_codex_record, refresh_runtime_after_auth_change};
     use crate::auth::manager::AccountManager;
     use crate::auth::store::{AuthRecord, AuthStatus};
     use crate::config::Config;
+    use crate::error::AppError;
     use crate::proxy::ProxyState;
     use serde_json::json;
     use std::collections::HashMap;
@@ -2549,5 +2546,29 @@ mod tests {
         assert_eq!(saved["expired"], "2035-01-01T00:00:00Z");
         assert!(saved.get("last_refresh").is_some());
         assert!(saved.get("last_refreshed_at").is_some());
+    }
+
+    #[tokio::test]
+    async fn refresh_runtime_after_auth_change_preserves_typed_reload_errors() {
+        let dir = TempDir::new().expect("create temp dir");
+        let auth_path = dir.path().join("not-a-directory.json");
+        std::fs::write(&auth_path, "{}").expect("write auth file placeholder");
+
+        let accounts = Arc::new(AccountManager::with_dir(&auth_path));
+        let state = Arc::new(ProxyState::new(
+            Config {
+                auth_dir: auth_path.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            accounts,
+            Arc::new(crate::providers::model_registry::ModelRegistry::new()),
+            0,
+        ));
+
+        let error = refresh_runtime_after_auth_change(&state)
+            .await
+            .expect_err("file auth path should fail reload");
+
+        assert!(matches!(error, AppError::Config(message) if message.contains("read auth dir")));
     }
 }
