@@ -920,7 +920,7 @@ async fn public_route_failed_selected_auth_request_does_not_poison_execution_ses
 }
 
 #[tokio::test]
-async fn responses_execution_session_sticks_selected_auth_across_requests() {
+async fn chat_execution_session_sticks_selected_auth_across_requests() {
     let first_seen = Arc::new(Mutex::new(Vec::new()));
     let second_seen = Arc::new(Mutex::new(Vec::new()));
 
@@ -1444,10 +1444,30 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
 
 #[tokio::test]
 async fn public_models_catalog_is_curated_to_three_router_models() {
+    let zed_observed = Arc::new(Mutex::new(Vec::new()));
+    let kiro_observed = Arc::new(Mutex::new(Vec::new()));
+    let zed_client_id = "auth-zed-record-1";
+    let kiro_client_id = "auth-kiro-record-1";
+
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success(
+            "zed",
+            zed_client_id,
+            &["claude-sonnet-4-6", "claude-sonnet-4-5"],
+            zed_observed,
+        )),
+        Arc::new(StubProvider::success(
+            "kiro",
+            kiro_client_id,
+            &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
+            kiro_observed,
+        )),
+    ];
+
     let registry = Arc::new(ModelRegistry::new());
     registry
         .register_client(
-            "zed_0",
+            zed_client_id,
             "zed",
             vec![
                 make_ext_model("claude-sonnet-4-6", "zed", "zed"),
@@ -1457,7 +1477,7 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         .await;
     registry
         .register_client(
-            "kiro_0",
+            kiro_client_id,
             "kiro",
             vec![
                 make_ext_model("kiro-claude-sonnet-4-5", "kiro", "kiro"),
@@ -1466,7 +1486,6 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         )
         .await;
 
-    let providers: Vec<Arc<dyn Provider>> = vec![];
     let app = test_app_with_state(test_state_with_providers(
         Config::default(),
         registry,
