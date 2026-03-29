@@ -67,11 +67,18 @@ fn setup_notice_url_only_accepts_http_or_https() {
 
 #[tokio::test]
 async fn oauth_server_running_state_and_timeout_behavior() {
-    let server = OAuthServer::new(1455);
+    let server = OAuthServer::new(0);
     assert!(!server.is_running());
 
     server.start().expect("server start should succeed");
     assert!(server.is_running());
+
+    let addr = server.address().expect("server should expose bound address");
+    assert_ne!(addr.port(), 0);
+
+    tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect to bound oauth listener");
 
     let timeout_result = server
         .wait_for_callback(std::time::Duration::from_millis(10))

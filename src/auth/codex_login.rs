@@ -1,7 +1,9 @@
 //! Codex login helpers: PKCE, manual callback parsing, OAuth exchange, and CLI login flows.
 
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration as StdDuration;
 
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
@@ -48,9 +50,11 @@ pub struct ManualCallbackResult {
 }
 
 /// Minimal OAuth server lifecycle holder.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OAuthServer {
     running: Arc<AtomicBool>,
+    bound_addr: Arc<Mutex<Option<SocketAddr>>>,
+    listener_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Configured callback port.
     pub port: u16,
 }
@@ -60,19 +64,84 @@ impl OAuthServer {
     pub fn new(port: u16) -> Self {
         Self {
             running: Arc::new(AtomicBool::new(false)),
+            bound_addr: Arc::new(Mutex::new(None)),
+            listener_thread: Arc::new(Mutex::new(None)),
             port,
         }
     }
 
+    /// Return the currently bound callback address if the helper is running.
+    pub fn address(&self) -> Option<SocketAddr> {
+        self.bound_addr.lock().ok().and_then(|guard| *guard)
+    }
+
+    /// Return the currently bound callback port if the helper is running.
+    pub fn bound_port(&self) -> Option<u16> {
+        self.address().map(|addr| addr.port())
+    }
+
     /// Mark the helper as running.
     pub fn start(&self) -> AppResult<()> {
+        if self.is_running() {
+            return Ok(());
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", self.port)).map_err(|error| {
+            AppError::Auth(format!(
+                "failed to bind oauth callback server on 127.0.0.1:{}: {error}",
+                self.port
+            ))
+        })?;
+        let bound_addr = listener
+            .local_addr()
+            .map_err(|error| AppError::Auth(format!("failed to read oauth listener address: {error}")))?;
+        listener
+            .set_nonblocking(false)
+            .map_err(|error| AppError::Auth(format!("failed to configure oauth listener: {error}")))?;
+
         self.running.store(true, Ordering::SeqCst);
+        if let Ok(mut guard) = self.bound_addr.lock() {
+            *guard = Some(bound_addr);
+        }
+
+        let running = Arc::clone(&self.running);
+        let handle = std::thread::spawn(move || {
+            while running.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        drop(stream);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut thread_guard = self
+            .listener_thread
+            .lock()
+            .map_err(|_| AppError::Auth("oauth listener thread state poisoned".into()))?;
+        *thread_guard = Some(handle);
         Ok(())
     }
 
     /// Mark the helper as stopped.
     pub fn stop(&self) -> AppResult<()> {
         self.running.store(false, Ordering::SeqCst);
+
+        if let Some(port) = self.bound_port() {
+            let _ = TcpStream::connect(("127.0.0.1", port));
+        }
+
+        if let Ok(mut guard) = self.listener_thread.lock() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
+
+        if let Ok(mut guard) = self.bound_addr.lock() {
+            *guard = None;
+        }
+
         Ok(())
     }
 
