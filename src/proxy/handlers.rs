@@ -159,7 +159,7 @@ async fn collect_provider_models(state: &ProxyState, provider_name: &str) -> Vec
         let providers = state.providers.read().await;
         providers
             .iter()
-            .filter(|provider| provider.name().eq_ignore_ascii_case(provider_name))
+            .filter(|provider| provider.provider_type().eq_ignore_ascii_case(provider_name))
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -183,6 +183,10 @@ async fn collect_provider_models(state: &ProxyState, provider_name: &str) -> Vec
 async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
     let now = chrono::Utc::now().timestamp();
     let mut models = Vec::new();
+    let providers = {
+        let providers = state.providers.read().await;
+        providers.iter().cloned().collect::<Vec<_>>()
+    };
 
     for public_model in [
         PUBLIC_MODEL_SONNET_46,
@@ -197,9 +201,10 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
                 .available_clients_for_model(target.model)
                 .await;
             if clients.iter().any(|client_id| {
-                client_provider_name(client_id)
-                    .map(|name| name.eq_ignore_ascii_case(target.provider))
-                    .unwrap_or(false)
+                providers.iter().any(|provider| {
+                    provider.client_id().eq_ignore_ascii_case(client_id)
+                        && provider.provider_type().eq_ignore_ascii_case(target.provider)
+                })
             }) {
                 available = true;
                 break;
@@ -243,10 +248,6 @@ fn public_route_targets(model: &str) -> &'static [RouteTarget] {
     }
 }
 
-fn client_provider_name(client_id: &str) -> Option<&str> {
-    client_id.split_once('_').map(|(provider, _)| provider)
-}
-
 fn is_public_model(model: &str) -> bool {
     !public_route_targets(model).is_empty()
 }
@@ -281,11 +282,26 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
                 match item {
                     Value::String(s) => segments.push(s),
                     Value::Object(map) => {
-                        let text = map.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            AppError::BadRequest(format!(
-                                "responses input array item {idx} must be a string or object with a text string"
-                            ))
-                        })?;
+                        let text = map
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .or_else(|| {
+                                map.get("content").and_then(Value::as_array).and_then(|items| {
+                                    items.iter().find_map(|content_item| {
+                                        let content_map = content_item.as_object()?;
+                                        let text = content_map.get("text").and_then(Value::as_str)?;
+                                        match content_map.get("type").and_then(Value::as_str) {
+                                            Some("input_text") | None => Some(text),
+                                            _ => None,
+                                        }
+                                    })
+                                })
+                            })
+                            .ok_or_else(|| {
+                                AppError::BadRequest(format!(
+                                    "responses input array item {idx} must be a string or object with a text string"
+                                ))
+                            })?;
                         segments.push(text.to_string());
                     }
                     _ => {
@@ -339,7 +355,7 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
 mod tests {
     use serde_json::json;
 
-    use super::responses_body_to_chat_request;
+    use super::{MessageContent, responses_body_to_chat_request};
     use crate::error::AppError;
 
     #[test]
@@ -355,6 +371,32 @@ mod tests {
                 assert!(message.contains("responses input must be a string, null, or array"));
             }
             other => panic!("expected bad request, got {other}"),
+        }
+    }
+
+    #[test]
+    fn responses_body_accepts_array_items_with_nested_content_text() {
+        let request = responses_body_to_chat_request(json!({
+            "model": "claude-sonnet-4.6",
+            "input": [
+                "hello",
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "ignored"},
+                        {"type": "input_text", "text": "from nested content"}
+                    ]
+                }
+            ]
+        }))
+        .expect("nested content text should be accepted");
+
+        assert_eq!(request.messages.len(), 1);
+        match &request.messages[0].content {
+            MessageContent::Text(text) => {
+                assert_eq!(text, "hello\nfrom nested content");
+            }
+            other => panic!("expected text content, got {other:?}"),
         }
     }
 

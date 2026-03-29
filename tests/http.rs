@@ -34,6 +34,7 @@ fn test_app(cfg: Config) -> axum::Router {
 #[derive(Debug)]
 struct StubProvider {
     name: &'static str,
+    provider_type: &'static str,
     client_id: String,
     models: Vec<ModelInfo>,
     observed_models: Arc<Mutex<Vec<String>>>,
@@ -54,8 +55,19 @@ impl StubProvider {
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
     ) -> Self {
+        Self::success_with_type(name, name, client_id, model_ids, observed_models)
+    }
+
+    fn success_with_type(
+        name: &'static str,
+        provider_type: &'static str,
+        client_id: &str,
+        model_ids: &[&str],
+        observed_models: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
         Self {
             name,
+            provider_type,
             client_id: client_id.to_string(),
             models: model_ids
                 .iter()
@@ -80,6 +92,7 @@ impl StubProvider {
     ) -> Self {
         Self {
             name,
+            provider_type: name,
             client_id: client_id.to_string(),
             models: model_ids
                 .iter()
@@ -104,6 +117,7 @@ impl StubProvider {
     ) -> Self {
         Self {
             name,
+            provider_type: name,
             client_id: client_id.to_string(),
             models: model_ids
                 .iter()
@@ -124,6 +138,10 @@ impl StubProvider {
 impl Provider for StubProvider {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn provider_type(&self) -> &str {
+        self.provider_type
     }
 
     fn client_id(&self) -> &str {
@@ -1450,13 +1468,15 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
     let kiro_client_id = "auth-kiro-record-1";
 
     let providers: Vec<Arc<dyn Provider>> = vec![
-        Arc::new(StubProvider::success(
+        Arc::new(StubProvider::success_with_type(
+            "zed-display",
             "zed",
             zed_client_id,
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_observed,
         )),
-        Arc::new(StubProvider::success(
+        Arc::new(StubProvider::success_with_type(
+            "kiro-display",
             "kiro",
             kiro_client_id,
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],

@@ -195,7 +195,7 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
                         object: m.object.clone(),
                         created: m.created,
                         owned_by: m.owned_by.clone(),
-                        provider_type: provider.name().to_string(),
+                        provider_type: provider.provider_type().to_string(),
                         display_name: Some(m.id.clone()),
                         name: None,
                         version: None,
@@ -211,11 +211,11 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
                     })
                     .collect();
                 model_registry
-                    .register_client(&client_id, provider.name(), ext_models)
+                    .register_client(&client_id, provider.provider_type(), ext_models)
                     .await;
             }
             Err(e) => {
-                tracing::warn!("failed to list models from {}: {e}", provider.name());
+                tracing::warn!("failed to list models from {}: {e}", provider.provider_type());
             }
         }
     }

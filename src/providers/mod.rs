@@ -30,6 +30,11 @@ pub trait Provider: Send + Sync {
     /// Human-readable name for logging
     fn name(&self) -> &str;
 
+    /// Canonical provider type used for routing and model catalog decisions.
+    fn provider_type(&self) -> &str {
+        self.name()
+    }
+
     /// Stable auth/file-backed client identifier used for routing and registry lookups.
     fn client_id(&self) -> &str;
 

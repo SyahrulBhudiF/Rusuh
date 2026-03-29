@@ -92,12 +92,12 @@ impl ProxyState {
             let client_id = provider.client_id().to_string();
             let models = provider.list_models().await.map_err(|error| AppError::ProviderOperation {
                 op: "list_models",
-                provider: provider.name().to_string(),
+                provider: provider.provider_type().to_string(),
                 source: error.into(),
             })?;
 
             if models.is_empty() {
-                tracing::warn!("provider {} returned no models during refresh", provider.name());
+                tracing::warn!("provider {} returned no models during refresh", provider.provider_type());
                 continue;
             }
 
@@ -108,7 +108,7 @@ impl ProxyState {
                     object: model.object,
                     created: model.created,
                     owned_by: model.owned_by,
-                    provider_type: provider.name().to_string(),
+                    provider_type: provider.provider_type().to_string(),
                     display_name: Some(model.id),
                     name: None,
                     version: None,
@@ -123,7 +123,7 @@ impl ProxyState {
                     user_defined: false,
                 })
                 .collect();
-            replacement_models.insert(client_id, (provider.name().to_string(), ext_models));
+            replacement_models.insert(client_id, (provider.provider_type().to_string(), ext_models));
         }
 
         let provider_count = providers.len();
