@@ -9,6 +9,7 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     error::AppError,
     models::{ChatCompletionRequest, ChatMessage, MessageContent, ModelInfo, ModelsResponse},
+    providers::Provider,
     proxy::ProxyState,
 };
 
@@ -353,10 +354,28 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
-    use super::{MessageContent, responses_body_to_chat_request};
-    use crate::error::AppError;
+    use async_trait::async_trait;
+    use axum::body::to_bytes;
+    use serde_json::json;
+    use tokio::sync::Mutex;
+
+    use super::{
+        execute_candidates, resolve_candidates_for_model, MessageContent,
+        responses_body_to_chat_request,
+    };
+    use crate::auth::manager::AccountManager;
+    use crate::config::Config;
+    use crate::error::{AppError, AppResult};
+    use crate::models::{
+        ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, MessageContent as ChatMessageContent,
+        ModelInfo,
+    };
+    use crate::providers::model_info::ExtModelInfo;
+    use crate::providers::{BoxStream, Provider};
+    use crate::proxy::ProxyState;
 
     #[test]
     fn responses_body_rejects_unsupported_top_level_input_shape() {
@@ -415,6 +434,186 @@ mod tests {
             }
             other => panic!("expected bad request, got {other}"),
         }
+    }
+
+    #[derive(Debug)]
+    struct TestProvider {
+        name: &'static str,
+        client_id: &'static str,
+        model_id: &'static str,
+        response_label: &'static str,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn client_id(&self) -> &str {
+            self.client_id
+        }
+
+        async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+            Ok(vec![ModelInfo {
+                id: self.model_id.to_string(),
+                object: "model".to_string(),
+                created: 0,
+                owned_by: self.name.to_string(),
+            }])
+        }
+
+        async fn chat_completion(
+            &self,
+            req: &ChatCompletionRequest,
+        ) -> AppResult<ChatCompletionResponse> {
+            self.calls.lock().await.push(self.client_id);
+            Ok(ChatCompletionResponse {
+                id: format!("{}-response", self.client_id),
+                object: "chat.completion".to_string(),
+                created: 0,
+                model: req.model.clone(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Some(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: ChatMessageContent::Text(self.response_label.to_string()),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    }),
+                    delta: None,
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: None,
+            })
+        }
+
+        async fn chat_completion_stream(&self, _req: &ChatCompletionRequest) -> AppResult<BoxStream> {
+            unreachable!("streaming not used in this test")
+        }
+    }
+
+    fn ext_model(id: &str, owned_by: &str, provider_type: &str) -> ExtModelInfo {
+        ExtModelInfo {
+            id: id.to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: owned_by.to_string(),
+            provider_type: provider_type.to_string(),
+            display_name: None,
+            name: Some(id.to_string()),
+            version: None,
+            description: None,
+            input_token_limit: 0,
+            output_token_limit: 0,
+            supported_generation_methods: vec![],
+            context_length: 0,
+            max_completion_tokens: 0,
+            supported_parameters: vec![],
+            thinking: None,
+            user_defined: false,
+        }
+    }
+
+    fn test_state(
+        registry: Arc<crate::providers::model_registry::ModelRegistry>,
+        providers: Vec<Arc<dyn Provider>>,
+    ) -> Arc<ProxyState> {
+        let accounts = Arc::new(AccountManager::with_dir("/tmp/rusuh_test_nonexistent"));
+        let mut state = ProxyState::new(Config::default(), accounts, registry, providers.len());
+        state.providers = tokio::sync::RwLock::new(providers);
+        Arc::new(state)
+    }
+
+    fn test_request(model: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: ChatMessageContent::Text("hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            stream: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            tools: None,
+            tool_choice: None,
+            stop: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_candidates_uses_resolved_auth_snapshot_instead_of_reloaded_indices() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Arc::new(crate::providers::model_registry::ModelRegistry::new());
+        let model_id = "gpt-5-codex";
+
+        registry
+            .register_client(
+                "auth-first",
+                "codex",
+                vec![ext_model(model_id, "codex", "codex")],
+            )
+            .await;
+        registry
+            .register_client(
+                "auth-second",
+                "codex",
+                vec![ext_model(model_id, "codex", "codex")],
+            )
+            .await;
+
+        let initial_providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-first",
+                model_id,
+                response_label: "first",
+                calls: calls.clone(),
+            }),
+            Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-second",
+                model_id,
+                response_label: "second",
+                calls: calls.clone(),
+            }),
+        ];
+        let state = test_state(registry.clone(), initial_providers);
+
+        let candidates =
+            resolve_candidates_for_model(&state, model_id, &Some("codex".to_string()), Some("auth-first"))
+                .await;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].client_id(), "auth-first");
+
+        {
+            let mut providers = state.providers.write().await;
+            *providers = vec![Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-second",
+                model_id,
+                response_label: "second",
+                calls: calls.clone(),
+            })];
+        }
+
+        let response = execute_candidates(state.clone(), &test_request(model_id), candidates, false, None)
+            .await
+            .expect("resolved candidate should still execute against the originally selected auth");
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body should be readable");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("response should be valid json");
+
+        assert_eq!(json["choices"][0]["message"]["content"], "first");
+        assert_eq!(calls.lock().await.as_slice(), &["auth-first"]);
     }
 }
 
@@ -581,42 +780,28 @@ async fn resolve_candidates_for_model(
     model_id: &str,
     provider_hint: &Option<String>,
     selected_auth_id: Option<&str>,
-) -> Vec<usize> {
+) -> Vec<Arc<dyn Provider>> {
     let model_providers = state.model_registry.get_model_providers(model_id).await;
-    let provider_entries = {
+    let providers = {
         let providers = state.providers.read().await;
-        providers
-            .iter()
-            .map(|provider| (provider.name().to_string(), provider.client_id().to_string()))
-            .collect::<Vec<_>>()
-    };
-
-    let candidates: Vec<usize> = if let Some(hint) = provider_hint {
-        provider_entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (name, _))| name.eq_ignore_ascii_case(hint))
-            .map(|(i, _)| i)
-            .collect()
-    } else if !model_providers.is_empty() {
-        provider_entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (name, _))| {
-                model_providers
-                    .iter()
-                    .any(|mp| mp.eq_ignore_ascii_case(name))
-            })
-            .map(|(i, _)| i)
-            .collect()
-    } else {
-        (0..provider_entries.len()).collect()
+        providers.iter().cloned().collect::<Vec<_>>()
     };
 
     let mut available_candidates = Vec::new();
-    for idx in candidates {
-        let client_id = &provider_entries[idx].1;
+    for provider in providers {
+        if let Some(hint) = provider_hint {
+            if !provider.provider_type().eq_ignore_ascii_case(hint) {
+                continue;
+            }
+        } else if !model_providers.is_empty()
+            && !model_providers
+                .iter()
+                .any(|provider_name| provider_name.eq_ignore_ascii_case(provider.provider_type()))
+        {
+            continue;
+        }
 
+        let client_id = provider.client_id();
         if let Some(selected) = selected_auth_id {
             if !client_id.eq_ignore_ascii_case(selected) {
                 continue;
@@ -628,7 +813,7 @@ async fn resolve_candidates_for_model(
             .client_is_effectively_available(client_id, model_id)
             .await
         {
-            available_candidates.push(idx);
+            available_candidates.push(provider);
         }
     }
 
@@ -638,7 +823,7 @@ async fn resolve_candidates_for_model(
 async fn execute_candidates(
     state: Arc<ProxyState>,
     req: &ChatCompletionRequest,
-    candidates: Vec<usize>,
+    candidates: Vec<Arc<dyn Provider>>,
     is_stream: bool,
     execution_session_id: Option<&str>,
 ) -> Result<Response, AppError> {
@@ -653,25 +838,21 @@ async fn execute_candidates(
         let config = state.config.read().await;
         config.request_retry.max(1) as usize
     };
+    let candidate_indices: Vec<usize> = (0..candidates.len()).collect();
     let start_idx = {
         let balancer = state.balancer.read().await;
-        balancer.pick(&candidates)
+        balancer.pick(&candidate_indices)
     };
-    let start_pos = candidates.iter().position(|&c| c == start_idx).unwrap_or(0);
-    let ordered: Vec<usize> = (0..candidates.len())
-        .map(|i| candidates[(start_pos + i) % candidates.len()])
+    let start_pos = candidate_indices
+        .iter()
+        .position(|&candidate_index| candidate_index == start_idx)
+        .unwrap_or(0);
+    let ordered: Vec<Arc<dyn Provider>> = (0..candidates.len())
+        .map(|offset| candidates[(start_pos + offset) % candidates.len()].clone())
         .collect();
     let mut last_error = None;
 
-    let providers = {
-        let providers = state.providers.read().await;
-        ordered
-            .iter()
-            .filter_map(|&idx| providers.get(idx).cloned())
-            .collect::<Vec<_>>()
-    };
-
-    for provider in providers {
+    for provider in ordered {
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));

@@ -132,6 +132,7 @@ impl StubProvider {
             result: StubCompletionResult::QuotaExceeded(message.to_string()),
         }
     }
+
 }
 
 #[async_trait]
@@ -2188,6 +2189,7 @@ async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstr
     let resp = request_task.await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
 
 #[tokio::test]
 async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() {
