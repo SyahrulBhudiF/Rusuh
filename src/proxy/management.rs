@@ -1240,12 +1240,12 @@ async fn check_codex_quota(
         );
     };
 
-    let response = probe_codex_quota(record).await;
+    let response = probe_codex_quota(&_state, record).await;
     (StatusCode::OK, Json(response))
 }
 
 /// Probe Codex upstream API to check quota status.
-async fn probe_codex_quota(mut record: AuthRecord) -> Value {
+async fn probe_codex_quota(state: &Arc<ProxyState>, mut record: AuthRecord) -> Value {
     let account = codex_account_id_from_record(&record);
     let base_url = codex_base_url_from_record(&record);
     let plan_type = record
@@ -1283,34 +1283,30 @@ async fn probe_codex_quota(mut record: AuthRecord) -> Value {
 
         match refresh_tokens_with_retry(&reqwest::Client::new(), refresh_token, 3).await {
             Ok(refreshed) => {
-                let refreshed_at = chrono::Utc::now().to_rfc3339();
-                record
-                    .metadata
-                    .insert("type".to_string(), json!("codex"));
-                record
-                    .metadata
-                    .insert("provider_key".to_string(), json!("codex"));
-                record
-                    .metadata
-                    .insert("id_token".to_string(), json!(refreshed.id_token));
-                record
-                    .metadata
-                    .insert("access_token".to_string(), json!(refreshed.access_token));
-                record
-                    .metadata
-                    .insert("refresh_token".to_string(), json!(refreshed.refresh_token));
-                record
-                    .metadata
-                    .insert("account_id".to_string(), json!(refreshed.account_id));
-                record
-                    .metadata
-                    .insert("email".to_string(), json!(refreshed.email));
-                record
-                    .metadata
-                    .insert("expired".to_string(), json!(refreshed.expired));
-                record
-                    .metadata
-                    .insert("last_refresh".to_string(), json!(refreshed_at));
+                if let Err(error) = apply_refreshed_codex_record(state, &record.id, &refreshed).await {
+                    return json!({
+                        "account": account,
+                        "status": "error",
+                        "upstream_status": 0,
+                        "detail": format!("failed to persist refreshed codex token: {error}"),
+                        "plan_type": plan_type,
+                    });
+                }
+
+                match state.accounts.get_by_id(&record.id).await {
+                    Some(updated_record) => {
+                        record = updated_record;
+                    }
+                    None => {
+                        return json!({
+                            "account": account,
+                            "status": "error",
+                            "upstream_status": 0,
+                            "detail": "codex auth record disappeared after refresh",
+                            "plan_type": plan_type,
+                        });
+                    }
+                }
             }
             Err(error) => {
                 return json!({
@@ -1450,6 +1446,60 @@ async fn probe_codex_quota(mut record: AuthRecord) -> Value {
             response
         }
     }
+}
+
+async fn apply_refreshed_codex_record(
+    state: &Arc<ProxyState>,
+    record_id: &str,
+    refreshed: &crate::auth::codex::CodexTokenData,
+) -> Result<(), String> {
+    let refreshed_at = chrono::Utc::now();
+    let refreshed_at_rfc3339 = refreshed_at.to_rfc3339();
+    let updated = state
+        .accounts
+        .update(record_id, |record| {
+            record.provider = "codex".to_string();
+            record.provider_key = "codex".to_string();
+            record.last_refreshed_at = Some(refreshed_at);
+            record
+                .metadata
+                .insert("type".to_string(), json!("codex"));
+            record
+                .metadata
+                .insert("provider_key".to_string(), json!("codex"));
+            record
+                .metadata
+                .insert("id_token".to_string(), json!(refreshed.id_token));
+            record
+                .metadata
+                .insert("access_token".to_string(), json!(refreshed.access_token));
+            record
+                .metadata
+                .insert("refresh_token".to_string(), json!(refreshed.refresh_token));
+            record
+                .metadata
+                .insert("account_id".to_string(), json!(refreshed.account_id));
+            record
+                .metadata
+                .insert("email".to_string(), json!(refreshed.email));
+            record
+                .metadata
+                .insert("expired".to_string(), json!(refreshed.expired));
+            record
+                .metadata
+                .insert("last_refresh".to_string(), json!(refreshed_at_rfc3339.clone()));
+            record
+                .metadata
+                .insert("last_refreshed_at".to_string(), json!(refreshed_at_rfc3339.clone()));
+        })
+        .await
+        .map_err(|error| format!("update codex auth record: {error}"))?;
+
+    if !updated {
+        return Err(format!("codex auth record not found: {record_id}"));
+    }
+
+    refresh_runtime_after_auth_change(state).await
 }
 
 fn codex_usage_url(base_url: &str) -> String {
@@ -2390,5 +2440,114 @@ fn normalize_zed_limit(value: Option<&Value>) -> Value {
         }
         Some(v) => v.clone(),
         None => json!(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_refreshed_codex_record;
+    use crate::auth::manager::AccountManager;
+    use crate::auth::store::{AuthRecord, AuthStatus};
+    use crate::config::Config;
+    use crate::proxy::ProxyState;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn codex_record(dir: &std::path::Path, id: &str) -> AuthRecord {
+        let now = chrono::Utc::now();
+        let mut metadata = HashMap::new();
+        metadata.insert("type".to_string(), json!("codex"));
+        metadata.insert("provider_key".to_string(), json!("codex"));
+        metadata.insert("access_token".to_string(), json!("old-access-token"));
+        metadata.insert("refresh_token".to_string(), json!("old-refresh-token"));
+        metadata.insert("id_token".to_string(), json!("old-id-token"));
+        metadata.insert("account_id".to_string(), json!("acct_old"));
+        metadata.insert("email".to_string(), json!("old@example.com"));
+        metadata.insert("expired".to_string(), json!("2020-01-01T00:00:00Z"));
+        metadata.insert("last_refresh".to_string(), json!("2020-01-01T00:00:00Z"));
+        metadata.insert("base_url".to_string(), json!("http://127.0.0.1:9/codex"));
+
+        AuthRecord {
+            id: id.to_string(),
+            provider: "codex".to_string(),
+            provider_key: "codex".to_string(),
+            label: "old@example.com".to_string(),
+            disabled: false,
+            status: AuthStatus::Active,
+            status_message: None,
+            last_refreshed_at: Some(now),
+            path: dir.join(id),
+            metadata,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_refreshed_codex_record_updates_memory_and_disk() {
+        let dir = TempDir::new().expect("create temp dir");
+        let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+        let record = codex_record(dir.path(), "codex-refresh.json");
+        accounts
+            .store()
+            .save(&record)
+            .await
+            .expect("save initial codex record");
+        accounts.reload().await.expect("reload accounts");
+
+        let state = Arc::new(ProxyState::new(
+            Config {
+                auth_dir: dir.path().to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            accounts.clone(),
+            Arc::new(crate::providers::model_registry::ModelRegistry::new()),
+            0,
+        ));
+
+        let refreshed = crate::auth::codex::CodexTokenData {
+            id_token: "new-id-token".to_string(),
+            access_token: "new-access-token".to_string(),
+            refresh_token: "new-refresh-token".to_string(),
+            account_id: "acct_new".to_string(),
+            email: "new@example.com".to_string(),
+            expired: "2035-01-01T00:00:00Z".to_string(),
+        };
+
+        apply_refreshed_codex_record(&state, "codex-refresh.json", &refreshed)
+            .await
+            .expect("apply refreshed codex record");
+
+        let updated = state
+            .accounts
+            .get_by_id("codex-refresh.json")
+            .await
+            .expect("updated record in memory");
+        assert_eq!(updated.metadata.get("access_token"), Some(&json!("new-access-token")));
+        assert_eq!(updated.metadata.get("refresh_token"), Some(&json!("new-refresh-token")));
+        assert_eq!(updated.metadata.get("id_token"), Some(&json!("new-id-token")));
+        assert_eq!(updated.metadata.get("account_id"), Some(&json!("acct_new")));
+        assert_eq!(updated.metadata.get("email"), Some(&json!("new@example.com")));
+        assert_eq!(updated.metadata.get("expired"), Some(&json!("2035-01-01T00:00:00Z")));
+        assert_eq!(updated.provider, "codex");
+        assert_eq!(updated.provider_key, "codex");
+        assert!(updated.metadata.contains_key("last_refresh"));
+        assert!(updated.metadata.contains_key("last_refreshed_at"));
+
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(PathBuf::from(dir.path()).join("codex-refresh.json"))
+                .expect("read saved auth file"),
+        )
+        .expect("parse saved auth file");
+        assert_eq!(saved["access_token"], "new-access-token");
+        assert_eq!(saved["refresh_token"], "new-refresh-token");
+        assert_eq!(saved["id_token"], "new-id-token");
+        assert_eq!(saved["account_id"], "acct_new");
+        assert_eq!(saved["email"], "new@example.com");
+        assert_eq!(saved["expired"], "2035-01-01T00:00:00Z");
+        assert!(saved.get("last_refresh").is_some());
+        assert!(saved.get("last_refreshed_at").is_some());
     }
 }
