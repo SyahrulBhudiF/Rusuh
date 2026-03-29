@@ -299,7 +299,7 @@ impl Provider for BlockingProvider {
     }
 
     async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
-        self.list_started.notify_waiters();
+        self.list_started.notify_one();
         self.list_release.notified().await;
         Ok(self.models.clone())
     }
@@ -308,7 +308,7 @@ impl Provider for BlockingProvider {
         &self,
         req: &ChatCompletionRequest,
     ) -> rusuh::error::AppResult<ChatCompletionResponse> {
-        self.chat_started.notify_waiters();
+        self.chat_started.notify_one();
         self.chat_release.notified().await;
 
         Ok(ChatCompletionResponse {
@@ -2128,4 +2128,66 @@ async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstr
 
     let resp = request_task.await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+    let provider = BlockingProvider::new(
+        "codex",
+        &["gpt-5-codex"],
+        list_started.clone(),
+        list_release.clone(),
+        chat_started.clone(),
+        chat_release.clone(),
+    );
+
+    let list_task = tokio::spawn({
+        let provider = provider;
+        async move { provider.list_models().await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::timeout(std::time::Duration::from_millis(50), list_started.notified())
+        .await
+        .expect("list_started signal should be retained for a later waiter");
+    list_release.notify_waiters();
+    assert!(list_task.await.unwrap().is_ok());
+
+    let provider = BlockingProvider::new(
+        "codex",
+        &["gpt-5-codex"],
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        chat_started.clone(),
+        chat_release.clone(),
+    );
+    let req = ChatCompletionRequest {
+        model: "gpt-5-codex".to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        stream: None,
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        tools: None,
+        tool_choice: None,
+        stop: None,
+        extra: std::collections::HashMap::new(),
+    };
+
+    let chat_task = tokio::spawn(async move { provider.chat_completion(&req).await });
+    tokio::task::yield_now().await;
+    tokio::time::timeout(std::time::Duration::from_millis(50), chat_started.notified())
+        .await
+        .expect("chat_started signal should be retained for a later waiter");
+    chat_release.notify_waiters();
+    assert!(chat_task.await.unwrap().is_ok());
 }
