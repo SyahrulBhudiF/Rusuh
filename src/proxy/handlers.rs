@@ -274,14 +274,32 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
         .to_string();
 
     let input = body.get("input").cloned().unwrap_or(Value::Null);
-    let text = match input {
-        Value::String(s) => s,
-        Value::Null => String::new(),
+    let messages = match input {
+        Value::String(s) => vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text(s),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        Value::Null => vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text(String::new()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
         Value::Array(items) => {
-            let mut segments = Vec::new();
+            let mut messages = Vec::with_capacity(items.len());
             for (idx, item) in items.into_iter().enumerate() {
                 match item {
-                    Value::String(s) => segments.push(s),
+                    Value::String(s) => messages.push(ChatMessage {
+                        role: "user".to_string(),
+                        content: MessageContent::Text(s),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    }),
                     Value::Object(map) => {
                         let text = map
                             .get("text")
@@ -303,7 +321,24 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
                                     "responses input array item {idx} must be a string or object with a text string"
                                 ))
                             })?;
-                        segments.push(text.to_string());
+                        let role = match map.get("role").and_then(Value::as_str) {
+                            Some("system") => "system",
+                            Some("developer") => "developer",
+                            Some("assistant") => "assistant",
+                            Some("tool") => "tool",
+                            Some("user") | None => "user",
+                            Some(other) => other,
+                        };
+                        messages.push(ChatMessage {
+                            role: role.to_string(),
+                            content: MessageContent::Text(text.to_string()),
+                            name: map.get("name").and_then(Value::as_str).map(str::to_string),
+                            tool_calls: map.get("tool_calls").and_then(Value::as_array).cloned(),
+                            tool_call_id: map
+                                .get("tool_call_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        });
                     }
                     _ => {
                         return Err(AppError::BadRequest(format!(
@@ -312,7 +347,7 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
                     }
                 }
             }
-            segments.join("\n")
+            messages
         }
         _ => {
             return Err(AppError::BadRequest(
@@ -334,13 +369,7 @@ fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, 
 
     Ok(ChatCompletionRequest {
         model,
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: MessageContent::Text(text),
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-        }],
+        messages,
         stream,
         max_tokens: None,
         temperature: None,
@@ -394,27 +423,75 @@ mod tests {
     }
 
     #[test]
-    fn responses_body_accepts_array_items_with_nested_content_text() {
+    fn responses_body_preserves_array_message_boundaries_and_metadata() {
         let request = responses_body_to_chat_request(json!({
             "model": "claude-sonnet-4.6",
             "input": [
                 "hello",
                 {
-                    "role": "user",
+                    "role": "system",
                     "content": [
                         {"type": "input_image", "image_url": "ignored"},
                         {"type": "input_text", "text": "from nested content"}
                     ]
+                },
+                {
+                    "role": "developer",
+                    "text": "planner note",
+                    "name": "planner"
+                },
+                {
+                    "role": "assistant",
+                    "text": "calling tool",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}
+                        }
+                    ]
+                },
+                {
+                    "role": "tool",
+                    "text": "tool result",
+                    "tool_call_id": "call_1"
                 }
             ]
         }))
-        .expect("nested content text should be accepted");
+        .expect("array input should preserve message boundaries and metadata");
 
-        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages.len(), 5);
+
+        assert_eq!(request.messages[0].role, "user");
         match &request.messages[0].content {
-            MessageContent::Text(text) => {
-                assert_eq!(text, "hello\nfrom nested content");
-            }
+            MessageContent::Text(text) => assert_eq!(text, "hello"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+
+        assert_eq!(request.messages[1].role, "system");
+        match &request.messages[1].content {
+            MessageContent::Text(text) => assert_eq!(text, "from nested content"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+
+        assert_eq!(request.messages[2].role, "developer");
+        assert_eq!(request.messages[2].name.as_deref(), Some("planner"));
+        match &request.messages[2].content {
+            MessageContent::Text(text) => assert_eq!(text, "planner note"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+
+        assert_eq!(request.messages[3].role, "assistant");
+        assert_eq!(request.messages[3].tool_calls.as_ref().map(Vec::len), Some(1));
+        match &request.messages[3].content {
+            MessageContent::Text(text) => assert_eq!(text, "calling tool"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+
+        assert_eq!(request.messages[4].role, "tool");
+        assert_eq!(request.messages[4].tool_call_id.as_deref(), Some("call_1"));
+        match &request.messages[4].content {
+            MessageContent::Text(text) => assert_eq!(text, "tool result"),
             other => panic!("expected text content, got {other:?}"),
         }
     }
