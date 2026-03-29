@@ -253,6 +253,7 @@ fn basic_chat_request(model: &str) -> serde_json::Value {
 #[derive(Debug)]
 struct BlockingProvider {
     name: &'static str,
+    client_id: String,
     models: Vec<ModelInfo>,
     list_started: Arc<Notify>,
     list_release: Arc<Notify>,
@@ -263,6 +264,7 @@ struct BlockingProvider {
 impl BlockingProvider {
     fn new(
         name: &'static str,
+        client_id: impl Into<String>,
         model_ids: &[&str],
         list_started: Arc<Notify>,
         list_release: Arc<Notify>,
@@ -271,6 +273,7 @@ impl BlockingProvider {
     ) -> Self {
         Self {
             name,
+            client_id: client_id.into(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -295,7 +298,7 @@ impl Provider for BlockingProvider {
     }
 
     fn client_id(&self) -> &str {
-        self.name
+        self.client_id.as_str()
     }
 
     async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
@@ -2025,6 +2028,21 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
     );
 }
 
+#[test]
+fn blocking_provider_uses_explicit_client_id() {
+    let provider = BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    );
+
+    assert_eq!(provider.client_id(), "codex_0");
+}
+
 #[tokio::test]
 async fn provider_models_request_does_not_hold_providers_lock_while_listing_models() {
     let list_started = Arc::new(Notify::new());
@@ -2034,6 +2052,7 @@ async fn provider_models_request_does_not_hold_providers_lock_while_listing_mode
 
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         list_started.clone(),
         list_release.clone(),
@@ -2080,6 +2099,7 @@ async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstr
 
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         list_started,
         list_release,
@@ -2138,6 +2158,7 @@ async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() 
     let chat_release = Arc::new(Notify::new());
     let provider = BlockingProvider::new(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         list_started.clone(),
         list_release.clone(),
@@ -2158,6 +2179,7 @@ async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() 
 
     let provider = BlockingProvider::new(
         "codex",
+        "codex_0",
         &["gpt-5-codex"],
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
