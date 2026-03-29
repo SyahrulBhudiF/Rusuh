@@ -1,3 +1,4 @@
+use crate::auth::codex_runtime::{parse_codex_retry_after_seconds, refresh_tokens_with_retry, token_needs_refresh};
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, DEFAULT_REGION};
 use crate::auth::kiro_login::SocialAuthClient;
 use crate::auth::kiro_record::KiroRecordInput;
@@ -6,6 +7,7 @@ use crate::auth::zed::{canonical_zed_login_filename, zed_user_ids_match};
 use crate::auth::zed_callback::start_callback_server;
 use crate::auth::zed_login::{build_login_url, decrypt_credential, generate_keypair};
 use crate::auth::zed_session::{cleanup_expired_sessions, ZedLoginSession, ZedLoginSessionStatus};
+use crate::error::AppError;
 use crate::proxy::ProxyState;
 
 async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> Result<(), String> {
@@ -22,7 +24,7 @@ async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> Result<()
 }
 use axum::{
     extract::{ConnectInfo, Query, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch},
@@ -30,7 +32,9 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE, USER_AGENT};
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1145,6 +1149,68 @@ struct RefreshedToken {
     expires_at: String,
 }
 
+const CODEX_DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const CODEX_VERSION: &str = "0.101.0";
+const CODEX_ORIGINATOR: &str = "codex_cli_rs";
+const CODEX_USER_AGENT: &str = "codex_cli_rs/0.101.0";
+
+fn codex_base_url_from_record(record: &AuthRecord) -> String {
+    record
+        .metadata
+        .get("base_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CODEX_DEFAULT_BASE_URL)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn codex_account_id_from_record(record: &AuthRecord) -> String {
+    record
+        .metadata
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(record.id.as_str())
+        .to_string()
+}
+
+fn build_codex_headers(
+    access_token: &str,
+    account_id: &str,
+    accept: &str,
+) -> Result<HeaderMap, AppError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|error| AppError::Auth(format!("invalid authorization header: {error}")))?,
+    );
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_str(accept)
+            .map_err(|error| AppError::Auth(format!("invalid accept header: {error}")))?,
+    );
+    headers.insert(CONNECTION, HeaderValue::from_static("Keep-Alive"));
+    headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
+    headers.insert(
+        "chatgpt-account-id",
+        HeaderValue::from_str(account_id)
+            .map_err(|error| AppError::Auth(format!("invalid account id header: {error}")))?,
+    );
+    headers.insert(
+        "session_id",
+        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+            .map_err(|error| AppError::Auth(format!("invalid session header: {error}")))?,
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static(CODEX_USER_AGENT));
+    headers.insert("version", HeaderValue::from_static(CODEX_VERSION));
+    Ok(headers)
+}
+
 // ── Codex quota check ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1154,7 +1220,7 @@ struct CheckCodexQuotaBody {
 
 /// `POST /v0/management/codex/check-quota` — check quota for a Codex auth file.
 async fn check_codex_quota(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
     Json(body): Json<CheckCodexQuotaBody>,
 ) -> impl IntoResponse {
     let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
@@ -1162,75 +1228,146 @@ async fn check_codex_quota(
         Err(e) => return e,
     };
 
-    // Find the auth record
-    let accounts = state.accounts.accounts_for("codex").await;
+    let accounts = _state.accounts.accounts_for("codex").await;
     let record = accounts
         .iter()
         .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
 
-    let Some(record) = record else {
+    let Some(record) = record.cloned() else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "Codex auth file not found"})),
         );
     };
 
-    // Extract account_id, access_token, optional base_url, and optional plan_type from metadata
-    let account_id = record
-        .metadata
-        .get("account_id")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&record.id);
+    let response = probe_codex_quota(record).await;
+    (StatusCode::OK, Json(response))
+}
 
-    let access_token = record.access_token().unwrap_or("");
-
-    if access_token.is_empty() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Codex auth file missing access_token"})),
-        );
-    }
-
-    let base_url = record
-        .metadata
-        .get("base_url")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("https://api.openai.com/v1");
-
+/// Probe Codex upstream API to check quota status.
+async fn probe_codex_quota(mut record: AuthRecord) -> Value {
+    let account = codex_account_id_from_record(&record);
+    let base_url = codex_base_url_from_record(&record);
     let plan_type = record
         .metadata
         .get("plan_type")
         .and_then(|value| value.as_str())
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
 
-    // Probe upstream /v1/models endpoint
-    let response = probe_codex_quota(account_id, access_token, base_url, plan_type).await;
+    let expired = record
+        .metadata
+        .get("expired")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if token_needs_refresh(expired, chrono::Utc::now()) {
+        let refresh_token = match record
+            .metadata
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => value,
+            None => {
+                return json!({
+                    "account": account,
+                    "status": "error",
+                    "upstream_status": 0,
+                    "detail": "codex auth file missing refresh_token",
+                    "plan_type": plan_type,
+                });
+            }
+        };
 
-    (StatusCode::OK, Json(response))
-}
+        match refresh_tokens_with_retry(&reqwest::Client::new(), refresh_token, 3).await {
+            Ok(refreshed) => {
+                let refreshed_at = chrono::Utc::now().to_rfc3339();
+                record
+                    .metadata
+                    .insert("type".to_string(), json!("codex"));
+                record
+                    .metadata
+                    .insert("provider_key".to_string(), json!("codex"));
+                record
+                    .metadata
+                    .insert("id_token".to_string(), json!(refreshed.id_token));
+                record
+                    .metadata
+                    .insert("access_token".to_string(), json!(refreshed.access_token));
+                record
+                    .metadata
+                    .insert("refresh_token".to_string(), json!(refreshed.refresh_token));
+                record
+                    .metadata
+                    .insert("account_id".to_string(), json!(refreshed.account_id));
+                record
+                    .metadata
+                    .insert("email".to_string(), json!(refreshed.email));
+                record
+                    .metadata
+                    .insert("expired".to_string(), json!(refreshed.expired));
+                record
+                    .metadata
+                    .insert("last_refresh".to_string(), json!(refreshed_at));
+            }
+            Err(error) => {
+                return json!({
+                    "account": account,
+                    "status": "error",
+                    "upstream_status": 0,
+                    "detail": format!("refresh failed: {error}"),
+                    "plan_type": plan_type,
+                });
+            }
+        }
+    }
 
-/// Probe Codex upstream API to check quota status.
-async fn probe_codex_quota(
-    account: &str,
-    access_token: &str,
-    base_url: &str,
-    plan_type: Option<&str>,
-) -> Value {
-    let http_client = reqwest::Client::new();
-    let models_url = format!("{}/models", base_url.trim_end_matches('/'));
+    let access_token = record.access_token().unwrap_or("");
+    if access_token.is_empty() {
+        return json!({
+            "account": account,
+            "status": "error",
+            "upstream_status": 0,
+            "detail": "codex auth file missing access_token",
+            "plan_type": plan_type,
+        });
+    }
 
-    let result = http_client
-        .get(&models_url)
-        .timeout(Duration::from_secs(5))
-        .header("authorization", format!("Bearer {}", access_token))
-        .header("content-type", "application/json")
-        .send()
-        .await;
+    let usage_url = codex_usage_url(&base_url);
+
+    let headers = match build_codex_headers(access_token, &account, "application/json") {
+        Ok(headers) => headers,
+        Err(error) => {
+            return json!({
+                "account": account,
+                "status": "error",
+                "upstream_status": 0,
+                "detail": format!("request setup failed: {error}"),
+                "plan_type": plan_type,
+            });
+        }
+    };
+
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "account": account,
+                "status": "error",
+                "upstream_status": 0,
+                "detail": format!("request setup failed: {error}"),
+                "plan_type": plan_type,
+            });
+        }
+    };
+
+    let result = client.get(&usage_url).headers(headers).send().await;
 
     match result {
         Ok(resp) => {
@@ -1239,11 +1376,7 @@ async fn probe_codex_quota(
             let body_json: Value = serde_json::from_str(&body_text).unwrap_or_else(|_| json!({}));
 
             if let Some(retry_after_secs) =
-                crate::auth::codex_runtime::parse_codex_retry_after_seconds(
-                    status,
-                    &body_json,
-                    chrono::Utc::now(),
-                )
+                parse_codex_retry_after_seconds(status, &body_json, chrono::Utc::now())
             {
                 let mut response = json!({
                     "account": account,
@@ -1251,7 +1384,6 @@ async fn probe_codex_quota(
                     "upstream_status": status,
                     "retry_after_seconds": retry_after_secs,
                 });
-
                 if let Some(error_msg) = body_json
                     .get("error")
                     .and_then(|error| error.get("message"))
@@ -1261,25 +1393,24 @@ async fn probe_codex_quota(
                 {
                     response["detail"] = json!(error_msg);
                 }
-
-                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                if let Some(plan_type) = plan_type.as_deref() {
                     response["plan_type"] = json!(plan_type);
                 }
-
                 return response;
             }
 
             if status == StatusCode::OK.as_u16() {
                 let mut response = json!({
                     "account": account,
-                    "status": "available",
+                    "status": codex_usage_status(&body_json),
                     "upstream_status": status,
                 });
-
-                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
-                    response["plan_type"] = json!(plan_type);
+                merge_codex_usage_fields(&mut response, &body_json);
+                if response.get("plan_type").is_none() {
+                    if let Some(plan_type) = plan_type.as_deref() {
+                        response["plan_type"] = json!(plan_type);
+                    }
                 }
-
                 response
             } else {
                 let detail = body_json
@@ -1288,6 +1419,10 @@ async fn probe_codex_quota(
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|message| !message.is_empty())
+                    .or_else(|| {
+                        let trimmed = body_text.trim();
+                        (!trimmed.is_empty()).then_some(trimmed)
+                    })
                     .unwrap_or("upstream error");
 
                 let mut response = json!({
@@ -1296,11 +1431,9 @@ async fn probe_codex_quota(
                     "upstream_status": status,
                     "detail": detail,
                 });
-
-                if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+                if let Some(plan_type) = plan_type.as_deref() {
                     response["plan_type"] = json!(plan_type);
                 }
-
                 response
             }
         }
@@ -1308,17 +1441,78 @@ async fn probe_codex_quota(
             let mut response = json!({
                 "account": account,
                 "status": "error",
-                "detail": format!("request failed: {error}"),
+                "detail": summarize_codex_transport_error(&error),
                 "upstream_status": 0,
             });
-
-            if let Some(plan_type) = plan_type.filter(|value| !value.trim().is_empty()) {
+            if let Some(plan_type) = plan_type.as_deref() {
                 response["plan_type"] = json!(plan_type);
             }
-
             response
         }
     }
+}
+
+fn codex_usage_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if let Some(prefix) = trimmed.strip_suffix("/codex") {
+        return format!("{prefix}/wham/usage");
+    }
+    format!("{trimmed}/wham/usage")
+}
+
+fn codex_usage_status(body_json: &Value) -> &'static str {
+    let rate_limit_reached = body_json
+        .get("rate_limit")
+        .and_then(|value| value.get("limit_reached"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let review_limit_reached = body_json
+        .get("code_review_rate_limit")
+        .and_then(|value| value.get("limit_reached"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if rate_limit_reached || review_limit_reached {
+        "exhausted"
+    } else {
+        "available"
+    }
+}
+
+fn merge_codex_usage_fields(response: &mut Value, body_json: &Value) {
+    for key in [
+        "user_id",
+        "account_id",
+        "email",
+        "plan_type",
+        "rate_limit",
+        "code_review_rate_limit",
+        "additional_rate_limits",
+        "credits",
+        "spend_control",
+        "promo",
+    ] {
+        if let Some(value) = body_json.get(key) {
+            response[key] = value.clone();
+        }
+    }
+
+    if body_json.is_object() && !body_json.as_object().is_some_and(|obj| obj.is_empty()) {
+        response["raw_response"] = body_json.clone();
+    }
+}
+
+fn summarize_codex_transport_error(error: &reqwest::Error) -> String {
+    let mut parts = vec![format!("request failed: {error}")];
+    let mut current = error.source();
+    while let Some(source) = current {
+        let rendered = source.to_string();
+        if !rendered.is_empty() && !parts.iter().any(|part| part.contains(&rendered)) {
+            parts.push(rendered);
+        }
+        current = source.source();
+    }
+    parts.join(" | caused by: ")
 }
 
 /// `DELETE /v0/management/auth-files` — delete auth file(s).

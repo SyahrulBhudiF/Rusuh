@@ -54,6 +54,22 @@ type ProviderGroup = {
   items: ManagementAuthFile[]
 }
 
+function codexWindowLabel(windowSeconds?: number) {
+  if (windowSeconds === 18000) return '5-hour limit'
+  if (windowSeconds === 604800) return 'Weekly limit'
+  return 'Usage limit'
+}
+
+function remainingPercent(usedPercent?: number) {
+  if (usedPercent === undefined) return undefined
+  return Math.max(0, 100 - usedPercent)
+}
+
+function formatResetAt(epochSeconds?: number) {
+  if (epochSeconds === undefined) return undefined
+  return new Date(epochSeconds * 1000).toLocaleString()
+}
+
 function providerLabel(key: string) {
   if (key === 'kiro') return 'Kiro'
   if (key === 'antigravity') return 'Antigravity'
@@ -434,6 +450,65 @@ export function AccountsPage() {
                                     {codexQuotaResults[item.id].plan_type ? (
                                       <p className='text-muted-foreground mt-1 text-xs'>
                                         Plan: {codexQuotaResults[item.id].plan_type}
+                                      </p>
+                                    ) : null}
+                                    {codexQuotaResults[item.id].rate_limit?.primary_window ? (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        {codexWindowLabel(
+                                          codexQuotaResults[item.id].rate_limit?.primary_window
+                                            ?.limit_window_seconds,
+                                        )}
+                                        :{' '}
+                                        {remainingPercent(
+                                          codexQuotaResults[item.id].rate_limit?.primary_window
+                                            ?.used_percent,
+                                        )}
+                                        % remaining
+                                        {formatResetAt(
+                                          codexQuotaResults[item.id].rate_limit?.primary_window
+                                            ?.reset_at,
+                                        )
+                                          ? ` · resets at ${formatResetAt(
+                                              codexQuotaResults[item.id].rate_limit?.primary_window
+                                                ?.reset_at,
+                                            )}`
+                                          : ''}
+                                      </p>
+                                    ) : null}
+                                    {codexQuotaResults[item.id].rate_limit?.secondary_window ? (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        Weekly limit: {remainingPercent(
+                                          codexQuotaResults[item.id].rate_limit?.secondary_window
+                                            ?.used_percent,
+                                        )}
+                                        % remaining
+                                        {formatResetAt(
+                                          codexQuotaResults[item.id].rate_limit?.secondary_window
+                                            ?.reset_at,
+                                        )
+                                          ? ` · resets at ${formatResetAt(
+                                              codexQuotaResults[item.id].rate_limit?.secondary_window
+                                                ?.reset_at,
+                                            )}`
+                                          : ''}
+                                      </p>
+                                    ) : null}
+                                    {codexQuotaResults[item.id].code_review_rate_limit?.primary_window ? (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        Code review weekly limit: {remainingPercent(
+                                          codexQuotaResults[item.id].code_review_rate_limit
+                                            ?.primary_window?.used_percent,
+                                        )}
+                                        % remaining
+                                        {formatResetAt(
+                                          codexQuotaResults[item.id].code_review_rate_limit
+                                            ?.primary_window?.reset_at,
+                                        )
+                                          ? ` · resets at ${formatResetAt(
+                                              codexQuotaResults[item.id].code_review_rate_limit
+                                                ?.primary_window?.reset_at,
+                                            )}`
+                                          : ''}
                                       </p>
                                     ) : null}
                                     {codexQuotaResults[item.id].detail ? (

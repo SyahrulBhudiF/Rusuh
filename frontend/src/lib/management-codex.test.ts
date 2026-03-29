@@ -24,7 +24,44 @@ describe('management-codex', () => {
         account: 'codex-user.json',
         status: 'available',
         upstream_status: 200,
-        plan_type: 'plus',
+        plan_type: 'team',
+        rate_limit: {
+          allowed: true,
+          limit_reached: false,
+          primary_window: {
+            used_percent: 5,
+            limit_window_seconds: 18000,
+            reset_after_seconds: 15247,
+            reset_at: 1774816656,
+          },
+          secondary_window: {
+            used_percent: 9,
+            limit_window_seconds: 604800,
+            reset_after_seconds: 583764,
+            reset_at: 1775385173,
+          },
+        },
+        code_review_rate_limit: {
+          allowed: true,
+          limit_reached: false,
+          primary_window: {
+            used_percent: 0,
+            limit_window_seconds: 604800,
+            reset_after_seconds: 604800,
+            reset_at: 1775406209,
+          },
+          secondary_window: null,
+        },
+        credits: {
+          has_credits: false,
+          unlimited: false,
+          balance: null,
+          approx_local_messages: null,
+          approx_cloud_messages: null,
+        },
+        spend_control: {
+          reached: false,
+        },
       }),
     )
     globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -35,7 +72,44 @@ describe('management-codex', () => {
       account: 'codex-user.json',
       status: 'available',
       upstream_status: 200,
-      plan_type: 'plus',
+      plan_type: 'team',
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          used_percent: 5,
+          limit_window_seconds: 18000,
+          reset_after_seconds: 15247,
+          reset_at: 1774816656,
+        },
+        secondary_window: {
+          used_percent: 9,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 583764,
+          reset_at: 1775385173,
+        },
+      },
+      code_review_rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          used_percent: 0,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 604800,
+          reset_at: 1775406209,
+        },
+        secondary_window: null,
+      },
+      credits: {
+        has_credits: false,
+        unlimited: false,
+        balance: null,
+        approx_local_messages: null,
+        approx_cloud_messages: null,
+      },
+      spend_control: {
+        reached: false,
+      },
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
