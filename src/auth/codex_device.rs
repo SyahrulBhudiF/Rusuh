@@ -425,10 +425,22 @@ impl CodexDeviceEndpoints {
 
 /// Codex device-login entrypoint.
 pub async fn device_login(store: &FileTokenStore) -> AppResult<DeviceLoginResult> {
-    let endpoints = match std::env::var("RUSUH_CODEX_AUTH_BASE_URL") {
-        Ok(base_url) => CodexDeviceEndpoints::from_auth_base_url(&base_url)?,
-        Err(_) => CodexDeviceEndpoints::production(),
-    };
+    match std::env::var("RUSUH_CODEX_AUTH_BASE_URL") {
+        Ok(base_url) => device_login_with_base_url(store, &base_url).await,
+        Err(_) => {
+            let endpoints = CodexDeviceEndpoints::production();
+            let client = build_device_login_client()?;
+
+            device_login_with_endpoints(store, &client, &endpoints).await
+        }
+    }
+}
+
+pub async fn device_login_with_base_url(
+    store: &FileTokenStore,
+    base_url: &str,
+) -> AppResult<DeviceLoginResult> {
+    let endpoints = CodexDeviceEndpoints::from_auth_base_url(base_url)?;
     let client = build_device_login_client()?;
 
     device_login_with_endpoints(store, &client, &endpoints).await

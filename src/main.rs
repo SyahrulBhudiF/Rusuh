@@ -103,9 +103,27 @@ fn resolve_auth_dir(cfg: &config::Config) -> PathBuf {
 }
 
 async fn run_codex_device_login(cfg: &config::Config) -> anyhow::Result<()> {
+    if let Ok(base_url) = std::env::var("RUSUH_CODEX_AUTH_BASE_URL") {
+        return run_codex_device_login_with_base_url(cfg, &base_url).await;
+    }
+
     let auth_dir = resolve_auth_dir(cfg);
     let store = auth::store::FileTokenStore::new(&auth_dir);
     let login = auth::codex_device::device_login(&store).await?;
+    println!(
+        "\n✓ Codex device credentials saved to: {}",
+        login.saved_path.display()
+    );
+    Ok(())
+}
+
+async fn run_codex_device_login_with_base_url(
+    cfg: &config::Config,
+    base_url: &str,
+) -> anyhow::Result<()> {
+    let auth_dir = resolve_auth_dir(cfg);
+    let store = auth::store::FileTokenStore::new(&auth_dir);
+    let login = auth::codex_device::device_login_with_base_url(&store, base_url).await?;
     println!(
         "\n✓ Codex device credentials saved to: {}",
         login.saved_path.display()
@@ -214,7 +232,7 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_config_or_default, run_codex_device_login};
+    use super::{load_config_or_default, run_codex_device_login_with_base_url};
     use tempfile::{NamedTempFile, TempDir};
 
     #[test]
@@ -248,7 +266,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_device_login_command_persists_credentials_from_real_device_endpoints() {
+    async fn codex_device_login_command_persists_credentials_from_explicit_base_url() {
         let temp = TempDir::new().expect("create temp dir");
         let cfg = rusuh::config::Config {
             auth_dir: temp.path().to_string_lossy().to_string(),
@@ -305,11 +323,8 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        std::env::set_var("RUSUH_CODEX_AUTH_BASE_URL", format!("http://{addr}"));
-
-        let login_result = run_codex_device_login(&cfg).await;
-
-        std::env::remove_var("RUSUH_CODEX_AUTH_BASE_URL");
+        let login_result =
+            run_codex_device_login_with_base_url(&cfg, &format!("http://{addr}")).await;
 
         login_result.expect("device login command should succeed");
 
