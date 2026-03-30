@@ -451,8 +451,10 @@ async fn try_route_with_model(
         None
     };
 
+    let runtime_snapshot = state.current_runtime_snapshot().await;
     let candidates = resolve_candidates_for_model(
         &state,
+        runtime_snapshot.clone(),
         &req.model,
         provider_hint,
         effective_selected_auth_id.as_deref(),
@@ -460,6 +462,7 @@ async fn try_route_with_model(
     .await;
     execute_candidates(
         state,
+        runtime_snapshot,
         req,
         candidates,
         is_stream,
@@ -503,8 +506,10 @@ async fn try_route_with_targets(
             None
         };
 
+        let runtime_snapshot = state.current_runtime_snapshot().await;
         let candidates = resolve_candidates_for_model(
             &state,
+            runtime_snapshot.clone(),
             target.model,
             &provider_hint,
             effective_selected_auth_id.as_deref(),
@@ -521,6 +526,7 @@ async fn try_route_with_targets(
 
         match execute_candidates(
             state.clone(),
+            runtime_snapshot,
             &upstream_req,
             candidates,
             is_stream,
@@ -547,11 +553,11 @@ async fn try_route_with_targets(
 
 async fn resolve_candidates_for_model(
     state: &ProxyState,
+    runtime_snapshot: Arc<crate::proxy::RuntimeSnapshot>,
     model_id: &str,
     provider_hint: &Option<String>,
     selected_auth_id: Option<&str>,
 ) -> Vec<Arc<dyn Provider>> {
-    let runtime_snapshot = state.current_runtime_snapshot().await;
     let model_providers = runtime_snapshot.model_providers(model_id);
     let providers = runtime_snapshot.providers().to_vec();
 
@@ -594,6 +600,7 @@ async fn resolve_candidates_for_model(
 
 async fn execute_candidates(
     state: Arc<ProxyState>,
+    runtime_snapshot: Arc<crate::proxy::RuntimeSnapshot>,
     req: &ChatCompletionRequest,
     candidates: Vec<Arc<dyn Provider>>,
     is_stream: bool,
@@ -611,7 +618,6 @@ async fn execute_candidates(
         config.request_retry.max(1) as usize
     };
     let candidate_indices: Vec<usize> = (0..candidates.len()).collect();
-    let runtime_snapshot = state.current_runtime_snapshot().await;
     let start_idx = runtime_snapshot.balancer().pick(&candidate_indices);
     let start_pos = candidate_indices
         .iter()
@@ -1003,8 +1009,10 @@ mod tests {
         ];
         let state = test_state(registry.clone(), initial_providers).await;
 
+        let runtime_snapshot = state.current_runtime_snapshot().await;
         let candidates = resolve_candidates_for_model(
             &state,
+            runtime_snapshot.clone(),
             model_id,
             &Some("codex".to_string()),
             Some("auth-first"),
@@ -1026,6 +1034,7 @@ mod tests {
 
         let response = execute_candidates(
             state.clone(),
+            runtime_snapshot,
             &test_request(model_id),
             candidates,
             false,
@@ -1090,5 +1099,105 @@ mod tests {
 
         assert_eq!(json["choices"][0]["message"]["content"], "first");
         assert_eq!(calls.lock().await.as_slice(), &["auth-first"]);
+    }
+
+    #[tokio::test]
+    async fn execute_candidates_keeps_balancer_order_from_resolved_runtime_snapshot() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Arc::new(crate::providers::model_registry::ModelRegistry::new());
+        let model_id = "gpt-5-codex";
+
+        registry
+            .register_client(
+                "auth-first",
+                "codex",
+                vec![ext_model(model_id, "codex", "codex")],
+            )
+            .await;
+        registry
+            .register_client(
+                "auth-second",
+                "codex",
+                vec![ext_model(model_id, "codex", "codex")],
+            )
+            .await;
+
+        let initial_providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-first",
+                model_id,
+                response_label: "first",
+                calls: calls.clone(),
+            }),
+            Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-second",
+                model_id,
+                response_label: "second",
+                calls: calls.clone(),
+            }),
+        ];
+        let state = test_state(registry.clone(), initial_providers).await;
+
+        let resolved_snapshot = state.current_runtime_snapshot().await;
+        resolved_snapshot.balancer().pick(&[0, 1]);
+
+        let resolved_runtime_snapshot = state.current_runtime_snapshot().await;
+        let candidates = resolve_candidates_for_model(
+            &state,
+            resolved_runtime_snapshot.clone(),
+            model_id,
+            &Some("codex".to_string()),
+            None,
+        )
+        .await;
+        assert_eq!(candidates.len(), 2);
+
+        state
+            .publish_runtime_from_providers(vec![
+                Arc::new(TestProvider {
+                    name: "codex",
+                    client_id: "auth-new-first",
+                    model_id,
+                    response_label: "new-first",
+                    calls: calls.clone(),
+                }),
+                Arc::new(TestProvider {
+                    name: "codex",
+                    client_id: "auth-new-second",
+                    model_id,
+                    response_label: "new-second",
+                    calls: calls.clone(),
+                }),
+                Arc::new(TestProvider {
+                    name: "codex",
+                    client_id: "auth-new-third",
+                    model_id,
+                    response_label: "new-third",
+                    calls: calls.clone(),
+                }),
+            ])
+            .await
+            .expect("replacement providers should publish");
+
+        let response = execute_candidates(
+            state.clone(),
+            resolved_runtime_snapshot,
+            &test_request(model_id),
+            candidates,
+            false,
+            None,
+        )
+            .await
+            .expect("execution should keep using the resolved candidate order");
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("response should be valid json");
+
+        assert_eq!(json["choices"][0]["message"]["content"], "second");
+        assert_eq!(calls.lock().await.as_slice(), &["auth-second"]);
     }
 }
