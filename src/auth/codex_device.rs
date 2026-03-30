@@ -363,6 +363,14 @@ pub fn codex_device_approval_url(payload: &DeviceUserCodeResponse) -> &str {
         .unwrap_or(payload.verification_uri.as_str())
 }
 
+fn codex_device_manual_approval_message(payload: &DeviceUserCodeResponse) -> String {
+    format!(
+        "Failed to open your browser automatically. Please open your browser manually and complete the device login.\nApproval URL: {}\nUser code: {}",
+        codex_device_approval_url(payload),
+        payload.user_code
+    )
+}
+
 /// Codex device user-code endpoint.
 pub const DEVICE_USER_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 /// Codex device token polling endpoint.
@@ -460,7 +468,13 @@ pub async fn device_login_with_endpoints(
 
     let countdown_secs = user_code.countdown_start_secs;
     let approval_url = codex_device_approval_url(&user_code);
-    let _ = open::that(approval_url);
+    if let Err(error) = open::that(approval_url) {
+        let message = codex_device_manual_approval_message(&user_code);
+        tracing::warn!(
+            "failed to open Codex device approval URL automatically: {error}; {message}"
+        );
+        eprintln!("{message}");
+    }
 
     let poll_interval = Duration::from_secs(user_code.interval_secs.max(1));
     let poll_timeout = Duration::from_secs(countdown_secs.max(1)).min(DEVICE_LOGIN_TIMEOUT);
@@ -507,5 +521,22 @@ mod tests {
     fn device_login_client_matches_kiro_usage_checker_timeout_pattern() {
         let _client = build_device_login_client().expect("device login client should build");
         assert_eq!(DEVICE_LOGIN_HTTP_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn manual_approval_message_mentions_url_and_user_code() {
+        let user_code = parse_device_user_code_response(&serde_json::json!({
+            "device_auth_id": "dev_123",
+            "user_code": "ABC-123",
+            "verification_uri": "https://auth.openai.com/activate",
+            "interval": 5
+        }))
+        .expect("device user code should parse");
+
+        let message = codex_device_manual_approval_message(&user_code);
+
+        assert!(message.contains("open your browser manually"));
+        assert!(message.contains("https://auth.openai.com/activate"));
+        assert!(message.contains("ABC-123"));
     }
 }
