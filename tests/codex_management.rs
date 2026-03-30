@@ -82,7 +82,11 @@ async fn body_json(resp: axum::response::Response) -> Value {
 async fn mock_responses_handler(
     State(state): State<MockCodexQuotaState>,
     request: Request<Body>,
-) -> (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String) {
+) -> (
+    StatusCode,
+    [(axum::http::header::HeaderName, &'static str); 1],
+    String,
+) {
     let headers = request.headers();
     let authorization = headers
         .get(AUTHORIZATION)
@@ -181,7 +185,10 @@ async fn spawn_codex_quota_server_with_body(
     };
 
     let app = Router::new()
-        .route("/wham/usage", get(mock_responses_handler).post(mock_responses_handler))
+        .route(
+            "/wham/usage",
+            get(mock_responses_handler).post(mock_responses_handler),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -357,11 +364,20 @@ async fn check_codex_quota_returns_available_for_usage_window_response() {
     assert_eq!(body["rate_limit"]["allowed"], true);
     assert_eq!(body["rate_limit"]["limit_reached"], false);
     assert_eq!(body["rate_limit"]["primary_window"]["used_percent"], 5);
-    assert_eq!(body["rate_limit"]["primary_window"]["limit_window_seconds"], 18000);
-    assert_eq!(body["rate_limit"]["primary_window"]["reset_after_seconds"], 15247);
+    assert_eq!(
+        body["rate_limit"]["primary_window"]["limit_window_seconds"],
+        18000
+    );
+    assert_eq!(
+        body["rate_limit"]["primary_window"]["reset_after_seconds"],
+        15247
+    );
     assert_eq!(body["rate_limit"]["primary_window"]["reset_at"], 1774816656);
     assert_eq!(body["rate_limit"]["secondary_window"]["used_percent"], 9);
-    assert_eq!(body["code_review_rate_limit"]["primary_window"]["used_percent"], 0);
+    assert_eq!(
+        body["code_review_rate_limit"]["primary_window"]["used_percent"],
+        0
+    );
     assert_eq!(body["credits"]["has_credits"], false);
     assert_eq!(body["spend_control"]["reached"], false);
     assert_eq!(body["raw_response"]["account_id"], "test-account");

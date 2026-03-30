@@ -92,12 +92,12 @@ impl OAuthServer {
                 self.port
             ))
         })?;
-        let bound_addr = listener
-            .local_addr()
-            .map_err(|error| AppError::Auth(format!("failed to read oauth listener address: {error}")))?;
-        listener
-            .set_nonblocking(false)
-            .map_err(|error| AppError::Auth(format!("failed to configure oauth listener: {error}")))?;
+        let bound_addr = listener.local_addr().map_err(|error| {
+            AppError::Auth(format!("failed to read oauth listener address: {error}"))
+        })?;
+        listener.set_nonblocking(false).map_err(|error| {
+            AppError::Auth(format!("failed to configure oauth listener: {error}"))
+        })?;
 
         self.running.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.bound_addr.lock() {

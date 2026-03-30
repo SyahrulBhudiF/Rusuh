@@ -106,7 +106,10 @@ async fn run_codex_device_login(cfg: &config::Config) -> anyhow::Result<()> {
     let auth_dir = resolve_auth_dir(cfg);
     let store = auth::store::FileTokenStore::new(&auth_dir);
     let login = auth::codex_device::device_login(&store).await?;
-    println!("\n✓ Codex device credentials saved to: {}", login.saved_path.display());
+    println!(
+        "\n✓ Codex device credentials saved to: {}",
+        login.saved_path.display()
+    );
     Ok(())
 }
 
@@ -175,59 +178,23 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
         }
     }
 
-    // Build providers from loaded accounts + config
-    let providers = providers::registry::build_providers(
-        &cfg,
-        &account_mgr,
-        model_registry.clone(),
-        kiro_runtime.clone(),
-    )
-    .await;
-    // Register all provider models
-    for provider in &providers {
-        let client_id = provider.client_id().to_string();
-        match provider.list_models().await {
-            Ok(models) => {
-                let ext_models: Vec<_> = models
-                    .iter()
-                    .map(|m| providers::model_info::ExtModelInfo {
-                        id: m.id.clone(),
-                        object: m.object.clone(),
-                        created: m.created,
-                        owned_by: m.owned_by.clone(),
-                        provider_type: provider.provider_type().to_string(),
-                        display_name: Some(m.id.clone()),
-                        name: None,
-                        version: None,
-                        description: None,
-                        input_token_limit: 0,
-                        output_token_limit: 0,
-                        supported_generation_methods: vec![],
-                        context_length: 0,
-                        max_completion_tokens: 0,
-                        supported_parameters: vec![],
-                        thinking: None,
-                        user_defined: false,
-                    })
-                    .collect();
-                model_registry
-                    .register_client(&client_id, provider.provider_type(), ext_models)
+    let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, 0);
+    state.kiro_runtime = kiro_runtime;
+    let state = Arc::new(state);
+
+    match state.rebuild_runtime_snapshot().await {
+        Ok(replacement_models) => {
+            for (client_id, (provider_name, ext_models)) in replacement_models {
+                state
+                    .model_registry
+                    .register_client(&client_id, &provider_name, ext_models)
                     .await;
             }
-            Err(e) => {
-                tracing::warn!("failed to list models from {}: {e}", provider.provider_type());
-            }
+        }
+        Err(error) => {
+            tracing::warn!("failed to build initial runtime snapshot: {error}");
         }
     }
-
-    let provider_count = providers.len();
-    let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, provider_count);
-    state.kiro_runtime = kiro_runtime;
-    {
-        let mut providers_guard = state.providers.write().await;
-        *providers_guard = providers;
-    }
-    let state = Arc::new(state);
 
     info!("Rusuh starting on http://{}", addr);
 

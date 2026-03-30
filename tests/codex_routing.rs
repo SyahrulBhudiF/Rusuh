@@ -157,9 +157,14 @@ fn test_state_with_providers(
     providers: Vec<Arc<dyn Provider>>,
 ) -> Arc<ProxyState> {
     let accounts = Arc::new(AccountManager::with_dir("/tmp/rusuh_test_nonexistent"));
-    let mut state = ProxyState::new(cfg, accounts, registry, providers.len());
-    state.providers = tokio::sync::RwLock::new(providers);
-    Arc::new(state)
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, providers.len()));
+    futures::executor::block_on(async {
+        state
+            .publish_runtime_from_providers(providers)
+            .await
+            .expect("test providers should publish");
+    });
+    state
 }
 
 #[tokio::test]

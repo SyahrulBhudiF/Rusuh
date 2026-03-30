@@ -410,8 +410,12 @@ async fn codex_chat_completion_times_out_for_slow_upstream() {
             "finish_reason": "stop"
         }]
     });
-    let (base_url, _seen_body) =
-        spawn_codex_mock_server_with_delay(non_stream, vec!["data: [DONE]\n\n".to_string()], Some(Duration::from_secs(35))).await;
+    let (base_url, _seen_body) = spawn_codex_mock_server_with_delay(
+        non_stream,
+        vec!["data: [DONE]\n\n".to_string()],
+        Some(Duration::from_secs(35)),
+    )
+    .await;
 
     let provider =
         match rusuh::providers::codex::CodexProvider::new(codex_provider_record(&base_url)) {

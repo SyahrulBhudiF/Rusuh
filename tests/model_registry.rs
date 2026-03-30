@@ -36,7 +36,12 @@ fn make_model(id: &str, provider: &str) -> ExtModelInfo {
 async fn spawn_failing_antigravity_models_server() -> String {
     let app = Router::new().route(
         "/v1internal:fetchAvailableModels",
-        post(|| async { (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "boom"}))) }),
+        post(|| async {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "boom"})),
+            )
+        }),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -116,7 +121,12 @@ async fn spawn_failing_zed_server() -> String {
     let app = Router::new()
         .route(
             "/client/llm_tokens",
-            post(|| async { (StatusCode::OK, Json(serde_json::json!({"token": "bad-token"}))) }),
+            post(|| async {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"token": "bad-token"})),
+                )
+            }),
         )
         .route(
             "/models",
@@ -178,10 +188,10 @@ async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_l
         state.kiro_runtime.clone(),
     )
     .await;
-    {
-        let mut providers = state.providers.write().await;
-        *providers = existing_providers;
-    }
+    state
+        .publish_runtime_from_providers(existing_providers)
+        .await
+        .unwrap();
 
     state.refresh_provider_runtime().await.unwrap();
 
@@ -207,31 +217,33 @@ async fn refresh_provider_runtime_removes_orphaned_clients() {
         .await;
 
     let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
-    {
-        let mut providers = state.providers.write().await;
-        *providers = vec![Arc::new(rusuh::providers::antigravity::AntigravityProvider::new(
-            rusuh::auth::store::AuthRecord {
-                id: "antigravity-test.json".to_string(),
-                provider: "antigravity".to_string(),
-                provider_key: "antigravity".to_string(),
-                label: "test@example.com".to_string(),
-                disabled: false,
-                status: rusuh::auth::store::AuthStatus::Active,
-                status_message: None,
-                last_refreshed_at: None,
-                path: dir.path().join("antigravity-test.json"),
-                metadata: std::collections::HashMap::from([
-                    ("type".to_string(), serde_json::json!("antigravity")),
-                    ("provider_key".to_string(), serde_json::json!("antigravity")),
-                    ("email".to_string(), serde_json::json!("test@example.com")),
-                    ("access_token".to_string(), serde_json::json!("ya29.test")),
-                    ("refresh_token".to_string(), serde_json::json!("1//test")),
-                    ("project_id".to_string(), serde_json::json!("test-project")),
-                ]),
-                updated_at: chrono::Utc::now(),
-            },
-        ))];
-    }
+    state
+        .publish_runtime_from_providers(vec![Arc::new(
+            rusuh::providers::antigravity::AntigravityProvider::new(
+                rusuh::auth::store::AuthRecord {
+                    id: "antigravity-test.json".to_string(),
+                    provider: "antigravity".to_string(),
+                    provider_key: "antigravity".to_string(),
+                    label: "test@example.com".to_string(),
+                    disabled: false,
+                    status: rusuh::auth::store::AuthStatus::Active,
+                    status_message: None,
+                    last_refreshed_at: None,
+                    path: dir.path().join("antigravity-test.json"),
+                    metadata: std::collections::HashMap::from([
+                        ("type".to_string(), serde_json::json!("antigravity")),
+                        ("provider_key".to_string(), serde_json::json!("antigravity")),
+                        ("email".to_string(), serde_json::json!("test@example.com")),
+                        ("access_token".to_string(), serde_json::json!("ya29.test")),
+                        ("refresh_token".to_string(), serde_json::json!("1//test")),
+                        ("project_id".to_string(), serde_json::json!("test-project")),
+                    ]),
+                    updated_at: chrono::Utc::now(),
+                },
+            ),
+        )])
+        .await
+        .unwrap();
 
     state.refresh_provider_runtime().await.unwrap();
 
@@ -305,7 +317,8 @@ async fn refresh_provider_runtime_does_not_register_partial_replacement_before_f
 }
 
 #[tokio::test]
-async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_provider_ids_change() {
+async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_provider_ids_change(
+) {
     let dir = TempDir::new().unwrap();
     let first_auth = serde_json::json!({
         "type": "codex",
@@ -340,7 +353,10 @@ async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_
     state.refresh_provider_runtime().await.unwrap();
 
     assert_eq!(
-        state.execution_sessions.get_selected_auth("session-stale").await,
+        state
+            .execution_sessions
+            .get_selected_auth("session-stale")
+            .await,
         None
     );
     assert!(registry.has_client("codex-first.json").await);
@@ -406,7 +422,11 @@ async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_pr
         "base_url": second_base_url,
         "expired": "2030-01-01T00:00:00Z"
     });
-    std::fs::write(&second_path, serde_json::to_string_pretty(&second_auth).unwrap()).unwrap();
+    std::fs::write(
+        &second_path,
+        serde_json::to_string_pretty(&second_auth).unwrap(),
+    )
+    .unwrap();
     accounts.reload().await.unwrap();
 
     state.refresh_provider_runtime().await.unwrap();
@@ -427,7 +447,9 @@ async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_pr
     }
     assert!(registry.has_client("antigravity-first.json").await);
     assert!(
-        !provider_ids.iter().any(|client_id| client_id == "antigravity-second.json"),
+        !provider_ids
+            .iter()
+            .any(|client_id| client_id == "antigravity-second.json"),
         "providers should come from the stale first refresh"
     );
     assert!(

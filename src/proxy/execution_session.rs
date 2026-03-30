@@ -11,6 +11,12 @@ pub struct ExecutionSessionStore {
     selected_auth_by_session: Cache<String, String>,
 }
 
+impl Default for ExecutionSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExecutionSessionStore {
     pub fn new() -> Self {
         Self::with_limits(
@@ -54,13 +60,17 @@ impl ExecutionSessionStore {
         }
 
         for session_id in stale_sessions {
-            self.selected_auth_by_session.invalidate(session_id.as_str());
+            self.selected_auth_by_session
+                .invalidate(session_id.as_str());
         }
 
         self.selected_auth_by_session.run_pending_tasks();
     }
 
-    pub async fn invalidate_unknown_selected_auths(&self, valid_selected_auth_ids: &HashSet<String>) {
+    pub async fn invalidate_unknown_selected_auths(
+        &self,
+        valid_selected_auth_ids: &HashSet<String>,
+    ) {
         let mut stale_sessions = Vec::new();
 
         for (session_id, cached_auth_id) in self.selected_auth_by_session.iter() {
@@ -73,7 +83,8 @@ impl ExecutionSessionStore {
         }
 
         for session_id in stale_sessions {
-            self.selected_auth_by_session.invalidate(session_id.as_str());
+            self.selected_auth_by_session
+                .invalidate(session_id.as_str());
         }
 
         self.selected_auth_by_session.run_pending_tasks();
@@ -93,7 +104,10 @@ mod tests {
         store
             .set_selected_auth("session-a".to_string(), "codex_0".to_string())
             .await;
-        assert_eq!(store.get_selected_auth("session-a").await, Some("codex_0".to_string()));
+        assert_eq!(
+            store.get_selected_auth("session-a").await,
+            Some("codex_0".to_string())
+        );
 
         tokio::time::sleep(Duration::from_millis(40)).await;
 
@@ -112,6 +126,9 @@ mod tests {
             .await;
 
         assert_eq!(store.get_selected_auth("session-a").await, None);
-        assert_eq!(store.get_selected_auth("session-b").await, Some("codex_1".to_string()));
+        assert_eq!(
+            store.get_selected_auth("session-b").await,
+            Some("codex_1".to_string())
+        );
     }
 }

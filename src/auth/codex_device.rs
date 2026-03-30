@@ -380,7 +380,11 @@ fn build_device_login_client() -> AppResult<Client> {
         .timeout(DEVICE_LOGIN_HTTP_TIMEOUT)
         // .connect_timeout(Duration::from_secs(5))
         .build()
-        .map_err(|error| AppError::Auth(format!("failed to build codex device login client: {error}")))
+        .map_err(|error| {
+            AppError::Auth(format!(
+                "failed to build codex device login client: {error}"
+            ))
+        })
 }
 
 /// Device endpoints used by Codex device login.

@@ -132,7 +132,6 @@ impl StubProvider {
             result: StubCompletionResult::QuotaExceeded(message.to_string()),
         }
     }
-
 }
 
 #[async_trait]
@@ -257,9 +256,14 @@ fn test_state_with_providers(
     providers: Vec<Arc<dyn Provider>>,
 ) -> Arc<ProxyState> {
     let accounts = Arc::new(AccountManager::with_dir("/tmp/rusuh_test_nonexistent"));
-    let mut state = ProxyState::new(cfg, accounts, registry, providers.len());
-    state.providers = tokio::sync::RwLock::new(providers);
-    Arc::new(state)
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, providers.len()));
+    futures::executor::block_on(async {
+        state
+            .publish_runtime_from_providers(providers)
+            .await
+            .expect("test providers should publish");
+    });
+    state
 }
 
 fn basic_chat_request(model: &str) -> serde_json::Value {
@@ -361,7 +365,6 @@ impl Provider for BlockingProvider {
         unreachable!("streaming is not used in this test")
     }
 }
-
 
 #[tokio::test]
 async fn health_always_accessible() {
@@ -604,8 +607,11 @@ async fn public_claude_sonnet_4_6_does_not_use_kiro_alias_routing() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     let body = serde_json::json!({
         "model": "claude-sonnet-4.6",
@@ -844,8 +850,11 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Request with generic "claude-sonnet-4.6" name
     let body = serde_json::json!({
@@ -1187,8 +1196,11 @@ async fn kiro_routing_skips_quota_exceeded_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should use kiro_1, not kiro_0
     let body = serde_json::json!({
@@ -1323,8 +1335,11 @@ async fn kiro_routing_skips_suspended_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should use kiro_1, not kiro_0
     let body = serde_json::json!({
@@ -1435,8 +1450,11 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = tokio::sync::RwLock::new(providers);
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should return error
     let body = serde_json::json!({
@@ -2190,7 +2208,6 @@ async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstr
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-
 #[tokio::test]
 async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() {
     let list_started = Arc::new(Notify::new());
@@ -2207,14 +2224,14 @@ async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() 
         chat_release.clone(),
     );
 
-    let list_task = tokio::spawn({
-        let provider = provider;
-        async move { provider.list_models().await }
-    });
+    let list_task = tokio::spawn(async move { provider.list_models().await });
     tokio::task::yield_now().await;
-    tokio::time::timeout(std::time::Duration::from_millis(50), list_started.notified())
-        .await
-        .expect("list_started signal should be retained for a later waiter");
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        list_started.notified(),
+    )
+    .await
+    .expect("list_started signal should be retained for a later waiter");
     list_release.notify_waiters();
     assert!(list_task.await.unwrap().is_ok());
 
@@ -2248,9 +2265,12 @@ async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() 
 
     let chat_task = tokio::spawn(async move { provider.chat_completion(&req).await });
     tokio::task::yield_now().await;
-    tokio::time::timeout(std::time::Duration::from_millis(50), chat_started.notified())
-        .await
-        .expect("chat_started signal should be retained for a later waiter");
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        chat_started.notified(),
+    )
+    .await
+    .expect("chat_started signal should be retained for a later waiter");
     chat_release.notify_waiters();
     assert!(chat_task.await.unwrap().is_ok());
 }

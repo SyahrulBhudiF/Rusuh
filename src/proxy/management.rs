@@ -1,4 +1,6 @@
-use crate::auth::codex_runtime::{parse_codex_retry_after_seconds, refresh_tokens_with_retry, token_needs_refresh};
+use crate::auth::codex_runtime::{
+    parse_codex_retry_after_seconds, refresh_tokens_with_retry, token_needs_refresh,
+};
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, DEFAULT_REGION};
 use crate::auth::kiro_login::SocialAuthClient;
 use crate::auth::kiro_record::KiroRecordInput;
@@ -11,11 +13,8 @@ use crate::error::{AppError, AppResult};
 use crate::proxy::ProxyState;
 
 async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> AppResult<()> {
-    state.accounts.reload().await.map_err(AppError::from)?;
-    state
-        .refresh_provider_runtime()
-        .await
-        .map_err(AppError::from)?;
+    state.accounts.reload().await?;
+    state.refresh_provider_runtime().await?;
     Ok(())
 }
 use axum::{
@@ -26,9 +25,9 @@ use axum::{
     routing::{get, patch},
     Json, Router,
 };
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE, USER_AGENT};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE, USER_AGENT};
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::net::{IpAddr, SocketAddr};
@@ -243,11 +242,11 @@ async fn rate_limit(req: Request, next: Next) -> Response {
 
 async fn status(State(state): State<Arc<ProxyState>>) -> Json<Value> {
     let cfg = state.config.read().await;
-    let providers = state.providers.read().await;
+    let provider_count = state.current_runtime_snapshot().await.provider_count();
     Json(json!({
         "status": "running",
         "port": cfg.port,
-        "providers": providers.len(),
+        "providers": provider_count,
     }))
 }
 
@@ -1279,7 +1278,9 @@ async fn probe_codex_quota(state: &Arc<ProxyState>, mut record: AuthRecord) -> V
 
         match refresh_tokens_with_retry(&reqwest::Client::new(), refresh_token, 3).await {
             Ok(refreshed) => {
-                if let Err(error) = apply_refreshed_codex_record(state, &record.id, &refreshed).await {
+                if let Err(error) =
+                    apply_refreshed_codex_record(state, &record.id, &refreshed).await
+                {
                     return json!({
                         "account": account,
                         "status": "error",
@@ -1458,9 +1459,7 @@ async fn apply_refreshed_codex_record(
             record.provider = "codex".to_string();
             record.provider_key = "codex".to_string();
             record.last_refreshed_at = Some(refreshed_at);
-            record
-                .metadata
-                .insert("type".to_string(), json!("codex"));
+            record.metadata.insert("type".to_string(), json!("codex"));
             record
                 .metadata
                 .insert("provider_key".to_string(), json!("codex"));
@@ -1482,18 +1481,24 @@ async fn apply_refreshed_codex_record(
             record
                 .metadata
                 .insert("expired".to_string(), json!(refreshed.expired));
-            record
-                .metadata
-                .insert("last_refresh".to_string(), json!(refreshed_at_rfc3339.clone()));
-            record
-                .metadata
-                .insert("last_refreshed_at".to_string(), json!(refreshed_at_rfc3339.clone()));
+            record.metadata.insert(
+                "last_refresh".to_string(),
+                json!(refreshed_at_rfc3339.clone()),
+            );
+            record.metadata.insert(
+                "last_refreshed_at".to_string(),
+                json!(refreshed_at_rfc3339.clone()),
+            );
         })
         .await
-        .map_err(|error| AppError::Internal(anyhow::anyhow!("update codex auth record: {error}")))?;
+        .map_err(|error| {
+            AppError::Internal(anyhow::anyhow!("update codex auth record: {error}"))
+        })?;
 
     if !updated {
-        return Err(AppError::NotFound(format!("codex auth record not found: {record_id}")));
+        return Err(AppError::NotFound(format!(
+            "codex auth record not found: {record_id}"
+        )));
     }
 
     refresh_runtime_after_auth_change(state).await
@@ -2527,12 +2532,27 @@ mod tests {
             .get_by_id("codex-refresh.json")
             .await
             .expect("updated record in memory");
-        assert_eq!(updated.metadata.get("access_token"), Some(&json!("new-access-token")));
-        assert_eq!(updated.metadata.get("refresh_token"), Some(&json!("new-refresh-token")));
-        assert_eq!(updated.metadata.get("id_token"), Some(&json!("new-id-token")));
+        assert_eq!(
+            updated.metadata.get("access_token"),
+            Some(&json!("new-access-token"))
+        );
+        assert_eq!(
+            updated.metadata.get("refresh_token"),
+            Some(&json!("new-refresh-token"))
+        );
+        assert_eq!(
+            updated.metadata.get("id_token"),
+            Some(&json!("new-id-token"))
+        );
         assert_eq!(updated.metadata.get("account_id"), Some(&json!("acct_new")));
-        assert_eq!(updated.metadata.get("email"), Some(&json!("new@example.com")));
-        assert_eq!(updated.metadata.get("expired"), Some(&json!("2035-01-01T00:00:00Z")));
+        assert_eq!(
+            updated.metadata.get("email"),
+            Some(&json!("new@example.com"))
+        );
+        assert_eq!(
+            updated.metadata.get("expired"),
+            Some(&json!("2035-01-01T00:00:00Z"))
+        );
         assert_eq!(updated.provider, "codex");
         assert_eq!(updated.provider_key, "codex");
         assert!(updated.metadata.contains_key("last_refresh"));
@@ -2584,12 +2604,17 @@ mod tests {
         let stale_account = codex_account_id_from_record(&record);
         assert_eq!(stale_account, "acct_old");
 
-        record.metadata.insert("account_id".to_string(), json!("acct_new"));
+        record
+            .metadata
+            .insert("account_id".to_string(), json!("acct_new"));
 
         let headers_with_stale_account =
             build_codex_headers("access-token", &stale_account, "application/json")
                 .expect("stale headers should build");
-        assert_eq!(header_account_id(&headers_with_stale_account), Some("acct_old"));
+        assert_eq!(
+            header_account_id(&headers_with_stale_account),
+            Some("acct_old")
+        );
 
         let account = codex_account_id_from_record(&record);
         let headers = build_codex_headers("access-token", &account, "application/json")

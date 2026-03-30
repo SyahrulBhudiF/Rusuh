@@ -169,13 +169,13 @@ async fn build_overview(state: Arc<ProxyState>) -> DashboardOverview {
         .get_available_models("openai")
         .await
         .len();
-    let provider_names = {
-        let providers = state.providers.read().await;
-        providers
-            .iter()
-            .map(|provider| provider.name().to_string())
-            .collect::<Vec<_>>()
-    };
+    let provider_names = state
+        .current_runtime_snapshot()
+        .await
+        .providers()
+        .iter()
+        .map(|provider| provider.name().to_string())
+        .collect::<Vec<_>>();
     let routing_strategy = cfg.routing.strategy.clone();
     let api_key_count = cfg.api_keys.len();
 
@@ -250,13 +250,13 @@ async fn build_api_keys_payload(state: Arc<ProxyState>) -> DashboardApiKeysPaylo
 
 async fn build_config_payload(state: Arc<ProxyState>) -> DashboardConfigPayload {
     let cfg = state.config.read().await.clone();
-    let provider_names = {
-        let providers = state.providers.read().await;
-        providers
-            .iter()
-            .map(|provider| provider.name().to_string())
-            .collect::<Vec<_>>()
-    };
+    let provider_names = state
+        .current_runtime_snapshot()
+        .await
+        .providers()
+        .iter()
+        .map(|provider| provider.name().to_string())
+        .collect::<Vec<_>>();
 
     DashboardConfigPayload {
         host: cfg.host.clone(),

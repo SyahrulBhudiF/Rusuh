@@ -6,10 +6,10 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 use rusuh::auth::codex_device::{
-    CodexDeviceEndpoints, codex_device_approval_url, codex_device_is_success_status,
+    codex_device_approval_url, codex_device_is_success_status,
     parse_codex_device_countdown_start_secs, parse_codex_device_poll_interval_secs,
     parse_device_token_response, parse_device_user_code_response, poll_codex_device_token,
-    request_codex_device_user_code,
+    request_codex_device_user_code, CodexDeviceEndpoints,
 };
 use serde_json::{json, Value};
 use tokio::sync::Mutex;

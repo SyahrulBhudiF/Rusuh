@@ -73,7 +73,9 @@ async fn oauth_server_running_state_and_timeout_behavior() {
     server.start().expect("server start should succeed");
     assert!(server.is_running());
 
-    let addr = server.address().expect("server should expose bound address");
+    let addr = server
+        .address()
+        .expect("server should expose bound address");
     assert_ne!(addr.port(), 0);
 
     tokio::net::TcpStream::connect(addr)
