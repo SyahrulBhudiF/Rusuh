@@ -201,12 +201,15 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
     let state = Arc::new(state);
 
     match state.rebuild_runtime_snapshot().await {
-        Ok(replacement_models) => {
-            for (client_id, (provider_name, ext_models)) in replacement_models {
+        Ok((providers, replacement_models)) => {
+            for (client_id, (provider_name, ext_models)) in &replacement_models {
                 state
                     .model_registry
-                    .register_client(&client_id, &provider_name, ext_models)
+                    .register_client(client_id, provider_name, ext_models.clone())
                     .await;
+            }
+            if let Err(error) = state.publish_runtime_from_providers(providers).await {
+                tracing::warn!("failed to publish initial runtime snapshot: {error}");
             }
         }
         Err(error) => {

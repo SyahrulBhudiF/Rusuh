@@ -317,6 +317,48 @@ async fn refresh_provider_runtime_does_not_register_partial_replacement_before_f
 }
 
 #[tokio::test]
+async fn rebuild_runtime_snapshot_does_not_publish_before_registry_sync() {
+    let dir = TempDir::new().unwrap();
+    let antigravity_base_url = spawn_antigravity_models_server("gemini-2.5-flash").await;
+
+    let antigravity_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": antigravity_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&antigravity_json).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+
+    let (providers, replacement_models) = state
+        .rebuild_runtime_snapshot()
+        .await
+        .expect("rebuild should succeed");
+    let rebuilt_client_id = replacement_models
+        .keys()
+        .next()
+        .cloned()
+        .expect("rebuild should return one client");
+
+    assert_eq!(providers.len(), 1);
+    assert_eq!(replacement_models.len(), 1);
+    assert!(state.providers.read().await.is_empty());
+    assert!(!registry.has_client(&rebuilt_client_id).await);
+}
+
+#[tokio::test]
 async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_provider_ids_change(
 ) {
     let dir = TempDir::new().unwrap();

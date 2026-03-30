@@ -235,7 +235,7 @@ impl ProxyState {
 
     pub async fn rebuild_runtime_snapshot(
         &self,
-    ) -> AppResult<HashMap<String, (String, Vec<ExtModelInfo>)>> {
+    ) -> AppResult<(Vec<Arc<dyn Provider>>, HashMap<String, (String, Vec<ExtModelInfo>)>)> {
         let config = self.config.read().await.clone();
         let providers = crate::providers::registry::build_providers(
             &config,
@@ -244,7 +244,8 @@ impl ProxyState {
             self.kiro_runtime.clone(),
         )
         .await;
-        self.publish_runtime_from_providers(providers).await
+        let replacement_models = Self::collect_runtime_models(&providers).await?;
+        Ok((providers, replacement_models))
     }
 
     pub async fn refresh_provider_runtime(&self) -> AppResult<()> {
@@ -258,12 +259,12 @@ impl ProxyState {
             .map(|provider| provider.client_id().to_string())
             .collect::<Vec<_>>();
 
-        let replacement_models = self.rebuild_runtime_snapshot().await?;
+        let (providers, replacement_models) = self.rebuild_runtime_snapshot().await?;
         let replacement_client_ids: HashSet<String> = replacement_models.keys().cloned().collect();
 
-        for (client_id, (provider_name, ext_models)) in replacement_models {
+        for (client_id, (provider_name, ext_models)) in &replacement_models {
             self.model_registry
-                .register_client(&client_id, &provider_name, ext_models)
+                .register_client(client_id, provider_name, ext_models.clone())
                 .await;
         }
 
@@ -278,6 +279,8 @@ impl ProxyState {
         self.execution_sessions
             .invalidate_unknown_selected_auths(&replacement_client_ids)
             .await;
+
+        self.publish_runtime_from_providers(providers).await?;
 
         Ok(())
     }
