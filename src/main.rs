@@ -213,7 +213,7 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
             }
         }
         Err(error) => {
-            tracing::warn!("failed to build initial runtime snapshot: {error}");
+            return Err(error.into());
         }
     }
 
@@ -235,7 +235,7 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_config_or_default, run_codex_device_login_with_base_url};
+    use super::{load_config_or_default, run_codex_device_login_with_base_url, serve};
     use tempfile::{NamedTempFile, TempDir};
 
     #[test]
@@ -344,5 +344,61 @@ mod tests {
             .count();
 
         assert_eq!(saved_count, 1);
+    }
+
+    #[tokio::test]
+    async fn serve_returns_error_when_initial_runtime_snapshot_rebuild_fails() {
+        let temp = TempDir::new().expect("create temp dir");
+        let app = axum::Router::new().route(
+            "/v1internal:fetchAvailableModels",
+            axum::routing::post(|| async { (axum::http::StatusCode::OK, "not-json") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failing models server");
+        let addr = listener.local_addr().expect("read failing models addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let auth_json = serde_json::json!({
+            "type": "antigravity",
+            "provider_key": "antigravity",
+            "email": "test@example.com",
+            "access_token": "ya29.test",
+            "refresh_token": "1//test",
+            "project_id": "test-project",
+            "base_url": format!("http://{addr}"),
+            "expired": "2030-01-01T00:00:00Z"
+        });
+        std::fs::write(
+            temp.path().join("antigravity-test.json"),
+            serde_json::to_string_pretty(&auth_json).expect("serialize auth json"),
+        )
+        .expect("write auth file");
+
+        let cfg = rusuh::config::Config {
+            auth_dir: temp.path().to_string_lossy().to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            api_keys: vec!["rsk-test".to_string()],
+            ..Default::default()
+        };
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), serve(cfg)).await;
+        let error = result
+            .expect("serve should fail fast instead of starting the server")
+            .expect_err("serve should return an error when initial runtime snapshot rebuild fails");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("provider antigravity operation list_models failed"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains("parse models"),
+            "unexpected error: {error:#}"
+        );
     }
 }
