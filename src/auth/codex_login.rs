@@ -1,5 +1,6 @@
 //! Codex login helpers: PKCE, manual callback parsing, OAuth exchange, and CLI login flows.
 
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -55,6 +56,7 @@ pub struct OAuthServer {
     running: Arc<AtomicBool>,
     bound_addr: Arc<Mutex<Option<SocketAddr>>>,
     listener_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    callback_result: Arc<Mutex<Option<ManualCallbackResult>>>,
     /// Configured callback port.
     pub port: u16,
 }
@@ -66,6 +68,7 @@ impl OAuthServer {
             running: Arc::new(AtomicBool::new(false)),
             bound_addr: Arc::new(Mutex::new(None)),
             listener_thread: Arc::new(Mutex::new(None)),
+            callback_result: Arc::new(Mutex::new(None)),
             port,
         }
     }
@@ -103,13 +106,28 @@ impl OAuthServer {
         if let Ok(mut guard) = self.bound_addr.lock() {
             *guard = Some(bound_addr);
         }
+        if let Ok(mut guard) = self.callback_result.lock() {
+            *guard = None;
+        }
 
         let running = Arc::clone(&self.running);
+        let callback_result = Arc::clone(&self.callback_result);
         let handle = std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
-                        drop(stream);
+                    Ok((mut stream, _)) => {
+                        let parsed = read_callback_from_stream(&mut stream);
+                        let response = callback_http_response(parsed.is_ok());
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+
+                        if let Ok(callback) = parsed {
+                            if let Ok(mut guard) = callback_result.lock() {
+                                *guard = Some(callback);
+                            }
+                            running.store(false, Ordering::SeqCst);
+                            break;
+                        }
                     }
                     Err(_) => break,
                 }
@@ -156,8 +174,60 @@ impl OAuthServer {
             return Err(AppError::Auth("oauth server is not running".into()));
         }
 
-        tokio::time::sleep(timeout).await;
-        Err(AppError::Auth("oauth callback timeout".into()))
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Ok(mut guard) = self.callback_result.lock() {
+                if let Some(callback) = guard.take() {
+                    return Ok(callback);
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AppError::Auth("oauth callback timeout".into()));
+            }
+
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
+    }
+}
+
+fn read_callback_from_stream(stream: &mut TcpStream) -> AppResult<ManualCallbackResult> {
+    let mut buffer = [0u8; 4096];
+    let read = stream
+        .read(&mut buffer)
+        .map_err(|error| AppError::Auth(format!("failed to read oauth callback request: {error}")))?;
+    if read == 0 {
+        return Err(AppError::Auth("oauth callback request was empty".into()));
+    }
+
+    let request = std::str::from_utf8(&buffer[..read])
+        .map_err(|error| AppError::Auth(format!("oauth callback request was not valid utf-8: {error}")))?;
+    let request_line = request
+        .lines()
+        .next()
+        .ok_or_else(|| AppError::Auth("oauth callback request missing request line".into()))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| AppError::Auth("oauth callback request missing method".into()))?;
+    if method != "GET" {
+        return Err(AppError::Auth(format!(
+            "unsupported oauth callback method: {method}"
+        )));
+    }
+    let target = parts
+        .next()
+        .ok_or_else(|| AppError::Auth("oauth callback request missing target".into()))?;
+
+    let callback_url = format!("http://localhost{target}");
+    parse_manual_callback_url(&callback_url)
+}
+
+fn callback_http_response(ok: bool) -> &'static str {
+    if ok {
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nCodex login received. You can return to the CLI."
+    } else {
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nInvalid OAuth callback request."
     }
 }
 

@@ -91,6 +91,33 @@ async fn oauth_server_running_state_and_timeout_behavior() {
     assert!(!server.is_running());
 }
 
+#[tokio::test]
+async fn oauth_server_delivers_callback_query_to_waiter() {
+    let server = OAuthServer::new(0);
+    server.start().expect("server start should succeed");
+
+    let addr = server
+        .address()
+        .expect("server should expose bound address");
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect to oauth listener");
+    let request = b"GET /auth/callback?code=abc123&state=expected&error_description=nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    tokio::io::AsyncWriteExt::write_all(&mut stream, request)
+        .await
+        .expect("request should be written");
+
+    let callback = server
+        .wait_for_callback(std::time::Duration::from_millis(250))
+        .await
+        .expect("wait_for_callback should receive parsed callback data");
+
+    assert_eq!(callback.code.as_deref(), Some("abc123"));
+    assert_eq!(callback.state.as_deref(), Some("expected"));
+    assert_eq!(callback.error_description.as_deref(), Some("nope"));
+    assert!(!server.is_running());
+}
+
 #[test]
 fn codex_token_storage_and_update_preserve_field_names() {
     let bundle = CodexAuthBundle {
