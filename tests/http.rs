@@ -706,6 +706,16 @@ async fn responses_compact_endpoint_rejects_non_public_model_on_public_endpoint(
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+#[test]
+fn responses_compact_handler_documents_intentional_parity() {
+    let source = std::fs::read_to_string("src/proxy/handlers.rs").expect("read handlers source");
+
+    assert!(
+        source.contains("TODO: /v1/responses/compact currently matches /v1/responses intentionally"),
+        "responses_compact should document why it currently routes identically"
+    );
+}
+
 #[tokio::test]
 async fn gemini_models_endpoint() {
     let app = test_app(Config::default());

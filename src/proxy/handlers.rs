@@ -63,6 +63,8 @@ pub async fn responses_compact(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<Value>,
 ) -> Result<Response, AppError> {
+    // TODO: /v1/responses/compact currently matches /v1/responses intentionally
+    // until compact-specific response shaping is implemented in route_chat.
     let req = responses_body_to_chat_request(body)?;
     route_chat(state, req, None).await
 }
