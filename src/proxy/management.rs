@@ -1490,10 +1490,7 @@ async fn apply_refreshed_codex_record(
                 json!(refreshed_at_rfc3339.clone()),
             );
         })
-        .await
-        .map_err(|error| {
-            AppError::Internal(anyhow::anyhow!("update codex auth record: {error}"))
-        })?;
+        .await?;
 
     if !updated {
         return Err(AppError::NotFound(format!(
@@ -2489,6 +2486,56 @@ mod tests {
             path: dir.join(id),
             metadata,
             updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_refreshed_codex_record_update_failure_stays_typed() {
+        let dir = TempDir::new().expect("create temp dir");
+        let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+        let record = codex_record(dir.path(), "codex-refresh.json");
+        accounts
+            .store()
+            .save(&record)
+            .await
+            .expect("save initial codex record");
+        accounts.reload().await.expect("reload accounts");
+
+        let deleted_path = PathBuf::from(dir.path()).join("codex-refresh.json");
+        std::fs::remove_file(&deleted_path).expect("remove saved auth file");
+        std::fs::create_dir(&deleted_path).expect("replace auth file with directory");
+
+        let state = Arc::new(ProxyState::new(
+            Config {
+                auth_dir: dir.path().to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            accounts,
+            Arc::new(crate::providers::model_registry::ModelRegistry::new()),
+            0,
+        ));
+
+        let refreshed = crate::auth::codex::CodexTokenData {
+            id_token: "new-id-token".to_string(),
+            access_token: "new-access-token".to_string(),
+            refresh_token: "new-refresh-token".to_string(),
+            account_id: "acct_new".to_string(),
+            email: "new@example.com".to_string(),
+            expired: "2035-01-01T00:00:00Z".to_string(),
+        };
+
+        let error = apply_refreshed_codex_record(&state, "codex-refresh.json", &refreshed)
+            .await
+            .expect_err("directory-backed auth path should fail to persist");
+
+        match error {
+            AppError::Config(message) => {
+                assert!(
+                    message.contains("write auth file"),
+                    "unexpected config error: {message}"
+                );
+            }
+            other => panic!("expected AppError::Config, got {other}"),
         }
     }
 
