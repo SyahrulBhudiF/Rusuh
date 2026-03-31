@@ -44,9 +44,19 @@ impl ExecutionSessionStore {
         self.selected_auth_by_session.get(session_id)
     }
 
-    pub async fn set_selected_auth(&self, session_id: String, selected_auth_id: String) {
-        self.selected_auth_by_session
-            .insert(session_id, selected_auth_id);
+    pub async fn set_selected_auth(
+        &self,
+        session_id: String,
+        selected_auth_id: String,
+        selected_auth_is_active: bool,
+    ) {
+        if selected_auth_is_active {
+            self.selected_auth_by_session
+                .insert(session_id, selected_auth_id);
+        } else {
+            self.selected_auth_by_session
+                .invalidate(session_id.as_str());
+        }
         self.selected_auth_by_session.run_pending_tasks();
     }
 
@@ -102,7 +112,7 @@ mod tests {
         let store = ExecutionSessionStore::new_for_tests(16, Duration::from_millis(25));
 
         store
-            .set_selected_auth("session-a".to_string(), "codex_0".to_string())
+            .set_selected_auth("session-a".to_string(), "codex_0".to_string(), true)
             .await;
         assert_eq!(
             store.get_selected_auth("session-a").await,
@@ -119,10 +129,10 @@ mod tests {
         let store = ExecutionSessionStore::new_for_tests(1, Duration::from_secs(60));
 
         store
-            .set_selected_auth("session-a".to_string(), "codex_0".to_string())
+            .set_selected_auth("session-a".to_string(), "codex_0".to_string(), true)
             .await;
         store
-            .set_selected_auth("session-b".to_string(), "codex_1".to_string())
+            .set_selected_auth("session-b".to_string(), "codex_1".to_string(), true)
             .await;
 
         assert_eq!(store.get_selected_auth("session-a").await, None);

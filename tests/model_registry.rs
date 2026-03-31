@@ -389,6 +389,7 @@ async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_
         .set_selected_auth(
             "session-stale".to_string(),
             "codex-missing.json".to_string(),
+            true,
         )
         .await;
 

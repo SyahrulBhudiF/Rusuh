@@ -658,9 +658,21 @@ async fn execute_candidates(
                 Ok(resp) => {
                     if let Some(session_id) = execution_session_id {
                         let selected_auth_id = provider.client_id().to_string();
+                        let selected_auth_is_active = state
+                            .current_runtime_snapshot()
+                            .await
+                            .providers()
+                            .iter()
+                            .any(|provider| {
+                                provider.client_id().eq_ignore_ascii_case(&selected_auth_id)
+                            });
                         state
                             .execution_sessions
-                            .set_selected_auth(session_id.to_string(), selected_auth_id)
+                            .set_selected_auth(
+                                session_id.to_string(),
+                                selected_auth_id,
+                                selected_auth_is_active,
+                            )
                             .await;
                     }
                     return Ok(resp);
@@ -1199,5 +1211,81 @@ mod tests {
 
         assert_eq!(json["choices"][0]["message"]["content"], "second");
         assert_eq!(calls.lock().await.as_slice(), &["auth-second"]);
+    }
+
+    #[tokio::test]
+    async fn execute_candidates_does_not_reinsert_stale_selected_auth_after_runtime_refresh() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let registry = Arc::new(crate::providers::model_registry::ModelRegistry::new());
+        let model_id = "gpt-5-codex";
+
+        registry
+            .register_client(
+                "auth-first",
+                "codex",
+                vec![ext_model(model_id, "codex", "codex")],
+            )
+            .await;
+
+        let state = test_state(
+            registry.clone(),
+            vec![Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-first",
+                model_id,
+                response_label: "first",
+                calls: calls.clone(),
+            })],
+        )
+        .await;
+
+        let resolved_runtime_snapshot = state.current_runtime_snapshot().await;
+        let candidates = resolve_candidates_for_model(
+            &state,
+            resolved_runtime_snapshot.clone(),
+            model_id,
+            &Some("codex".to_string()),
+            Some("auth-first"),
+        )
+        .await;
+        assert_eq!(candidates.len(), 1);
+
+        state
+            .publish_runtime_from_providers(vec![Arc::new(TestProvider {
+                name: "codex",
+                client_id: "auth-second",
+                model_id,
+                response_label: "second",
+                calls: calls.clone(),
+            })])
+            .await
+            .expect("replacement providers should publish");
+
+        let response = execute_candidates(
+            state.clone(),
+            resolved_runtime_snapshot,
+            &test_request(model_id),
+            candidates,
+            false,
+            Some("session-stale"),
+        )
+        .await
+        .expect("execution should still complete against resolved provider");
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("response should be valid json");
+
+        assert_eq!(json["choices"][0]["message"]["content"], "first");
+        assert_eq!(calls.lock().await.as_slice(), &["auth-first"]);
+        assert_eq!(
+            state
+                .execution_sessions
+                .get_selected_auth("session-stale")
+                .await,
+            None,
+            "stale auth should not be reinserted into sticky session mapping"
+        );
     }
 }
