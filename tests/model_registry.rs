@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::{http::StatusCode, routing::post, Json, Router};
 use tempfile::TempDir;
@@ -87,15 +88,19 @@ async fn spawn_blocked_antigravity_models_server(
     release_request: Arc<Notify>,
 ) -> String {
     let model_id = model_id.to_string();
+    let first_request_is_blocked = Arc::new(AtomicBool::new(true));
     let app = Router::new().route(
         "/v1internal:fetchAvailableModels",
         post(move || {
             let model_id = model_id.clone();
             let request_started = request_started.clone();
             let release_request = release_request.clone();
+            let first_request_is_blocked = first_request_is_blocked.clone();
             async move {
-                request_started.notify_one();
-                release_request.notified().await;
+                if first_request_is_blocked.swap(false, Ordering::SeqCst) {
+                    request_started.notify_one();
+                    release_request.notified().await;
+                }
                 (
                     StatusCode::OK,
                     Json(serde_json::json!({
@@ -472,10 +477,14 @@ async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_pr
     .unwrap();
     accounts.reload().await.unwrap();
 
-    state.refresh_provider_runtime().await.unwrap();
+    let second_refresh = {
+        let state = state.clone();
+        tokio::spawn(async move { state.refresh_provider_runtime().await })
+    };
 
     release_first_request.notify_one();
     first_refresh.await.unwrap().unwrap();
+    second_refresh.await.unwrap().unwrap();
 
     let provider_ids: Vec<String> = state
         .providers
@@ -488,22 +497,31 @@ async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_pr
     for client_id in &provider_ids {
         assert!(registry.has_client(client_id).await);
     }
-    assert!(registry.has_client("antigravity-first.json").await);
+    assert!(
+        provider_ids
+            .iter()
+            .any(|client_id| client_id == "antigravity-second.json"),
+        "final providers should come from the latest refresh"
+    );
     assert!(
         !provider_ids
             .iter()
-            .any(|client_id| client_id == "antigravity-second.json"),
-        "providers should come from the stale first refresh"
+            .any(|client_id| client_id == "antigravity-first.json"),
+        "stale providers should be replaced by the later refresh"
     );
     assert!(
-        !registry.has_client("antigravity-second.json").await,
-        "registry should not stay ahead of providers after concurrent refresh"
+        registry.has_client("antigravity-second.json").await,
+        "registry should stay in sync with the published providers after concurrent refresh"
+    );
+    assert!(
+        !registry.has_client("antigravity-first.json").await,
+        "stale registry entries should be removed by the later refresh"
     );
     assert_eq!(
         registry
             .available_clients_for_model("gemini-2.5-pro-preview")
             .await,
-        Vec::<String>::new()
+        vec!["antigravity-second.json".to_string()]
     );
 }
 
