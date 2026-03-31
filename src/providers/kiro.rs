@@ -860,6 +860,10 @@ impl Provider for KiroProvider {
         "kiro"
     }
 
+    fn client_id(&self) -> &str {
+        &self.registry_client_id
+    }
+
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         let now = chrono::Utc::now().timestamp();
 

@@ -1,5 +1,16 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use axum::{http::StatusCode, routing::post, Json, Router};
+use tempfile::TempDir;
+use tokio::sync::Notify;
+
+use rusuh::auth::manager::AccountManager;
+use rusuh::config::Config;
+use rusuh::error::AppError;
 use rusuh::providers::model_info::ExtModelInfo;
 use rusuh::providers::model_registry::ModelRegistry;
+use rusuh::proxy::ProxyState;
 
 fn make_model(id: &str, provider: &str) -> ExtModelInfo {
     ExtModelInfo {
@@ -21,6 +32,497 @@ fn make_model(id: &str, provider: &str) -> ExtModelInfo {
         thinking: None,
         user_defined: false,
     }
+}
+
+async fn spawn_failing_antigravity_models_server() -> String {
+    let app = Router::new().route(
+        "/v1internal:fetchAvailableModels",
+        post(|| async {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "boom"})),
+            )
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+async fn spawn_antigravity_models_server(model_id: &str) -> String {
+    let model_id = model_id.to_string();
+    let app = Router::new().route(
+        "/v1internal:fetchAvailableModels",
+        post(move || {
+            let model_id = model_id.clone();
+            async move {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "models": {
+                            model_id: {"state": "ENABLED"}
+                        }
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+async fn spawn_blocked_antigravity_models_server(
+    model_id: &str,
+    request_started: Arc<Notify>,
+    release_request: Arc<Notify>,
+) -> String {
+    let model_id = model_id.to_string();
+    let first_request_is_blocked = Arc::new(AtomicBool::new(true));
+    let app = Router::new().route(
+        "/v1internal:fetchAvailableModels",
+        post(move || {
+            let model_id = model_id.clone();
+            let request_started = request_started.clone();
+            let release_request = release_request.clone();
+            let first_request_is_blocked = first_request_is_blocked.clone();
+            async move {
+                if first_request_is_blocked.swap(false, Ordering::SeqCst) {
+                    request_started.notify_one();
+                    release_request.notified().await;
+                }
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "models": {
+                            model_id: {"state": "ENABLED"}
+                        }
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+async fn spawn_failing_zed_server() -> String {
+    let app = Router::new()
+        .route(
+            "/client/llm_tokens",
+            post(|| async {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"token": "bad-token"})),
+                )
+            }),
+        )
+        .route(
+            "/models",
+            axum::routing::get(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [("x-zed-expired-token", "1")],
+                    Json(serde_json::json!({"error": "expired"})),
+                )
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_listing_fails() {
+    let dir = TempDir::new().unwrap();
+    let failing_base_url = spawn_failing_antigravity_models_server().await;
+
+    let auth_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": failing_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&auth_json).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "antigravity_0",
+            "antigravity",
+            vec![make_model("gemini-2.5-pro", "antigravity")],
+        )
+        .await;
+
+    let state = ProxyState::new(Config::default(), accounts.clone(), registry.clone(), 1);
+    let existing_providers = rusuh::providers::registry::build_providers(
+        &Config::default(),
+        &accounts,
+        registry.clone(),
+        state.kiro_runtime.clone(),
+    )
+    .await;
+    state
+        .publish_runtime_from_providers(existing_providers)
+        .await
+        .unwrap();
+
+    state.refresh_provider_runtime().await.unwrap();
+
+    assert_eq!(registry.get_model_count("gemini-2.5-pro").await, 1);
+    assert_eq!(
+        registry.available_clients_for_model("gemini-2.5-pro").await,
+        vec!["antigravity_0".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn refresh_provider_runtime_removes_orphaned_clients() {
+    let dir = TempDir::new().unwrap();
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "antigravity_0",
+            "antigravity",
+            vec![make_model("gemini-2.5-pro", "antigravity")],
+        )
+        .await;
+
+    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+    state
+        .publish_runtime_from_providers(vec![Arc::new(
+            rusuh::providers::antigravity::AntigravityProvider::new(
+                rusuh::auth::store::AuthRecord {
+                    id: "antigravity-test.json".to_string(),
+                    provider: "antigravity".to_string(),
+                    provider_key: "antigravity".to_string(),
+                    label: "test@example.com".to_string(),
+                    disabled: false,
+                    status: rusuh::auth::store::AuthStatus::Active,
+                    status_message: None,
+                    last_refreshed_at: None,
+                    path: dir.path().join("antigravity-test.json"),
+                    metadata: std::collections::HashMap::from([
+                        ("type".to_string(), serde_json::json!("antigravity")),
+                        ("provider_key".to_string(), serde_json::json!("antigravity")),
+                        ("email".to_string(), serde_json::json!("test@example.com")),
+                        ("access_token".to_string(), serde_json::json!("ya29.test")),
+                        ("refresh_token".to_string(), serde_json::json!("1//test")),
+                        ("project_id".to_string(), serde_json::json!("test-project")),
+                    ]),
+                    updated_at: chrono::Utc::now(),
+                },
+            ),
+        )])
+        .await
+        .unwrap();
+
+    state.refresh_provider_runtime().await.unwrap();
+
+    assert_eq!(registry.get_model_count("gemini-2.5-pro").await, 0);
+    assert!(registry
+        .available_clients_for_model("gemini-2.5-pro")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn refresh_provider_runtime_does_not_register_partial_replacement_before_failure() {
+    let dir = TempDir::new().unwrap();
+    let antigravity_base_url = spawn_antigravity_models_server("gemini-2.5-flash").await;
+    let zed_base_url = spawn_failing_zed_server().await;
+
+    let antigravity_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": antigravity_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&antigravity_json).unwrap(),
+    )
+    .unwrap();
+
+    let zed_json = serde_json::json!({
+        "type": "zed",
+        "provider_key": "zed",
+        "user_id": "zed-user",
+        "credential_json": format!("Bearer {zed_base_url}")
+    });
+    std::fs::write(
+        dir.path().join("zed-test.json"),
+        serde_json::to_string_pretty(&zed_json).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+
+    let error = state
+        .refresh_provider_runtime()
+        .await
+        .expect_err("later provider failure should abort refresh");
+
+    match error {
+        AppError::ProviderOperation {
+            op,
+            provider,
+            source,
+        } => {
+            assert_eq!(op, "list_models");
+            assert_eq!(provider, "zed");
+            assert!(!source.to_string().is_empty());
+        }
+        other => panic!("expected provider operation error, got {other}"),
+    }
+
+    assert_eq!(registry.get_model_count("gemini-2.5-flash").await, 0);
+    assert!(!registry.has_client("antigravity_0").await);
+    assert!(state.providers.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn rebuild_runtime_snapshot_does_not_publish_before_registry_sync() {
+    let dir = TempDir::new().unwrap();
+    let antigravity_base_url = spawn_antigravity_models_server("gemini-2.5-flash").await;
+
+    let antigravity_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": antigravity_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&antigravity_json).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+
+    let (providers, replacement_models) = state
+        .rebuild_runtime_snapshot()
+        .await
+        .expect("rebuild should succeed");
+    let rebuilt_client_id = replacement_models
+        .keys()
+        .next()
+        .cloned()
+        .expect("rebuild should return one client");
+
+    assert_eq!(providers.len(), 1);
+    assert_eq!(replacement_models.len(), 1);
+    assert!(state.providers.read().await.is_empty());
+    assert!(!registry.has_client(&rebuilt_client_id).await);
+}
+
+#[tokio::test]
+async fn refresh_provider_runtime_clears_stale_execution_session_selection_when_provider_ids_change(
+) {
+    let dir = TempDir::new().unwrap();
+    let first_auth = serde_json::json!({
+        "type": "codex",
+        "provider_key": "codex",
+        "access_token": "access-1",
+        "refresh_token": "refresh-1",
+        "id_token": "id-1",
+        "account_id": "acct-1",
+        "email": "first@example.com",
+        "expired": "2030-01-01T00:00:00Z",
+        "last_refresh": "2026-03-18T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("codex-first.json"),
+        serde_json::to_string_pretty(&first_auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = ProxyState::new(Config::default(), accounts.clone(), registry.clone(), 0);
+
+    state
+        .execution_sessions
+        .set_selected_auth(
+            "session-stale".to_string(),
+            "codex-missing.json".to_string(),
+            true,
+        )
+        .await;
+
+    state.refresh_provider_runtime().await.unwrap();
+
+    assert_eq!(
+        state
+            .execution_sessions
+            .get_selected_auth("session-stale")
+            .await,
+        None
+    );
+    assert!(registry.has_client("codex-first.json").await);
+}
+
+#[tokio::test]
+async fn concurrent_refresh_provider_runtime_does_not_leave_registry_ahead_of_providers() {
+    let dir = TempDir::new().unwrap();
+    let first_request_started = Arc::new(Notify::new());
+    let release_first_request = Arc::new(Notify::new());
+    let first_base_url = spawn_blocked_antigravity_models_server(
+        "gemini-2.5-flash",
+        first_request_started.clone(),
+        release_first_request.clone(),
+    )
+    .await;
+    let second_base_url = spawn_antigravity_models_server("gemini-2.5-pro-preview").await;
+    let first_path = dir.path().join("antigravity-first.json");
+    let second_path = dir.path().join("antigravity-second.json");
+
+    let first_auth = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "first@example.com",
+        "access_token": "ya29.first",
+        "refresh_token": "1//first",
+        "project_id": "first-project",
+        "base_url": first_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        &first_path,
+        serde_json::to_string_pretty(&first_auth).unwrap(),
+    )
+    .unwrap();
+
+    let accounts = Arc::new(AccountManager::with_dir(dir.path()));
+    accounts.reload().await.unwrap();
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(
+        Config::default(),
+        accounts.clone(),
+        registry.clone(),
+        0,
+    ));
+
+    let first_refresh = {
+        let state = state.clone();
+        tokio::spawn(async move { state.refresh_provider_runtime().await })
+    };
+
+    first_request_started.notified().await;
+
+    std::fs::remove_file(&first_path).unwrap();
+
+    let second_auth = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "second@example.com",
+        "access_token": "ya29.second",
+        "refresh_token": "1//second",
+        "project_id": "second-project",
+        "base_url": second_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        &second_path,
+        serde_json::to_string_pretty(&second_auth).unwrap(),
+    )
+    .unwrap();
+    accounts.reload().await.unwrap();
+
+    let second_refresh = {
+        let state = state.clone();
+        tokio::spawn(async move { state.refresh_provider_runtime().await })
+    };
+
+    release_first_request.notify_one();
+    first_refresh.await.unwrap().unwrap();
+    second_refresh.await.unwrap().unwrap();
+
+    let provider_ids: Vec<String> = state
+        .providers
+        .read()
+        .await
+        .iter()
+        .map(|provider| provider.client_id().to_string())
+        .collect();
+
+    for client_id in &provider_ids {
+        assert!(registry.has_client(client_id).await);
+    }
+    assert!(
+        provider_ids
+            .iter()
+            .any(|client_id| client_id == "antigravity-second.json"),
+        "final providers should come from the latest refresh"
+    );
+    assert!(
+        !provider_ids
+            .iter()
+            .any(|client_id| client_id == "antigravity-first.json"),
+        "stale providers should be replaced by the later refresh"
+    );
+    assert!(
+        registry.has_client("antigravity-second.json").await,
+        "registry should stay in sync with the published providers after concurrent refresh"
+    );
+    assert!(
+        !registry.has_client("antigravity-first.json").await,
+        "stale registry entries should be removed by the later refresh"
+    );
+    assert_eq!(
+        registry
+            .available_clients_for_model("gemini-2.5-pro-preview")
+            .await,
+        vec!["antigravity-second.json".to_string()]
+    );
 }
 
 #[tokio::test]

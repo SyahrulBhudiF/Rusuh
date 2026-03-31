@@ -70,10 +70,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::CodexLogin => {
-            println!("Codex OAuth login not yet implemented (milestone 2)");
+            let auth_dir = resolve_auth_dir(&cfg);
+            let store = auth::store::FileTokenStore::new(&auth_dir);
+            let saved = auth::codex_login::login(&store).await?;
+            println!("\n✓ Codex credentials saved to: {}", saved.display());
         }
         Commands::CodexDeviceLogin => {
-            println!("Codex device-code login not yet implemented (milestone 2)");
+            run_codex_device_login(&cfg).await?;
         }
         Commands::ClaudeLogin => {
             println!("Claude Code login not yet implemented (milestone 2)");
@@ -97,6 +100,35 @@ fn resolve_auth_dir(cfg: &config::Config) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rusuh")
+}
+
+async fn run_codex_device_login(cfg: &config::Config) -> anyhow::Result<()> {
+    if let Ok(base_url) = std::env::var("RUSUH_CODEX_AUTH_BASE_URL") {
+        return run_codex_device_login_with_base_url(cfg, &base_url).await;
+    }
+
+    let auth_dir = resolve_auth_dir(cfg);
+    let store = auth::store::FileTokenStore::new(&auth_dir);
+    let login = auth::codex_device::device_login(&store).await?;
+    println!(
+        "\n✓ Codex device credentials saved to: {}",
+        login.saved_path.display()
+    );
+    Ok(())
+}
+
+async fn run_codex_device_login_with_base_url(
+    cfg: &config::Config,
+    base_url: &str,
+) -> anyhow::Result<()> {
+    let auth_dir = resolve_auth_dir(cfg);
+    let store = auth::store::FileTokenStore::new(&auth_dir);
+    let login = auth::codex_device::device_login_with_base_url(&store, base_url).await?;
+    println!(
+        "\n✓ Codex device credentials saved to: {}",
+        login.saved_path.display()
+    );
+    Ok(())
 }
 
 /// Generate a random API key in `rsk-<uuid>` format.
@@ -164,56 +196,26 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
         }
     }
 
-    // Build providers from loaded accounts + config
-    let providers = providers::registry::build_providers(
-        &cfg,
-        &account_mgr,
-        model_registry.clone(),
-        kiro_runtime.clone(),
-    )
-    .await;
-    // Register all provider models
-    for (idx, provider) in providers.iter().enumerate() {
-        let client_id = format!("{}_{}", provider.name(), idx);
-        match provider.list_models().await {
-            Ok(models) => {
-                let ext_models: Vec<_> = models
-                    .iter()
-                    .map(|m| providers::model_info::ExtModelInfo {
-                        id: m.id.clone(),
-                        object: m.object.clone(),
-                        created: m.created,
-                        owned_by: m.owned_by.clone(),
-                        provider_type: provider.name().to_string(),
-                        display_name: Some(m.id.clone()),
-                        name: None,
-                        version: None,
-                        description: None,
-                        input_token_limit: 0,
-                        output_token_limit: 0,
-                        supported_generation_methods: vec![],
-                        context_length: 0,
-                        max_completion_tokens: 0,
-                        supported_parameters: vec![],
-                        thinking: None,
-                        user_defined: false,
-                    })
-                    .collect();
-                model_registry
-                    .register_client(&client_id, provider.name(), ext_models)
+    let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, 0);
+    state.kiro_runtime = kiro_runtime;
+    let state = Arc::new(state);
+
+    match state.rebuild_runtime_snapshot().await {
+        Ok((providers, replacement_models)) => {
+            for (client_id, (provider_name, ext_models)) in &replacement_models {
+                state
+                    .model_registry
+                    .register_client(client_id, provider_name, ext_models.clone())
                     .await;
             }
-            Err(e) => {
-                tracing::warn!("failed to list models from {}: {e}", provider.name());
+            if let Err(error) = state.publish_runtime_from_providers(providers).await {
+                tracing::warn!("failed to publish initial runtime snapshot: {error}");
             }
         }
+        Err(error) => {
+            return Err(error.into());
+        }
     }
-
-    let provider_count = providers.len();
-    let mut state = proxy::ProxyState::new(cfg, account_mgr, model_registry, provider_count);
-    state.kiro_runtime = kiro_runtime;
-    state.providers = providers;
-    let state = Arc::new(state);
 
     info!("Rusuh starting on http://{}", addr);
 
@@ -233,8 +235,8 @@ async fn serve(mut cfg: config::Config) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_config_or_default;
-    use tempfile::NamedTempFile;
+    use super::{load_config_or_default, run_codex_device_login_with_base_url, serve};
+    use tempfile::{NamedTempFile, TempDir};
 
     #[test]
     fn load_config_or_default_uses_defaults_when_file_is_missing() {
@@ -264,5 +266,139 @@ mod tests {
 
         assert!(message.contains("host:"));
         assert!(message.contains("expected a string"));
+    }
+
+    #[tokio::test]
+    async fn codex_device_login_command_persists_credentials_from_explicit_base_url() {
+        let temp = TempDir::new().expect("create temp dir");
+        let cfg = rusuh::config::Config {
+            auth_dir: temp.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        let app = axum::Router::new()
+            .route(
+                "/api/accounts/deviceauth/usercode",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "device_auth_id": "dev_123",
+                            "user_code": "ABC-123",
+                            "interval": 1
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/accounts/deviceauth/token",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "authorization_code": "auth_code",
+                            "code_verifier": "verifier",
+                            "code_challenge": "challenge"
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/oauth/token",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "access_token": "device_access",
+                            "refresh_token": "device_refresh",
+                            "id_token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF8xMjMiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6IlRlYW0ifX0.sig",
+                            "expires_in": 3600
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let addr = listener.local_addr().expect("read mock server addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let login_result =
+            run_codex_device_login_with_base_url(&cfg, &format!("http://{addr}")).await;
+
+        login_result.expect("device login command should succeed");
+
+        let saved_count = std::fs::read_dir(temp.path())
+            .expect("read auth directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("codex-") && name.ends_with(".json"))
+            })
+            .count();
+
+        assert_eq!(saved_count, 1);
+    }
+
+    #[tokio::test]
+    async fn serve_returns_error_when_initial_runtime_snapshot_rebuild_fails() {
+        let temp = TempDir::new().expect("create temp dir");
+        let app = axum::Router::new().route(
+            "/v1internal:fetchAvailableModels",
+            axum::routing::post(|| async { (axum::http::StatusCode::OK, "not-json") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failing models server");
+        let addr = listener.local_addr().expect("read failing models addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let auth_json = serde_json::json!({
+            "type": "antigravity",
+            "provider_key": "antigravity",
+            "email": "test@example.com",
+            "access_token": "ya29.test",
+            "refresh_token": "1//test",
+            "project_id": "test-project",
+            "base_url": format!("http://{addr}"),
+            "expired": "2030-01-01T00:00:00Z"
+        });
+        std::fs::write(
+            temp.path().join("antigravity-test.json"),
+            serde_json::to_string_pretty(&auth_json).expect("serialize auth json"),
+        )
+        .expect("write auth file");
+
+        let cfg = rusuh::config::Config {
+            auth_dir: temp.path().to_string_lossy().to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            api_keys: vec!["rsk-test".to_string()],
+            ..Default::default()
+        };
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), serve(cfg)).await;
+        let error = result
+            .expect("serve should fail fast instead of starting the server")
+            .expect_err("serve should return an error when initial runtime snapshot rebuild fails");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("provider antigravity operation list_models failed"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains("parse models"),
+            "unexpected error: {error:#}"
+        );
     }
 }

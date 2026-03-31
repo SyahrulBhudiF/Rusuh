@@ -184,9 +184,7 @@ fn test_parse_zed_response_from_raw_jsonlines_body() {
     );
 
     let error = parse_zed_response(&response).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Response missing required field: model")
-    );
+    assert!(error
+        .to_string()
+        .contains("Response missing required field: model"));
 }

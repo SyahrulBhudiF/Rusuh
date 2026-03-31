@@ -65,6 +65,7 @@ rand = { version = "0.10.0", features = ["std_rng"] }
 sha2 = "0.10"
 rsa = { version = "0.9.10", features = ["pem"] }
 urlencoding = "2.1"
+moka = { version = "0.12", features = ["sync"] }
 
 [profile.release]
 opt-level = 3

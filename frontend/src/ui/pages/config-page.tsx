@@ -211,7 +211,8 @@ export function ConfigPage() {
                       </div>
                     ) : (
                       <p className='text-muted-foreground mt-2 text-sm'>
-                        No providers configured yet. Add an account first, then return here to inspect the runtime config.
+                        No providers configured yet. Add an account first, then return here to
+                        inspect the runtime config.
                       </p>
                     )}
                   </div>
