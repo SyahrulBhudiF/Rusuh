@@ -2142,7 +2142,6 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         vec![
             "claude-sonnet-4-6".to_string(),
             "claude-sonnet-4-5".to_string(),
-            "claude-sonnet-4-5-thinking".to_string(),
         ]
     );
 }
