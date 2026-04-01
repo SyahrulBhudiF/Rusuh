@@ -504,66 +504,42 @@ impl GithubCopilotProvider {
                                     Some(text_value) => match text_value.as_str() {
                                         Some(text_str) => text_str.to_string(),
                                         None => {
-                                            debug!(
-                                                body = ?body,
-                                                "parse_responses_response: 'text' field is not a string"
-                                            );
+                                            debug!("parse_responses_response: 'text' field is not a string");
                                             String::new()
                                         }
                                     },
                                     None => {
-                                        debug!(
-                                            body = ?body,
-                                            "parse_responses_response: 'text' field missing in first content item"
-                                        );
+                                        debug!("parse_responses_response: 'text' field missing in first content item");
                                         String::new()
                                     }
                                 },
                                 None => {
-                                    debug!(
-                                        body = ?body,
-                                        "parse_responses_response: content array is empty"
-                                    );
+                                    debug!("parse_responses_response: content array is empty");
                                     String::new()
                                 }
                             },
                             None => {
-                                debug!(
-                                    body = ?body,
-                                    "parse_responses_response: 'content' field is not an array"
-                                );
+                                debug!("parse_responses_response: 'content' field is not an array");
                                 String::new()
                             }
                         },
                         None => {
-                            debug!(
-                                body = ?body,
-                                "parse_responses_response: 'content' field missing in first output item"
-                            );
+                            debug!("parse_responses_response: 'content' field missing in first output item");
                             String::new()
                         }
                     },
                     None => {
-                        debug!(
-                            body = ?body,
-                            "parse_responses_response: output array is empty"
-                        );
+                        debug!("parse_responses_response: output array is empty");
                         String::new()
                     }
                 },
                 None => {
-                    debug!(
-                        body = ?body,
-                        "parse_responses_response: 'output' field is not an array"
-                    );
+                    debug!("parse_responses_response: 'output' field is not an array");
                     String::new()
                 }
             },
             None => {
-                debug!(
-                    body = ?body,
-                    "parse_responses_response: 'output' field missing"
-                );
+                debug!("parse_responses_response: 'output' field missing");
                 String::new()
             }
         };
