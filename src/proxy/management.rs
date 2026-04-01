@@ -911,17 +911,27 @@ async fn check_kiro_quota(
         Err(e) => return e,
     };
 
-    // Find the auth record
-    let accounts = state.accounts.accounts_for("kiro").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(mut record) = record.cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Kiro auth file not found"})),
-        );
+    let mut record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("kiro"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Kiro auth file not found"})),
+            );
+        }
     };
 
     // Try quota check with current token
@@ -1235,16 +1245,27 @@ async fn check_codex_quota(
         Err(e) => return e,
     };
 
-    let accounts = _state.accounts.accounts_for("codex").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match _state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(record) = record.cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Codex auth file not found"})),
-        );
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("codex"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Codex auth file not found"})),
+            );
+        }
     };
 
     let response = probe_codex_quota(&_state, record).await;
@@ -2320,17 +2341,27 @@ async fn check_zed_quota(
         Err(e) => return e,
     };
 
-    // Find the auth record
-    let accounts = state.accounts.accounts_for("zed").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(record) = record else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Zed auth file not found"})),
-        );
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("zed"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Zed auth file not found"})),
+            );
+        }
     };
 
     // Parse Zed credential from metadata
@@ -2407,17 +2438,27 @@ async fn list_github_copilot_models(
         Err(e) => return e,
     };
 
-    let accounts = state.accounts.accounts_for("github-copilot").await;
-    let record = accounts
-        .iter()
-        .find(|record| record.id == name || record.path.file_name().and_then(|f| f.to_str()) == Some(&name))
-        .cloned();
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(record) = record else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "GitHub Copilot auth file not found"})),
-        );
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("github-copilot"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "GitHub Copilot auth file not found"})),
+            );
+        }
     };
 
     let provider = match crate::providers::github_copilot::GithubCopilotProvider::new(record.clone()) {
