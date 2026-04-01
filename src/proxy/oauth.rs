@@ -693,7 +693,10 @@ async fn start_codex_oauth(state: Arc<ProxyState>) -> Response {
 
 async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> AppResult<Response> {
     let oauth_state = uuid::Uuid::new_v4().to_string();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to build HTTP client: {e}")))?;
 
     let device_code = request_github_copilot_device_code(&client).await?;
 
@@ -955,7 +958,10 @@ async fn process_github_copilot_device_flow(
     oauth_state: &str,
     device_code: &DeviceCodeResponse,
 ) -> AppResult<()> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to build HTTP client: {e}")))?;
     let token_data = poll_github_copilot_token(&client, device_code)
         .await
         .map_err(|error| AppError::Auth(format!("github copilot token polling failed: {error}")))?;
