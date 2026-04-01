@@ -852,7 +852,7 @@ async fn poll_github_copilot_token(
     device_code: &DeviceCodeResponse,
 ) -> AppResult<GithubOAuthTokenData> {
     let mut poll_interval = if device_code.interval == 0 {
-        Duration::from_millis(1)
+        Duration::from_secs(5)
     } else {
         Duration::from_secs(device_code.interval)
     };
