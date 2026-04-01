@@ -6,6 +6,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
+use url::Url;
 
 use crate::auth::github_copilot_runtime::{
     exchange_github_token_for_copilot_token_with_url, list_models as list_live_models,
@@ -65,26 +66,51 @@ impl GithubCopilotProvider {
     }
 
     fn api_base_url(&self) -> String {
-        self.record
+        let candidate = self.record
             .metadata
             .get("copilot_api_url")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(DEFAULT_API_BASE_URL)
-            .trim_end_matches('/')
-            .to_string()
+            .filter(|value| !value.is_empty());
+
+        if let Some(url_str) = candidate {
+            if let Ok(parsed) = Url::parse(url_str) {
+                if parsed.scheme() == "https" {
+                    if let Some(host) = parsed.host_str() {
+                        const ALLOWED_API_HOSTS: &[&str] = &["api.githubcopilot.com"];
+                        if ALLOWED_API_HOSTS.contains(&host) {
+                            return url_str.trim_end_matches('/').to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        DEFAULT_API_BASE_URL.trim_end_matches('/').to_string()
     }
 
     fn token_url(&self) -> String {
-        self.record
+        let candidate = self.record
             .metadata
             .get("copilot_token_url")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(DEFAULT_TOKEN_URL)
-            .to_string()
+            .filter(|value| !value.is_empty());
+
+        if let Some(url_str) = candidate {
+            if let Ok(parsed) = Url::parse(url_str) {
+                if parsed.scheme() == "https" {
+                    if let Some(host) = parsed.host_str() {
+                        const ALLOWED_TOKEN_HOSTS: &[&str] = &["api.github.com"];
+                        if ALLOWED_TOKEN_HOSTS.contains(&host) {
+                            return url_str.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        DEFAULT_TOKEN_URL.to_string()
     }
 
     async fn copilot_api_token(&self) -> AppResult<String> {
