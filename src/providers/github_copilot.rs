@@ -6,6 +6,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
+use tracing::debug;
 use url::Url;
 
 use crate::auth::github_copilot_runtime::{
@@ -468,17 +469,80 @@ impl GithubCopilotProvider {
     }
 
     fn parse_responses_response(body: Value) -> AppResult<ChatCompletionResponse> {
-        let text = body
-            .get("output")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(|item| item.get("content"))
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(|item| item.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        // Extract text with step-by-step validation and logging
+        let text = match body.get("output") {
+            Some(output) => match output.as_array() {
+                Some(output_array) => match output_array.first() {
+                    Some(first_output) => match first_output.get("content") {
+                        Some(content) => match content.as_array() {
+                            Some(content_array) => match content_array.first() {
+                                Some(first_content) => match first_content.get("text") {
+                                    Some(text_value) => match text_value.as_str() {
+                                        Some(text_str) => text_str.to_string(),
+                                        None => {
+                                            debug!(
+                                                body = ?body,
+                                                "parse_responses_response: 'text' field is not a string"
+                                            );
+                                            String::new()
+                                        }
+                                    },
+                                    None => {
+                                        debug!(
+                                            body = ?body,
+                                            "parse_responses_response: 'text' field missing in first content item"
+                                        );
+                                        String::new()
+                                    }
+                                },
+                                None => {
+                                    debug!(
+                                        body = ?body,
+                                        "parse_responses_response: content array is empty"
+                                    );
+                                    String::new()
+                                }
+                            },
+                            None => {
+                                debug!(
+                                    body = ?body,
+                                    "parse_responses_response: 'content' field is not an array"
+                                );
+                                String::new()
+                            }
+                        },
+                        None => {
+                            debug!(
+                                body = ?body,
+                                "parse_responses_response: 'content' field missing in first output item"
+                            );
+                            String::new()
+                        }
+                    },
+                    None => {
+                        debug!(
+                            body = ?body,
+                            "parse_responses_response: output array is empty"
+                        );
+                        String::new()
+                    }
+                },
+                None => {
+                    debug!(
+                        body = ?body,
+                        "parse_responses_response: 'output' field is not an array"
+                    );
+                    String::new()
+                }
+            },
+            None => {
+                debug!(
+                    body = ?body,
+                    "parse_responses_response: 'output' field missing"
+                );
+                String::new()
+            }
+        };
 
         let usage = body.get("usage").map(|usage| Usage {
             prompt_tokens: usage
