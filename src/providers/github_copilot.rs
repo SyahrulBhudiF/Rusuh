@@ -5,7 +5,7 @@ use chrono::{TimeZone, Utc};
 use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
 use crate::auth::github_copilot_runtime::{
@@ -41,6 +41,7 @@ pub struct GithubCopilotProvider {
     client: Client,
     stream_client: Client,
     cached_token: RwLock<Option<CachedApiToken>>,
+    refresh_mutex: Mutex<()>,
 }
 
 impl GithubCopilotProvider {
@@ -56,6 +57,7 @@ impl GithubCopilotProvider {
             client: build_client(Duration::from_secs(30))?,
             stream_client: build_stream_client(Duration::from_secs(120))?,
             cached_token: RwLock::new(None),
+            refresh_mutex: Mutex::new(()),
         })
     }
 
@@ -114,6 +116,17 @@ impl GithubCopilotProvider {
     }
 
     async fn copilot_api_token(&self) -> AppResult<String> {
+        {
+            let cached = self.cached_token.read().await;
+            if let Some(cached) = cached.as_ref() {
+                if token_is_still_valid_until(cached.expires_at, Utc::now()) {
+                    return Ok(cached.token.clone());
+                }
+            }
+        }
+
+        let _guard = self.refresh_mutex.lock().await;
+
         {
             let cached = self.cached_token.read().await;
             if let Some(cached) = cached.as_ref() {
