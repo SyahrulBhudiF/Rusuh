@@ -315,8 +315,14 @@ fn public_route_targets(model: &str) -> &'static [RouteTarget] {
     }
 }
 
-fn reserved_public_route_targets(_model: &str) -> &'static [RouteTarget] {
-    &[]
+fn reserved_public_route_targets(model: &str) -> &'static [RouteTarget] {
+    match model {
+        "claude-sonnet-4-5-thinking" => &[RouteTarget {
+            provider: "kiro",
+            model: "kiro-claude-sonnet-4-5-agentic",
+        }],
+        _ => &[],
+    }
 }
 
 fn is_reserved_public_model(model: &str) -> bool {
