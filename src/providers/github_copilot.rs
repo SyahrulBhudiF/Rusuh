@@ -194,11 +194,26 @@ impl GithubCopilotProvider {
     }
 
     fn normalize_model(model: &str) -> String {
-        model
-            .trim()
+        let trimmed = model.trim();
+
+        // Strip -thinking suffix first
+        let without_thinking = trimmed
             .strip_suffix("-thinking")
-            .unwrap_or_else(|| model.trim())
-            .to_string()
+            .unwrap_or(trimmed);
+
+        // Apply Copilot-specific aliases (dotted to hyphenated)
+        // This matches the alias table used in static_models
+        let normalized = match without_thinking {
+            "claude-sonnet-4.5" => "claude-sonnet-4-5",
+            "claude-sonnet-4.6" => "claude-sonnet-4-6",
+            "claude-opus-4.5" => "claude-opus-4-5",
+            "claude-opus-4.6" => "claude-opus-4-6",
+            "claude-haiku-4.5" => "claude-haiku-4-5",
+            "claude-haiku-4.6" => "claude-haiku-4-6",
+            other => other,
+        };
+
+        normalized.to_string()
     }
 
     fn flatten_message_content(content: &MessageContent) -> MessageContent {
@@ -278,17 +293,17 @@ impl GithubCopilotProvider {
         value
     }
 
-    fn is_responses_request(&self, request: &ChatCompletionRequest) -> bool {
+    fn is_responses_request(&self, canonical_model: &str, request: &ChatCompletionRequest) -> bool {
         if request.extra.contains_key("input") {
             return true;
         }
 
-        static_models::lookup_static_model(&request.model)
+        static_models::lookup_static_model(canonical_model)
             .and_then(|model| model.supported_endpoints)
             .map(|endpoints| {
                 endpoints.len() == 1 && endpoints.iter().any(|endpoint| endpoint == "responses")
             })
-            .unwrap_or_else(|| request.model.contains("codex"))
+            .unwrap_or_else(|| canonical_model.contains("codex"))
     }
 
     fn has_image_input(&self, request: &ChatCompletionRequest) -> bool {
@@ -643,7 +658,8 @@ impl Provider for GithubCopilotProvider {
         request: &ChatCompletionRequest,
     ) -> AppResult<ChatCompletionResponse> {
         let token = self.copilot_api_token().await?;
-        let use_responses = self.is_responses_request(request);
+        let canonical_model = Self::normalize_model(&request.model);
+        let use_responses = self.is_responses_request(&canonical_model, request);
         let include_vision = self.has_image_input(request);
         let endpoint = if use_responses {
             format!("{}/responses", self.api_base_url())
@@ -654,7 +670,7 @@ impl Provider for GithubCopilotProvider {
             let mut body = serde_json::to_value(request)
                 .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
             let map = body.as_object_mut().expect("responses request should serialize to object");
-            map.insert("model".to_string(), json!(Self::normalize_model(&request.model)));
+            map.insert("model".to_string(), json!(canonical_model));
             body
         } else {
             self.normalize_chat_request(request)
@@ -694,16 +710,18 @@ impl Provider for GithubCopilotProvider {
         request: &ChatCompletionRequest,
     ) -> AppResult<BoxStream> {
         let token = self.copilot_api_token().await?;
-        let endpoint = if self.is_responses_request(request) {
+        let canonical_model = Self::normalize_model(&request.model);
+        let use_responses = self.is_responses_request(&canonical_model, request);
+        let endpoint = if use_responses {
             format!("{}/responses", self.api_base_url())
         } else {
             format!("{}/chat/completions", self.api_base_url())
         };
-        let body = if self.is_responses_request(request) {
+        let body = if use_responses {
             let mut body = serde_json::to_value(request)
                 .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
             let map = body.as_object_mut().expect("responses request should serialize to object");
-            map.insert("model".to_string(), json!(Self::normalize_model(&request.model)));
+            map.insert("model".to_string(), json!(canonical_model));
             body
         } else {
             self.normalize_chat_request(request)
