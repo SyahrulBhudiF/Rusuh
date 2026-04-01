@@ -2073,7 +2073,7 @@ async fn get_zed_login_status(
         );
     };
 
-    let (private_key, callback_state) = {
+    let (private_key, callback_state, session_name) = {
         let mut sessions = state.zed_login_sessions.lock().await;
         cleanup_expired_sessions(&mut sessions);
 
@@ -2100,6 +2100,7 @@ async fn get_zed_login_status(
         (
             session.private_key.clone(),
             Arc::clone(&session.callback_state),
+            session.name.clone(),
         )
     };
 
@@ -2194,7 +2195,7 @@ async fn get_zed_login_status(
         None
     };
 
-    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json);
+    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json, &session_name);
     if let Err(error) = state.accounts.store().save(&record).await {
         let error_msg = format!("save auth file: {error}");
         let mut sessions = state.zed_login_sessions.lock().await;
@@ -2253,6 +2254,7 @@ fn build_zed_login_record(
     filename: &str,
     user_id: &str,
     credential_json: &str,
+    session_name: &str,
 ) -> AuthRecord {
     let now = chrono::Utc::now();
 
@@ -2268,21 +2270,36 @@ fn build_zed_login_record(
             .metadata
             .insert("last_refreshed_at".to_string(), json!(now.to_rfc3339()));
 
+        if !session_name.is_empty() {
+            record.label = session_name.to_string();
+            record.metadata.insert("label".to_string(), json!(session_name));
+        }
+
         return record;
     }
 
-    let metadata = HashMap::from([
+    let label = if session_name.is_empty() {
+        user_id.to_string()
+    } else {
+        session_name.to_string()
+    };
+
+    let mut metadata = HashMap::from([
         ("type".to_string(), json!("zed")),
         ("user_id".to_string(), json!(user_id)),
         ("credential_json".to_string(), json!(credential_json)),
         ("last_refreshed_at".to_string(), json!(now.to_rfc3339())),
     ]);
 
+    if !session_name.is_empty() {
+        metadata.insert("label".to_string(), json!(session_name));
+    }
+
     AuthRecord {
         id: filename.to_string(),
         provider: "zed".to_string(),
         provider_key: "zed".to_string(),
-        label: user_id.to_string(),
+        label,
         disabled: false,
         status: AuthStatus::Active,
         status_message: None,
