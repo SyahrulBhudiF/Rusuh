@@ -30,13 +30,14 @@ fn test_app(cfg: Config) -> axum::Router {
 }
 
 fn mgmt_config(auth_dir: &str) -> Config {
-    let mut cfg = Config::default();
-    cfg.auth_dir = auth_dir.into();
-    cfg.remote_management = ManagementConfig {
-        allow_remote: true,
-        secret_key: SECRET.into(),
-    };
-    cfg
+    Config {
+        auth_dir: auth_dir.into(),
+        remote_management: ManagementConfig {
+            allow_remote: true,
+            secret_key: SECRET.into(),
+        },
+        ..Default::default()
+    }
 }
 
 fn mgmt_request(method: &str, uri: &str) -> Request<Body> {
@@ -354,7 +355,11 @@ async fn patch_fields_no_fields_returns_400() {
 #[tokio::test]
 async fn patch_fields_still_supports_prefix() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("fields-prefix.json"), r#"{"type": "antigravity"}"#).unwrap();
+    std::fs::write(
+        dir.path().join("fields-prefix.json"),
+        r#"{"type": "antigravity"}"#,
+    )
+    .unwrap();
 
     let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
 

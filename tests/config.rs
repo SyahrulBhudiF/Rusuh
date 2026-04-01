@@ -1,4 +1,5 @@
 use rusuh::config::Config;
+use tempfile::NamedTempFile;
 
 #[test]
 fn default_config_values() {
@@ -18,9 +19,11 @@ fn listen_addr_defaults() {
 
 #[test]
 fn listen_addr_custom() {
-    let mut cfg = Config::default();
-    cfg.host = "127.0.0.1".into();
-    cfg.port = 9000;
+    let cfg = Config {
+        host: "127.0.0.1".into(),
+        port: 9000,
+        ..Default::default()
+    };
     assert_eq!(cfg.listen_addr(), "127.0.0.1:9000");
 }
 
@@ -95,4 +98,16 @@ openai-compatibility:
 fn load_optional_nonexistent_returns_none() {
     let result = Config::load_optional("/tmp/nonexistent_rusuh_config_xyz.yaml").unwrap();
     assert!(result.is_none());
+}
+
+#[test]
+fn load_optional_existing_empty_yaml_returns_some_default_config() {
+    let file = NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "{}\n").unwrap();
+
+    let result = Config::load_optional(file.path().to_str().unwrap()).unwrap();
+
+    let config = result.expect("expected config to load from existing file");
+    assert_eq!(config.listen_addr(), "0.0.0.0:8317");
+    assert!(config.api_keys.is_empty());
 }

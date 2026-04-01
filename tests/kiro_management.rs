@@ -29,13 +29,14 @@ impl QuotaChecker for FixedQuotaChecker {
 }
 
 fn mgmt_config(auth_dir: &str) -> Config {
-    let mut cfg = Config::default();
-    cfg.auth_dir = auth_dir.into();
-    cfg.remote_management = ManagementConfig {
-        allow_remote: true,
-        secret_key: SECRET.into(),
-    };
-    cfg
+    Config {
+        auth_dir: auth_dir.into(),
+        remote_management: ManagementConfig {
+            allow_remote: true,
+            secret_key: SECRET.into(),
+        },
+        ..Default::default()
+    }
 }
 
 async fn test_app_with_quota_checker(

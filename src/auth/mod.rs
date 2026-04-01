@@ -7,3 +7,7 @@ pub mod kiro_record;
 pub mod kiro_runtime;
 pub mod manager;
 pub mod store;
+pub mod zed;
+pub mod zed_callback;
+pub mod zed_login;
+pub mod zed_session;

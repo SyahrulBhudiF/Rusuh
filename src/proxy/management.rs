@@ -1,7 +1,11 @@
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, DEFAULT_REGION};
-use crate::auth::kiro_record::KiroRecordInput;
 use crate::auth::kiro_login::SocialAuthClient;
-use crate::auth::store::AuthStatus;
+use crate::auth::kiro_record::KiroRecordInput;
+use crate::auth::store::{AuthRecord, AuthStatus};
+use crate::auth::zed::{canonical_zed_login_filename, zed_user_ids_match};
+use crate::auth::zed_callback::start_callback_server;
+use crate::auth::zed_login::{build_login_url, decrypt_credential, generate_keypair};
+use crate::auth::zed_session::{cleanup_expired_sessions, ZedLoginSession, ZedLoginSessionStatus};
 use crate::proxy::ProxyState;
 use axum::{
     extract::{ConnectInfo, Query, Request, State},
@@ -51,18 +55,24 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
             "/kiro/builder-id/start",
             axum::routing::post(crate::proxy::oauth::start_builder_id_login),
         )
-        .route(
-            "/kiro/import",
-            axum::routing::post(import_kiro_auth_file),
-        )
+        .route("/kiro/import", axum::routing::post(import_kiro_auth_file))
         .route(
             "/kiro/social/import",
             axum::routing::post(import_kiro_social_refresh_token),
         )
+        .route("/kiro/check-quota", axum::routing::post(check_kiro_quota))
+        // ── Zed ──────────────────────────────────────────────────────────────
         .route(
-            "/kiro/check-quota",
-            axum::routing::post(check_kiro_quota),
+            "/zed/login/initiate",
+            axum::routing::post(initiate_zed_login),
         )
+        .route(
+            "/zed/login/status",
+            axum::routing::get(get_zed_login_status),
+        )
+        .route("/zed/import", axum::routing::post(import_zed_credential))
+        .route("/zed/check-quota", axum::routing::post(check_zed_quota))
+        .route("/zed/models", axum::routing::post(list_zed_models))
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn(rate_limit))
@@ -571,7 +581,6 @@ async fn upload_auth_file(
     (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
 }
 
-
 #[derive(Deserialize)]
 struct ImportKiroBody {
     access_token: Option<String>,
@@ -619,7 +628,10 @@ async fn import_kiro_social_refresh_token(
         );
     }
 
-    let mut token_data = match SocialAuthClient::new().refresh_social_token(&refresh_token).await {
+    let mut token_data = match SocialAuthClient::new()
+        .refresh_social_token(&refresh_token)
+        .await
+    {
         Ok(data) => data,
         Err(error) => {
             return (
@@ -688,7 +700,6 @@ async fn import_kiro_social_refresh_token(
         })),
     )
 }
-
 
 async fn import_kiro_auth_file(
     State(state): State<Arc<ProxyState>>,
@@ -865,7 +876,6 @@ async fn check_kiro_quota(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<CheckKiroQuotaBody>,
 ) -> impl IntoResponse {
-
     let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
         Ok(n) => n,
         Err(e) => return e,
@@ -873,7 +883,9 @@ async fn check_kiro_quota(
 
     // Find the auth record
     let accounts = state.accounts.accounts_for("kiro").await;
-    let record = accounts.iter().find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let record = accounts
+        .iter()
+        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
 
     let Some(mut record) = record.cloned() else {
         return (
@@ -889,7 +901,11 @@ async fn check_kiro_quota(
         crate::auth::kiro_runtime::QuotaStatus::Unknown => json!({
             "status": "unknown"
         }),
-        crate::auth::kiro_runtime::QuotaStatus::Available { remaining, next_reset, breakdown } => {
+        crate::auth::kiro_runtime::QuotaStatus::Available {
+            remaining,
+            next_reset,
+            breakdown,
+        } => {
             let mut resp = json!({
                 "status": "available",
                 "remaining": remaining,
@@ -905,7 +921,7 @@ async fn check_kiro_quota(
                 }
             }
             resp
-        },
+        }
         crate::auth::kiro_runtime::QuotaStatus::Exhausted { detail } => json!({
             "status": "exhausted",
             "detail": detail,
@@ -940,8 +956,16 @@ async fn check_quota_with_refresh(
         return crate::auth::kiro_runtime::QuotaStatus::Unknown;
     }
 
-    let client_id = record.metadata.get("client_id").and_then(|v| v.as_str()).map(String::from);
-    let refresh_token = record.metadata.get("refresh_token").and_then(|v| v.as_str()).map(String::from);
+    let client_id = record
+        .metadata
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let refresh_token = record
+        .metadata
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let request = UsageCheckRequest {
         access_token: access_token.clone(),
@@ -957,11 +981,20 @@ async fn check_quota_with_refresh(
     if matches!(status, crate::auth::kiro_runtime::QuotaStatus::Unknown) {
         if let Some(refreshed) = attempt_token_refresh(record).await {
             // Update record with refreshed token
-            record.metadata.insert("access_token".to_string(), serde_json::json!(refreshed.access_token));
+            record.metadata.insert(
+                "access_token".to_string(),
+                serde_json::json!(refreshed.access_token),
+            );
             if !refreshed.refresh_token.is_empty() {
-                record.metadata.insert("refresh_token".to_string(), serde_json::json!(refreshed.refresh_token));
+                record.metadata.insert(
+                    "refresh_token".to_string(),
+                    serde_json::json!(refreshed.refresh_token),
+                );
             }
-            record.metadata.insert("expires_at".to_string(), serde_json::json!(refreshed.expires_at));
+            record.metadata.insert(
+                "expires_at".to_string(),
+                serde_json::json!(refreshed.expires_at),
+            );
 
             // Save to disk
             if let Err(e) = state.accounts.store().save(record).await {
@@ -977,7 +1010,11 @@ async fn check_quota_with_refresh(
                 client_id,
                 refresh_token: Some(refreshed.refresh_token),
             };
-            return state.kiro_runtime.quota_checker.check_quota(&retry_request).await;
+            return state
+                .kiro_runtime
+                .quota_checker
+                .check_quota(&retry_request)
+                .await;
         }
     }
 
@@ -985,10 +1022,8 @@ async fn check_quota_with_refresh(
 }
 
 /// Attempt to refresh a Kiro token based on its auth method.
-async fn attempt_token_refresh(
-    record: &crate::auth::store::AuthRecord,
-) -> Option<RefreshedToken> {
-    use crate::auth::kiro_login::{SocialAuthClient, SSOOIDCClient};
+async fn attempt_token_refresh(record: &crate::auth::store::AuthRecord) -> Option<RefreshedToken> {
+    use crate::auth::kiro_login::{SSOOIDCClient, SocialAuthClient};
 
     let auth_method = record
         .metadata
@@ -1001,10 +1036,7 @@ async fn attempt_token_refresh(
         .get("refresh_token")
         .and_then(|v| v.as_str())?;
 
-    let client_id = record
-        .metadata
-        .get("client_id")
-        .and_then(|v| v.as_str());
+    let client_id = record.metadata.get("client_id").and_then(|v| v.as_str());
 
     let client_secret = record
         .metadata
@@ -1023,7 +1055,10 @@ async fn attempt_token_refresh(
             if let (Some(cid), Some(secret)) = (client_id, client_secret) {
                 let client = SSOOIDCClient::new();
                 let start_url = "https://view.awsapps.com/start";
-                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                match client
+                    .refresh_token_with_region(cid, secret, refresh_token, region, start_url)
+                    .await
+                {
                     Ok(response) => {
                         return Some(RefreshedToken {
                             access_token: response.access_token,
@@ -1047,7 +1082,10 @@ async fn attempt_token_refresh(
                     .unwrap_or("");
 
                 let client = SSOOIDCClient::new();
-                match client.refresh_token_with_region(cid, secret, refresh_token, region, start_url).await {
+                match client
+                    .refresh_token_with_region(cid, secret, refresh_token, region, start_url)
+                    .await
+                {
                     Ok(response) => {
                         return Some(RefreshedToken {
                             access_token: response.access_token,
@@ -1364,7 +1402,9 @@ async fn patch_auth_file_fields(
     if !changed {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no fields to update — use label, prefix, proxy_url, or priority"})),
+            Json(
+                json!({"error": "no fields to update — use label, prefix, proxy_url, or priority"}),
+            ),
         );
     }
 
@@ -1389,4 +1429,567 @@ async fn patch_auth_file_fields(
     let _ = state.accounts.reload().await;
 
     (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+}
+
+// ── Zed credential import ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ImportZedCredentialBody {
+    name: Option<String>,
+    user_id: Option<String>,
+    credential_json: Option<String>,
+}
+
+/// `POST /v0/management/zed/import` — import Zed credential.
+async fn import_zed_credential(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<ImportZedCredentialBody>,
+) -> impl IntoResponse {
+    use crate::proxy::zed_import::{import_zed_credential, validated_zed_credential};
+
+    let name = body.name.as_deref().unwrap_or("").trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "name is required"})),
+        );
+    }
+
+    let (user_id, credential_json) =
+        match validated_zed_credential(body.user_id.as_deref(), body.credential_json.as_deref()) {
+            Ok(values) => values,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": e.to_string()})),
+                );
+            }
+        };
+
+    let cfg = state.config.read().await;
+    let auth_dir = std::path::PathBuf::from(&cfg.auth_dir);
+    drop(cfg);
+
+    match import_zed_credential(&auth_dir, name, user_id, credential_json) {
+        Ok(filename) => {
+            // Reload accounts
+            if let Err(error) = state.accounts.reload().await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("reload accounts: {error}")})),
+                );
+            }
+
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ok",
+                    "filename": filename,
+                })),
+            )
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("already exists") {
+                StatusCode::CONFLICT
+            } else if msg.contains("invalid filename") || msg.contains("name is required") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(json!({"error": msg})))
+        }
+    }
+}
+
+// ── Zed quota check ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CheckZedQuotaBody {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct InitiateZedLoginBody {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ZedLoginStatusQuery {
+    session_id: Option<String>,
+}
+
+/// `POST /v0/management/zed/login/initiate` — start native Zed login.
+async fn initiate_zed_login(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<InitiateZedLoginBody>,
+) -> impl IntoResponse {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string();
+
+    let (public_key, private_key) = match generate_keypair() {
+        Ok(pair) => pair,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("generate keypair: {error}")})),
+            )
+        }
+    };
+
+    let (callback_state, port, server_handle) = match start_callback_server(0).await {
+        Ok(result) => result,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("start callback server: {error}")})),
+            )
+        }
+    };
+
+    let login_url = build_login_url(&public_key, port);
+    let session = ZedLoginSession::new(
+        name,
+        private_key,
+        port,
+        Arc::new(callback_state),
+        server_handle,
+    );
+
+    let mut sessions = state.zed_login_sessions.lock().await;
+    cleanup_expired_sessions(&mut sessions);
+    sessions.insert(session_id.clone(), session);
+    drop(sessions);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "waiting",
+            "session_id": session_id,
+            "login_url": login_url,
+            "port": port,
+        })),
+    )
+}
+
+/// `GET /v0/management/zed/login/status` — poll native Zed login status.
+async fn get_zed_login_status(
+    State(state): State<Arc<ProxyState>>,
+    Query(query): Query<ZedLoginStatusQuery>,
+) -> impl IntoResponse {
+    let Some(session_id) = query
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "session_id is required"})),
+        );
+    };
+
+    let (private_key, callback_state) = {
+        let mut sessions = state.zed_login_sessions.lock().await;
+        cleanup_expired_sessions(&mut sessions);
+
+        let session = match sessions.get_mut(session_id) {
+            Some(session) => session,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "Zed login session not found"})),
+                )
+            }
+        };
+
+        if !session.callback_state.is_completed() {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "waiting",
+                    "session_id": session_id,
+                })),
+            );
+        }
+
+        (session.private_key.clone(), Arc::clone(&session.callback_state))
+    };
+
+    let user_id = match callback_state.user_id.lock().await.clone() {
+        Some(user_id) => user_id,
+        None => {
+            let error_msg = "callback completed without user_id".to_string();
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error_msg})),
+            );
+        }
+    };
+    let encrypted_access_token = match callback_state.access_token.lock().await.clone() {
+        Some(access_token) => access_token,
+        None => {
+            let error_msg = "callback completed without access_token".to_string();
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error_msg})),
+            );
+        }
+    };
+
+    let credential_json = match decrypt_credential(&private_key, &encrypted_access_token) {
+        Ok(value) => value,
+        Err(error) => {
+            let error_msg = format!("decrypt credential: {error}");
+            let mut sessions = state.zed_login_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                session.server_handle.abort();
+            }
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error_msg})));
+        }
+    };
+
+    let existing_accounts = state.accounts.accounts_for("zed").await;
+    let existing_filename = find_existing_zed_filename(&existing_accounts, &user_id);
+    let filename = existing_filename
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| canonical_zed_login_filename(&user_id));
+
+    let existing_record = if let Some(existing_filename) = existing_filename {
+        let stored_records = match state.accounts.store().list().await {
+            Ok(records) => records,
+            Err(error) => {
+                let error_msg = format!("load auth files: {error}");
+                let mut sessions = state.zed_login_sessions.lock().await;
+                if let Some(session) = sessions.get_mut(session_id) {
+                    session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                    session.server_handle.abort();
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error_msg})),
+                );
+            }
+        };
+
+        match stored_records.into_iter().find(|record| {
+            record.id == existing_filename
+                || record.path.file_name().and_then(|f| f.to_str()) == Some(existing_filename.as_str())
+        }) {
+            Some(record) => Some(record),
+            None => {
+                let error_msg = format!("existing zed auth file not found: {existing_filename}");
+                let mut sessions = state.zed_login_sessions.lock().await;
+                if let Some(session) = sessions.get_mut(session_id) {
+                    session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+                    session.server_handle.abort();
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error_msg})),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json);
+    if let Err(error) = state.accounts.store().save(&record).await {
+        let error_msg = format!("save auth file: {error}");
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+            session.server_handle.abort();
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error_msg})),
+        );
+    }
+    if let Err(error) = state.accounts.reload().await {
+        let error_msg = format!("reload accounts: {error}");
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.status = ZedLoginSessionStatus::Failed(error_msg.clone());
+            session.server_handle.abort();
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error_msg})),
+        );
+    }
+
+    {
+        let mut sessions = state.zed_login_sessions.lock().await;
+        if let Some(session) = sessions.remove(session_id) {
+            session.server_handle.abort();
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "completed",
+            "filename": filename,
+            "user_id": user_id,
+        })),
+    )
+}
+
+fn find_existing_zed_filename(accounts: &[AuthRecord], user_id: &str) -> Option<String> {
+    accounts.iter().find_map(|record| {
+        let metadata = serde_json::to_value(&record.metadata).ok()?;
+        let (existing_user_id, _) = crate::auth::zed::parse_zed_credential(&metadata).ok()?;
+        if zed_user_ids_match(&existing_user_id, user_id) {
+            Some(record.id.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn build_zed_login_record(
+    existing_record: Option<AuthRecord>,
+    filename: &str,
+    user_id: &str,
+    credential_json: &str,
+) -> AuthRecord {
+    let now = chrono::Utc::now();
+
+    if let Some(mut record) = existing_record {
+        record.metadata.insert("type".to_string(), json!("zed"));
+        record
+            .metadata
+            .insert("user_id".to_string(), json!(user_id));
+        record
+            .metadata
+            .insert("credential_json".to_string(), json!(credential_json));
+        record
+            .metadata
+            .insert("last_refreshed_at".to_string(), json!(now.to_rfc3339()));
+
+        return record;
+    }
+
+    let metadata = HashMap::from([
+        ("type".to_string(), json!("zed")),
+        ("user_id".to_string(), json!(user_id)),
+        ("credential_json".to_string(), json!(credential_json)),
+        ("last_refreshed_at".to_string(), json!(now.to_rfc3339())),
+    ]);
+
+    AuthRecord {
+        id: filename.to_string(),
+        provider: "zed".to_string(),
+        provider_key: "zed".to_string(),
+        label: user_id.to_string(),
+        disabled: false,
+        status: AuthStatus::Active,
+        status_message: None,
+        last_refreshed_at: Some(now),
+        path: std::path::PathBuf::from(filename),
+        metadata,
+        updated_at: now,
+    }
+}
+
+/// `POST /v0/management/zed/check-quota` — check quota for a Zed auth file.
+async fn check_zed_quota(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckZedQuotaBody>,
+) -> impl IntoResponse {
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Find the auth record
+    let accounts = state.accounts.accounts_for("zed").await;
+    let record = accounts
+        .iter()
+        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+
+    let Some(record) = record else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Zed auth file not found"})),
+        );
+    };
+
+    // Parse Zed credential from metadata
+    let metadata_value = serde_json::to_value(&record.metadata).unwrap_or(json!({}));
+    let (user_id, credential_json) = match crate::auth::zed::parse_zed_credential(&metadata_value) {
+        Ok(creds) => creds,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to parse Zed credential: {}", e)})),
+            );
+        }
+    };
+
+    // Call /client/users/me to get quota info
+    let response = fetch_zed_user_info(&name, &user_id, &credential_json).await;
+
+    (StatusCode::OK, Json(response))
+}
+
+async fn list_zed_models(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckZedQuotaBody>,
+) -> impl IntoResponse {
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
+
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("zed"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Zed auth file not found"})),
+            );
+        }
+    };
+
+    let models = crate::providers::static_models::static_models_by_channel("zed")
+        .into_iter()
+        .map(|model| model.id)
+        .collect::<Vec<_>>();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "account": record.id,
+            "provider_key": "zed",
+            "models": models,
+        })),
+    )
+}
+
+/// Fetch user info from Zed /client/users/me endpoint and return flattened response.
+async fn fetch_zed_user_info(account: &str, user_id: &str, credential_json: &str) -> Value {
+    use crate::providers::zed::ZedClient;
+
+    let client = ZedClient;
+    let url = client.users_me_endpoint();
+
+    let http_client = reqwest::Client::new();
+    let result = http_client
+        .get(url)
+        .header("authorization", format!("{} {}", user_id, credential_json))
+        .header("content-type", "application/json")
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            match resp.json::<Value>().await {
+                Ok(data) => build_zed_quota_response(account, status, Some(data)),
+                Err(e) => build_zed_quota_response_error(
+                    account,
+                    status,
+                    format!("failed to parse response: {}", e),
+                ),
+            }
+        }
+        Err(e) => build_zed_quota_response_error(account, 0, format!("request failed: {}", e)),
+    }
+}
+
+/// Build successful quota response with flattened fields.
+fn build_zed_quota_response(account: &str, upstream_status: u16, data: Option<Value>) -> Value {
+    let data = data.unwrap_or(json!({}));
+
+    // Normalize limit fields
+    let model_requests_limit = normalize_zed_limit(data.get("model_requests_limit"));
+    let edit_predictions_limit = normalize_zed_limit(data.get("edit_predictions_limit"));
+
+    json!({
+        "account": account,
+        "status": if upstream_status == 200 { "available" } else { "error" },
+        "plan": data.get("plan").and_then(|v| v.as_str()),
+        "plan_v2": data.get("plan_v2").and_then(|v| v.as_str()),
+        "plan_v3": data.get("plan_v3").and_then(|v| v.as_str()),
+        "subscription_started_at": data.get("subscription_started_at").and_then(|v| v.as_str()),
+        "subscription_ended_at": data.get("subscription_ended_at").and_then(|v| v.as_str()),
+        "model_requests_used": data.get("model_requests_used").and_then(|v| v.as_i64()).unwrap_or(0),
+        "model_requests_limit": model_requests_limit,
+        "edit_predictions_used": data.get("edit_predictions_used").and_then(|v| v.as_i64()).unwrap_or(0),
+        "edit_predictions_limit": edit_predictions_limit,
+        "is_account_too_young": data.get("is_account_too_young").and_then(|v| v.as_bool()).unwrap_or(false),
+        "has_overdue_invoices": data.get("has_overdue_invoices").and_then(|v| v.as_bool()).unwrap_or(false),
+        "is_usage_based_billing_enabled": data.get("is_usage_based_billing_enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+        "feature_flags": data.get("feature_flags").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+        "error": null,
+        "upstream_status": upstream_status,
+    })
+}
+
+/// Build error quota response with flattened fields.
+fn build_zed_quota_response_error(account: &str, upstream_status: u16, error: String) -> Value {
+    json!({
+        "account": account,
+        "status": "error",
+        "plan": null,
+        "plan_v2": null,
+        "plan_v3": null,
+        "subscription_started_at": null,
+        "subscription_ended_at": null,
+        "model_requests_used": 0,
+        "model_requests_limit": 0,
+        "edit_predictions_used": 0,
+        "edit_predictions_limit": "unlimited",
+        "is_account_too_young": false,
+        "has_overdue_invoices": false,
+        "is_usage_based_billing_enabled": false,
+        "feature_flags": [],
+        "error": error,
+        "upstream_status": upstream_status,
+    })
+}
+
+/// Normalize Zed limit field: { limited: 42, remaining: 0 } -> 42, or return as-is.
+fn normalize_zed_limit(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::Object(obj)) if obj.contains_key("limited") => {
+            obj.get("limited").cloned().unwrap_or(json!(0))
+        }
+        Some(v) => v.clone(),
+        None => json!(0),
+    }
 }

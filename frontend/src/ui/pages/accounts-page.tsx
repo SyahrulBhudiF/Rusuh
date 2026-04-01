@@ -33,6 +33,12 @@ import {
 } from "../../lib/management-auth-files";
 import { useCheckKiroQuotaMutation } from "../../lib/management-kiro";
 import { toastError, toastInfo, toastSuccess } from "../../lib/toast";
+import {
+  type ZedModelsResponse,
+  type ZedQuotaResponse,
+  useCheckZedQuotaMutation,
+  useFetchZedModelsMutation,
+} from "../../lib/management-zed";
 import { PageShell } from "../page-shell";
 import { QueryState } from "../query-state";
 import { statusTone } from "../status-tone";
@@ -57,6 +63,7 @@ type ProviderGroup = {
 function providerLabel(key: string) {
   if (key === "kiro") return "Kiro";
   if (key === "antigravity") return "Antigravity";
+  if (key === "zed") return "Zed";
   return key;
 }
 
@@ -93,6 +100,8 @@ export function AccountsPage() {
   const patchFields = usePatchAuthFileFieldsMutation();
   const deleteAuthFile = useDeleteAuthFileMutation();
   const checkKiroQuota = useCheckKiroQuotaMutation();
+  const checkZedQuota = useCheckZedQuotaMutation();
+  const fetchZedModels = useFetchZedModelsMutation();
 
   const [providerFilter, setProviderFilter] = useState(ALL_FILTER);
   const [statusFilter, setStatusFilter] = useState(ALL_FILTER);
@@ -103,6 +112,12 @@ export function AccountsPage() {
       string,
       { status: string; remaining?: number; detail?: string; message?: string }
     >
+  >({});
+  const [zedQuotaResults, setZedQuotaResults] = useState<
+    Record<string, ZedQuotaResponse>
+  >({});
+  const [zedModelsResults, setZedModelsResults] = useState<
+    Record<string, ZedModelsResponse>
   >({});
   const [deleteTarget, setDeleteTarget] = useState<ManagementAuthFile | null>(
     null,
@@ -282,10 +297,13 @@ export function AccountsPage() {
               </section>
 
               {!hasItems ? (
-                <article className={`${surfaceClass} bg-muted/40 border-dashed p-6 text-sm text-muted-foreground`}>
+                <article
+                  className={`${surfaceClass} bg-muted/40 border-dashed p-6 text-sm text-muted-foreground`}
+                >
                   <p className="text-foreground">No accounts to show.</p>
                   <p className="mt-2">
-                    Connected provider accounts appear here. Add one account to start routing requests.
+                    Connected provider accounts appear here. Add one account to
+                    start routing requests.
                   </p>
                   <Button
                     type="button"
@@ -312,7 +330,10 @@ export function AccountsPage() {
 
                     <div className="grid gap-3">
                       {group.items.map((item) => (
-                        <Card key={item.id} className={`${cardClass} dashboard-card motion-panel`}>
+                        <Card
+                          key={item.id}
+                          className={`${cardClass} dashboard-card motion-panel`}
+                        >
                           <CardContent className="space-y-4 p-4">
                             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                               <div className="min-w-0">
@@ -375,6 +396,82 @@ export function AccountsPage() {
                                         {quotaResults[item.id].message}
                                       </span>
                                     ) : null}
+                                  </div>
+                                ) : null}
+                                {item.provider_key === "zed" &&
+                                zedQuotaResults[item.id] ? (
+                                  <div className="border-border bg-muted/50 mt-3 rounded-lg border p-3">
+                                    <p className="text-xs font-medium">
+                                      Quota Status:
+                                    </p>
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Badge
+                                        variant={
+                                          zedQuotaResults[item.id].status ===
+                                          "available"
+                                            ? "default"
+                                            : "destructive"
+                                        }
+                                        className="rounded-full"
+                                      >
+                                        {zedQuotaResults[item.id].status}
+                                      </Badge>
+                                      {zedQuotaResults[item.id]
+                                        .model_requests_used !== undefined &&
+                                      zedQuotaResults[item.id]
+                                        .model_requests_limit !== undefined ? (
+                                        <span className="text-muted-foreground text-xs">
+                                          {
+                                            zedQuotaResults[item.id]
+                                              .model_requests_used
+                                          }
+                                          /
+                                          {String(
+                                            zedQuotaResults[item.id]
+                                              .model_requests_limit,
+                                          )}{" "}
+                                          used
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {zedQuotaResults[item.id].plan ? (
+                                      <p className="text-muted-foreground mt-1 text-xs">
+                                        Plan: {zedQuotaResults[item.id].plan}
+                                      </p>
+                                    ) : null}
+                                    {zedQuotaResults[item.id].error ? (
+                                      <p className="text-destructive mt-1 text-xs">
+                                        {zedQuotaResults[item.id].error}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {item.provider_key === "zed" &&
+                                zedModelsResults[item.id] ? (
+                                  <div className="border-border bg-muted/50 mt-3 rounded-lg border p-3">
+                                    <p className="text-xs font-medium">
+                                      Available Models:
+                                    </p>
+                                    {zedModelsResults[item.id].models.length >
+                                    0 ? (
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        {zedModelsResults[item.id].models.map(
+                                          (model) => (
+                                            <Badge
+                                              key={`${item.id}-${model}`}
+                                              variant="outline"
+                                              className="rounded-full px-2.5 py-1 text-xs"
+                                            >
+                                              {model}
+                                            </Badge>
+                                          ),
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <p className="text-muted-foreground mt-1 text-xs">
+                                        No models reported for this account.
+                                      </p>
+                                    )}
                                   </div>
                                 ) : null}
                               </div>
@@ -455,6 +552,38 @@ export function AccountsPage() {
                             ) : null}
 
                             <div className="flex flex-wrap gap-2">
+                              {item.provider_key === "zed" ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={async () => {
+                                    try {
+                                      const result =
+                                        await fetchZedModels.mutateAsync({
+                                          name: item.id,
+                                        });
+                                      setZedModelsResults((prev) => ({
+                                        ...prev,
+                                        [item.id]: result,
+                                      }));
+                                      toastInfo("Models fetched", item.id);
+                                    } catch (error) {
+                                      toastError(
+                                        "Failed to fetch models",
+                                        error instanceof Error
+                                          ? error.message
+                                          : "Unknown error.",
+                                      );
+                                    }
+                                  }}
+                                  disabled={fetchZedModels.isPending}
+                                  className="h-10 rounded-xl px-3"
+                                >
+                                  {fetchZedModels.isPending
+                                    ? "Loading…"
+                                    : "Get models"}
+                                </Button>
+                              ) : null}
                               {item.provider_key === "kiro" ? (
                                 <Button
                                   type="button"
@@ -486,6 +615,41 @@ export function AccountsPage() {
                                   className="h-10 rounded-xl px-3"
                                 >
                                   {checkKiroQuota.isPending
+                                    ? "Checking…"
+                                    : "Check quota"}
+                                </Button>
+                              ) : null}
+                              {item.provider_key === "zed" ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={async () => {
+                                    try {
+                                      const result =
+                                        await checkZedQuota.mutateAsync({
+                                          name: item.id,
+                                        });
+                                      setZedQuotaResults((prev) => ({
+                                        ...prev,
+                                        [item.id]: result,
+                                      }));
+                                      toastInfo(
+                                        "Quota check complete",
+                                        item.id,
+                                      );
+                                    } catch (error) {
+                                      toastError(
+                                        "Quota check failed",
+                                        error instanceof Error
+                                          ? error.message
+                                          : "Unknown error.",
+                                      );
+                                    }
+                                  }}
+                                  disabled={checkZedQuota.isPending}
+                                  className="h-10 rounded-xl px-3"
+                                >
+                                  {checkZedQuota.isPending
                                     ? "Checking…"
                                     : "Check quota"}
                                 </Button>

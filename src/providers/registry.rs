@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::kiro::KiroProvider;
 use crate::providers::model_registry::ModelRegistry;
+use crate::providers::zed::ZedProvider;
 use crate::providers::Provider;
 use crate::proxy::KiroRuntimeState;
 
@@ -52,6 +53,19 @@ pub async fn build_providers(
                     "skipping kiro account {} ({}): {e}",
                     record.label, record.id
                 );
+            }
+        }
+    }
+
+    // ── Zed Cloud ────────────────────────────────────────────────────────
+    for record in accounts.accounts_for("zed").await {
+        match ZedProvider::new(record.clone()) {
+            Ok(provider) => {
+                info!("registering zed provider: {} ({})", record.label, record.id);
+                providers.push(Arc::new(provider));
+            }
+            Err(e) => {
+                warn!("skipping zed account {} ({}): {e}", record.label, record.id);
             }
         }
     }

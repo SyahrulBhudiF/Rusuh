@@ -214,17 +214,11 @@ async fn client_is_effectively_available_basic() {
     assert!(reg.client_is_effectively_available("c1", "model-a").await);
 
     // Unregistered client
-    assert!(
-        !reg.client_is_effectively_available("c99", "model-a")
-            .await
-    );
+    assert!(!reg.client_is_effectively_available("c99", "model-a").await);
 
     // Suspend and check
     reg.suspend_client_model("c1", "model-a", "test").await;
-    assert!(
-        !reg.client_is_effectively_available("c1", "model-a")
-            .await
-    );
+    assert!(!reg.client_is_effectively_available("c1", "model-a").await);
 
     // Resume and check
     reg.resume_client_model("c1", "model-a").await;
@@ -238,10 +232,7 @@ async fn client_is_effectively_available_quota_exceeded() {
         .await;
 
     reg.set_quota_exceeded("c1", "model-a").await;
-    assert!(
-        !reg.client_is_effectively_available("c1", "model-a")
-            .await
-    );
+    assert!(!reg.client_is_effectively_available("c1", "model-a").await);
 
     reg.clear_quota_exceeded("c1", "model-a").await;
     assert!(reg.client_is_effectively_available("c1", "model-a").await);

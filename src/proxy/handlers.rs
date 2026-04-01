@@ -4,13 +4,23 @@ use axum::{
     Json,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     error::AppError,
     models::{ChatCompletionRequest, ModelInfo, ModelsResponse},
     proxy::ProxyState,
 };
+
+const PUBLIC_MODEL_SONNET_46: &str = "claude-sonnet-4.6";
+const PUBLIC_MODEL_SONNET_45: &str = "claude-sonnet-4.5";
+const PUBLIC_MODEL_SONNET_45_THINKING: &str = "claude-sonnet-4.5-thinking";
+
+#[derive(Clone, Copy)]
+struct RouteTarget {
+    provider: &'static str,
+    model: &'static str,
+}
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
@@ -22,20 +32,11 @@ pub async fn health() -> Response {
 
 /// GET /v1/models
 pub async fn list_models(State(state): State<Arc<ProxyState>>) -> Response {
-    let models = state.model_registry.get_available_models("openai").await;
-    if models.is_empty() {
-        // Fallback to direct provider query
-        let models = collect_models(&state).await;
-        return Json(ModelsResponse {
-            object: "list".to_string(),
-            data: models,
-        })
-        .into_response();
-    }
-    Json(json!({
-        "object": "list",
-        "data": models,
-    }))
+    let models = public_catalog_models(&state).await;
+    Json(ModelsResponse {
+        object: "list".to_string(),
+        data: models,
+    })
     .into_response()
 }
 
@@ -90,21 +91,13 @@ pub async fn gemini_generate(
 
 pub async fn amp_list_models(
     State(state): State<Arc<ProxyState>>,
-    Path(_provider): Path<String>,
+    Path(provider): Path<String>,
 ) -> Response {
-    let models = state.model_registry.get_available_models("openai").await;
-    if models.is_empty() {
-        let models = collect_models(&state).await;
-        return Json(ModelsResponse {
-            object: "list".to_string(),
-            data: models,
-        })
-        .into_response();
-    }
-    Json(json!({
-        "object": "list",
-        "data": models,
-    }))
+    let models = collect_provider_models(&state, &provider).await;
+    Json(ModelsResponse {
+        object: "list".to_string(),
+        data: models,
+    })
     .into_response()
 }
 
@@ -129,27 +122,108 @@ pub async fn amp_claude_messages(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 async fn collect_models(state: &ProxyState) -> Vec<ModelInfo> {
-    let now = chrono::Utc::now().timestamp();
     let mut models = Vec::new();
     for provider in &state.providers {
         if let Ok(mut pm) = provider.list_models().await {
             models.append(&mut pm);
         }
     }
-    if models.is_empty() {
-        models.push(ModelInfo {
-            id: "rusuh-placeholder".to_string(),
-            object: "model".to_string(),
-            created: now,
-            owned_by: "rusuh".to_string(),
-        });
-    }
     models
 }
 
-/// Resolve model name through OAuth model alias.
-/// Config format: `oauth-model-alias.<channel>: [{name, alias}]`
-/// When a request asks for `alias`, we rewrite to `name` for the upstream.
+async fn collect_provider_models(state: &ProxyState, provider_name: &str) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for provider in &state.providers {
+        if !provider.name().eq_ignore_ascii_case(provider_name) {
+            continue;
+        }
+
+        if let Ok(pm) = provider.list_models().await {
+            for model in pm {
+                if seen_ids.insert(model.id.clone()) {
+                    models.push(model);
+                }
+            }
+        }
+    }
+
+    models
+}
+
+async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
+    let now = chrono::Utc::now().timestamp();
+    let mut models = Vec::new();
+
+    for public_model in [
+        PUBLIC_MODEL_SONNET_46,
+        PUBLIC_MODEL_SONNET_45,
+        PUBLIC_MODEL_SONNET_45_THINKING,
+    ] {
+        let targets = public_route_targets(public_model);
+        let mut available = false;
+        for target in targets {
+            let clients = state
+                .model_registry
+                .available_clients_for_model(target.model)
+                .await;
+            if clients.iter().any(|client_id| {
+                client_provider_name(client_id)
+                    .map(|name| name.eq_ignore_ascii_case(target.provider))
+                    .unwrap_or(false)
+            }) {
+                available = true;
+                break;
+            }
+        }
+
+        if available {
+            models.push(ModelInfo {
+                id: public_model.to_string(),
+                object: "model".to_string(),
+                created: now,
+                owned_by: "rusuh".to_string(),
+            });
+        }
+    }
+
+    models
+}
+
+fn public_route_targets(model: &str) -> &'static [RouteTarget] {
+    match model {
+        PUBLIC_MODEL_SONNET_46 => &[RouteTarget {
+            provider: "zed",
+            model: "claude-sonnet-4-6",
+        }],
+        PUBLIC_MODEL_SONNET_45 => &[
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-sonnet-4-5",
+            },
+            RouteTarget {
+                provider: "zed",
+                model: "claude-sonnet-4-5",
+            },
+        ],
+        PUBLIC_MODEL_SONNET_45_THINKING => &[RouteTarget {
+            provider: "kiro",
+            model: "kiro-claude-sonnet-4-5-agentic",
+        }],
+        _ => &[],
+    }
+}
+
+fn client_provider_name(client_id: &str) -> Option<&str> {
+    client_id.split_once('_').map(|(provider, _)| provider)
+}
+
+fn is_public_model(model: &str) -> bool {
+    !public_route_targets(model).is_empty()
+}
+
+/// Resolve model name through configured OAuth aliases only.
 fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> String {
     for aliases in config.oauth_model_alias.values() {
         for entry in aliases {
@@ -159,87 +233,39 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
         }
     }
 
-    // Built-in Kiro aliases (generic model names → Kiro-specific)
-    let normalized = model.to_ascii_lowercase();
-    let resolved = match normalized.as_str() {
-        // Claude base models
-        "claude-opus-4.6" => Some("kiro-claude-opus-4-6"),
-        "claude-sonnet-4.6" => Some("kiro-claude-sonnet-4-6"),
-        "claude-opus-4.5" => Some("kiro-claude-opus-4-5"),
-        "claude-sonnet-4.5" => Some("kiro-claude-sonnet-4-5"),
-        "claude-sonnet-4" => Some("kiro-claude-sonnet-4"),
-        "claude-haiku-4.5" => Some("kiro-claude-haiku-4-5"),
-
-        // Claude thinking/agentic models
-        "claude-opus-4.6-thinking" => Some("kiro-claude-opus-4-6-agentic"),
-        "claude-sonnet-4.6-thinking" => Some("kiro-claude-sonnet-4-6-agentic"),
-        "claude-opus-4.5-thinking" => Some("kiro-claude-opus-4-5-agentic"),
-        "claude-sonnet-4.5-thinking" => Some("kiro-claude-sonnet-4-5-agentic"),
-        "claude-sonnet-4-thinking" => Some("kiro-claude-sonnet-4-agentic"),
-        "claude-haiku-4.5-thinking" => Some("kiro-claude-haiku-4-5-agentic"),
-
-        // Third-party models
-        "deepseek-3.2" => Some("kiro-deepseek-3-2"),
-        "deepseek-3.2-thinking" => Some("kiro-deepseek-3-2-agentic"),
-        "minimax-m2.1" => Some("kiro-minimax-m2-1"),
-        "minimax-m2.1-thinking" => Some("kiro-minimax-m2-1-agentic"),
-        "qwen3-coder-next" => Some("kiro-qwen3-coder-next"),
-        "qwen3-coder-next-thinking" => Some("kiro-qwen3-coder-next-agentic"),
-
-        _ => None,
-    };
-
-    resolved.unwrap_or(model).to_string()
+    model.to_string()
 }
 
-/// Core routing: model name → provider → execute.
-///
-/// Flow:
-/// 1. Apply OAuth model alias from config
-/// 2. Query ModelRegistry for providers serving this model
-/// 3. If provider_hint is set, filter to that provider
-/// 4. Try providers in order (round-robin comes in PRD #9)
-/// 5. On stream requests, return SSE body; otherwise JSON
-/// 6. If aliased model fails (all providers unavailable), retry with original model
 async fn route_chat(
     state: Arc<ProxyState>,
-    mut req: ChatCompletionRequest,
+    req: ChatCompletionRequest,
     provider_hint: Option<String>,
 ) -> Result<Response, AppError> {
     let is_stream = req.stream.unwrap_or(false);
 
-    // Step 1: Apply OAuth model alias and track original for fallback
-    let original_model = req.model.clone();
-    let aliased_model = {
-        let config = state.config.read().await;
-        let resolved = resolve_oauth_model_alias(&config, &req.model);
-        if resolved != req.model {
-            tracing::debug!("model alias: {} → {}", req.model, resolved);
-            Some(resolved)
-        } else {
-            None
+    if provider_hint.is_none() {
+        let public_targets = public_route_targets(&req.model);
+        if !public_targets.is_empty() {
+            return try_route_with_targets(state, &req, public_targets, is_stream).await;
         }
-    };
 
-    // Try aliased model first if alias was applied
-    if let Some(ref aliased) = aliased_model {
-        req.model = aliased.clone();
-        match try_route_with_model(state.clone(), &req, &provider_hint, is_stream).await {
-            Ok(response) => return Ok(response),
-            Err(e) if e.is_quota_or_unavailable() => {
-                tracing::info!(
-                    "aliased model '{}' unavailable, falling back to original model '{}'",
-                    aliased,
-                    original_model
-                );
-                // Fall through to try original model
-            }
-            Err(e) => return Err(e),
+        let config = state.config.read().await;
+        let resolved_model = resolve_oauth_model_alias(&config, &req.model);
+        if resolved_model != req.model || !is_public_model(&req.model) {
+            return Err(AppError::BadRequest(format!(
+                "Model '{}' is not available on the public endpoint. Use one of the curated public models or a provider-pinned route.",
+                req.model
+            )));
         }
     }
 
-    // Try original model (either no alias was applied, or aliased model failed)
-    req.model = original_model;
+    let mut req = req;
+    let resolved_model = {
+        let config = state.config.read().await;
+        resolve_oauth_model_alias(&config, &req.model)
+    };
+    req.model = resolved_model;
+
     try_route_with_model(state, &req, &provider_hint, is_stream).await
 }
 
@@ -250,13 +276,58 @@ async fn try_route_with_model(
     provider_hint: &Option<String>,
     is_stream: bool,
 ) -> Result<Response, AppError> {
+    let candidates = resolve_candidates_for_model(&state, &req.model, provider_hint).await;
+    execute_candidates(state, req, candidates, is_stream).await
+}
 
-    // Step 2: Get providers for this model from registry
-    let model_providers = state.model_registry.get_model_providers(&req.model).await;
+async fn try_route_with_targets(
+    state: Arc<ProxyState>,
+    req: &ChatCompletionRequest,
+    targets: &[RouteTarget],
+    is_stream: bool,
+) -> Result<Response, AppError> {
+    let mut last_error = None;
 
-    // Step 3: Build candidate provider list
-    let candidates: Vec<usize> = if let Some(ref hint) = provider_hint {
-        // Filter to matching provider when hint is given
+    for target in targets {
+        let mut upstream_req = req.clone();
+        upstream_req.model = target.model.to_string();
+        let provider_hint = Some(target.provider.to_string());
+        let candidates = resolve_candidates_for_model(&state, target.model, &provider_hint).await;
+
+        if candidates.is_empty() {
+            last_error = Some(AppError::QuotaExceeded(format!(
+                "All providers for model '{}' are currently unavailable (quota exceeded or suspended)",
+                target.model
+            )));
+            continue;
+        }
+
+        match execute_candidates(state.clone(), &upstream_req, candidates, is_stream).await {
+            Ok(response) => return Ok(response),
+            Err(e) if e.is_quota_or_unavailable() || e.is_account_error() => {
+                last_error = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        AppError::NoAccounts(format!(
+            "No provider available for model '{}'. Add credentials to config.yaml.",
+            req.model
+        ))
+    }))
+}
+
+async fn resolve_candidates_for_model(
+    state: &ProxyState,
+    model_id: &str,
+    provider_hint: &Option<String>,
+) -> Vec<usize> {
+    let model_providers = state.model_registry.get_model_providers(model_id).await;
+
+    let candidates: Vec<usize> = if let Some(hint) = provider_hint {
         state
             .providers
             .iter()
@@ -265,7 +336,6 @@ async fn try_route_with_model(
             .map(|(i, _)| i)
             .collect()
     } else if !model_providers.is_empty() {
-        // Use registry-resolved providers
         state
             .providers
             .iter()
@@ -278,35 +348,31 @@ async fn try_route_with_model(
             .map(|(i, _)| i)
             .collect()
     } else {
-        // Fallback: try all providers
         (0..state.providers.len()).collect()
     };
 
-    if candidates.is_empty() {
-        return Err(AppError::NoAccounts(format!(
-            "No provider available for model '{}'. Add credentials to config.yaml.",
-            req.model
-        )));
-    }
-
-    // Step 3.5: Filter candidates by effective availability (quota/suspension)
     let mut available_candidates = Vec::new();
-    for &idx in &candidates {
+    for idx in candidates {
         let provider = &state.providers[idx];
         let client_id = format!("{}_{}", provider.name(), idx);
-
         if state
             .model_registry
-            .client_is_effectively_available(&client_id, &req.model)
+            .client_is_effectively_available(&client_id, model_id)
             .await
         {
             available_candidates.push(idx);
         }
     }
 
-    // Use only available candidates - if none are available, return error
-    let candidates = available_candidates;
+    available_candidates
+}
 
+async fn execute_candidates(
+    state: Arc<ProxyState>,
+    req: &ChatCompletionRequest,
+    candidates: Vec<usize>,
+    is_stream: bool,
+) -> Result<Response, AppError> {
     if candidates.is_empty() {
         return Err(AppError::QuotaExceeded(format!(
             "All providers for model '{}' are currently unavailable (quota exceeded or suspended)",
@@ -314,9 +380,6 @@ async fn try_route_with_model(
         )));
     }
 
-    // Step 4: Try candidates with retry logic
-    // - Transient errors (5xx, timeout): retry same provider up to request-retry times
-    // - Account errors (401, 429): skip to next provider immediately
     let max_retries = {
         let config = state.config.read().await;
         config.request_retry.max(1) as usize
@@ -327,11 +390,11 @@ async fn try_route_with_model(
         .map(|i| candidates[(start_pos + i) % candidates.len()])
         .collect();
     let mut last_error = None;
+
     for &idx in &ordered {
         let provider = &state.providers[idx];
         for attempt in 0..max_retries {
             if attempt > 0 {
-                // Exponential backoff: 100ms, 200ms, 400ms, ...
                 let delay = std::time::Duration::from_millis(100 << (attempt - 1).min(4));
                 tracing::info!(
                     "retry {}/{} for provider {} (backoff {}ms)",
@@ -345,12 +408,12 @@ async fn try_route_with_model(
 
             let result = if is_stream {
                 provider
-                    .chat_completion_stream(&req)
+                    .chat_completion_stream(req)
                     .await
                     .map(crate::proxy::stream::sse_response)
             } else {
                 provider
-                    .chat_completion(&req)
+                    .chat_completion(req)
                     .await
                     .map(|r| Json(r).into_response())
             };
@@ -364,7 +427,7 @@ async fn try_route_with_model(
                             provider.name()
                         );
                         last_error = Some(e);
-                        break; // skip to next provider
+                        break;
                     }
                     if e.is_transient() && attempt + 1 < max_retries {
                         tracing::warn!(
@@ -374,12 +437,11 @@ async fn try_route_with_model(
                             max_retries
                         );
                         last_error = Some(e);
-                        continue; // retry same provider
+                        continue;
                     }
-                    // Non-retryable or exhausted retries
                     tracing::warn!("provider {} error: {e}", provider.name());
                     last_error = Some(e);
-                    break; // try next provider
+                    break;
                 }
             }
         }

@@ -29,6 +29,7 @@ fn account_errors_detected() {
     assert!(AppError::Upstream("429 Too Many Requests".into()).is_account_error());
     assert!(AppError::Upstream("rate limit exceeded".into()).is_account_error());
     assert!(AppError::Upstream("quota exceeded for user".into()).is_account_error());
+    assert!(AppError::Upstream("403 no_access_on_free_plan".into()).is_account_error());
 }
 
 #[test]
