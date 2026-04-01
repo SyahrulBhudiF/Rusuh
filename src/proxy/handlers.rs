@@ -506,6 +506,14 @@ async fn route_chat(
 ) -> Result<Response, AppError> {
     let is_stream = req.stream.unwrap_or(false);
 
+    // Resolve aliases early so dotted models like "claude-sonnet-4.6" match public routes
+    let mut req = req;
+    let resolved_model = {
+        let config = state.config.read().await;
+        resolve_oauth_model_alias(&config, &req.model)
+    };
+    req.model = resolved_model;
+
     if provider_hint.is_none() {
         let public_targets = public_route_targets(&req.model);
         if !public_targets.is_empty() {
@@ -516,22 +524,13 @@ async fn route_chat(
             return try_route_with_targets(state, &req, reserved_targets, is_stream).await;
         }
 
-        let config = state.config.read().await;
-        let resolved_model = resolve_oauth_model_alias(&config, &req.model);
-        if !is_public_model(&resolved_model) {
+        if !is_public_model(&req.model) {
             return Err(AppError::BadRequest(format!(
                 "Model '{}' is not available on the public endpoint. Use one of the curated public models or a provider-pinned route.",
                 req.model
             )));
         }
     }
-
-    let mut req = req;
-    let resolved_model = {
-        let config = state.config.read().await;
-        resolve_oauth_model_alias(&config, &req.model)
-    };
-    req.model = resolved_model;
 
     try_route_with_model(state, &req, &provider_hint, is_stream).await
 }
