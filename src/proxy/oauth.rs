@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::auth::antigravity::*;
 use crate::auth::codex;
@@ -15,6 +16,11 @@ use crate::auth::codex_login::{
     derive_code_challenge, exchange_code_for_tokens_with_redirect, generate_auth_url,
     generate_pkce_codes, parse_manual_callback_url, PKCECodes,
 };
+use crate::auth::github_copilot::{
+    build_github_copilot_auth_record, GithubCopilotAuthBundle, GithubOAuthTokenData,
+    GithubUserInfo, CLIENT_ID as GITHUB_COPILOT_CLIENT_ID,
+};
+use crate::auth::github_copilot_login::DeviceCodeResponse;
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, BUILDER_ID_START_URL, DEFAULT_REGION};
 use crate::auth::kiro_login::SSOOIDCClient;
 use crate::auth::kiro_record::KiroRecordInput;
@@ -193,6 +199,7 @@ fn normalize_oauth_provider(provider: &str) -> Option<&'static str> {
         "antigravity" | "anti-gravity" => Some("antigravity"),
         "qwen" => Some("qwen"),
         "kiro" => Some("kiro"),
+        "github-copilot" | "copilot" => Some("github-copilot"),
         "github" => Some("github"),
         _ => None,
     }
@@ -577,6 +584,7 @@ pub async fn start_oauth(
     match provider {
         "antigravity" => start_antigravity_oauth(state, q.label).await,
         "codex" => start_codex_oauth(state).await,
+        "github-copilot" => start_github_copilot_oauth(state).await,
         "kiro" => reject_legacy_kiro_social(),
         _ => (
             StatusCode::BAD_REQUEST,
@@ -679,6 +687,69 @@ async fn start_codex_oauth(state: Arc<ProxyState>) -> Response {
         .into_response()
 }
 
+async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> Response {
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let client = reqwest::Client::new();
+
+    let device_code = match request_github_copilot_device_code(&client).await {
+        Ok(device_code) => device_code,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "status": "error",
+                    "error": error.to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    state
+        .oauth_sessions
+        .register(&oauth_state, "github-copilot")
+        .await;
+    state.oauth_sessions.cleanup(600).await;
+
+    let state_clone = state.clone();
+    let oauth_state_clone = oauth_state.clone();
+    let device_code_clone = device_code.clone();
+    tokio::spawn(async move {
+        if let Err(error) = process_github_copilot_device_flow(
+            &state_clone,
+            &oauth_state_clone,
+            &device_code_clone,
+        )
+        .await
+        {
+            warn!(
+                provider = "github-copilot",
+                state = %oauth_state_clone,
+                "device flow processing failed: {error}"
+            );
+            state_clone
+                .oauth_sessions
+                .set_error(&oauth_state_clone, &error.to_string())
+                .await;
+        }
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "provider": "github-copilot",
+            "state": oauth_state,
+            "auth_method": "device_code",
+            "verification_uri": device_code.verification_uri,
+            "user_code": device_code.user_code,
+            "expires_in": device_code.expires_in,
+            "interval": device_code.interval,
+        })),
+    )
+        .into_response()
+}
+
 // ── Legacy KIRO social rejection ────────────────────────────────────────────
 
 fn reject_legacy_kiro_social() -> Response {
@@ -690,6 +761,222 @@ fn reject_legacy_kiro_social() -> Response {
         })),
     )
         .into_response()
+}
+
+fn github_copilot_auth_base_url() -> Option<String> {
+    std::env::var("RUSUH_GITHUB_COPILOT_AUTH_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn github_copilot_device_code_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/login/device/code"))
+        .unwrap_or_else(|| "https://github.com/login/device/code".to_string())
+}
+
+fn github_copilot_token_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/login/oauth/access_token"))
+        .unwrap_or_else(|| "https://github.com/login/oauth/access_token".to_string())
+}
+
+fn github_copilot_user_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/user"))
+        .unwrap_or_else(|| "https://api.github.com/user".to_string())
+}
+
+fn github_copilot_entitlement_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/copilot_internal/v2/token"))
+        .unwrap_or_else(|| "https://api.github.com/copilot_internal/v2/token".to_string())
+}
+
+async fn request_github_copilot_device_code(client: &reqwest::Client) -> anyhow::Result<DeviceCodeResponse> {
+    let response = client
+        .post(github_copilot_device_code_url())
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(&[("client_id", GITHUB_COPILOT_CLIENT_ID), ("scope", "read:user")])
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("github device code request failed (status {}): {}", status.as_u16(), body.trim());
+    }
+
+    response.json::<DeviceCodeResponse>().await.map_err(Into::into)
+}
+
+async fn poll_github_copilot_token(
+    client: &reqwest::Client,
+    device_code: &DeviceCodeResponse,
+) -> anyhow::Result<GithubOAuthTokenData> {
+    let mut poll_interval = if device_code.interval == 0 {
+        Duration::from_millis(1)
+    } else {
+        Duration::from_secs(device_code.interval)
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(device_code.expires_in.max(1));
+
+    loop {
+        tokio::time::sleep(poll_interval).await;
+
+        let response = client
+            .post(github_copilot_token_url())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&[
+                ("client_id", GITHUB_COPILOT_CLIENT_ID),
+                ("device_code", device_code.device_code.as_str()),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "github device token polling failed (status {}): {}",
+                status.as_u16(),
+                body.trim()
+            );
+        }
+
+        let payload: Value = response.json().await?;
+        if let Some(error) = payload.get("error").and_then(Value::as_str) {
+            match error {
+                "authorization_pending" => {
+                    if tokio::time::Instant::now() >= deadline {
+                        anyhow::bail!("github device authorization timed out");
+                    }
+                    continue;
+                }
+                "slow_down" => {
+                    poll_interval += Duration::from_secs(5);
+                    if tokio::time::Instant::now() >= deadline {
+                        anyhow::bail!("github device authorization timed out");
+                    }
+                    continue;
+                }
+                _ => anyhow::bail!("github device authorization failed: {error}"),
+            }
+        }
+
+        let access_token = payload
+            .get("access_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("github token response missing access_token"))?
+            .to_string();
+
+        return Ok(GithubOAuthTokenData {
+            access_token,
+            token_type: payload
+                .get("token_type")
+                .and_then(Value::as_str)
+                .unwrap_or("bearer")
+                .to_string(),
+            scope: payload
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+}
+
+async fn fetch_github_copilot_user(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> anyhow::Result<GithubUserInfo> {
+    let response = client
+        .get(github_copilot_user_url())
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, "rusuh")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "github user info request failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        );
+    }
+
+    response.json::<GithubUserInfo>().await.map_err(Into::into)
+}
+
+async fn validate_github_copilot_entitlement(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> anyhow::Result<()> {
+    let response = client
+        .get(github_copilot_entitlement_url())
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, "rusuh")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "copilot entitlement validation failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        );
+    }
+
+    let payload: Value = response.json().await?;
+    let token = payload
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if token.is_empty() {
+        anyhow::bail!("copilot entitlement response missing token");
+    }
+
+    Ok(())
+}
+
+async fn process_github_copilot_device_flow(
+    state: &Arc<ProxyState>,
+    oauth_state: &str,
+    device_code: &DeviceCodeResponse,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let token_data = poll_github_copilot_token(&client, device_code).await?;
+    let user_info = fetch_github_copilot_user(&client, &token_data.access_token).await?;
+    validate_github_copilot_entitlement(&client, &token_data.access_token).await?;
+
+    let bundle = GithubCopilotAuthBundle {
+        token_data,
+        user_info,
+    };
+    let record = build_github_copilot_auth_record(&bundle)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    state
+        .accounts
+        .store()
+        .save(&record)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    refresh_runtime_after_auth_change(state).await?;
+    state.oauth_sessions.complete(oauth_state).await;
+    Ok(())
 }
 
 pub async fn post_oauth_callback(

@@ -57,6 +57,7 @@ fn m(id: &str, created: i64, owned_by: &str, ptype: &str, display: &str) -> ExtM
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }
@@ -590,6 +591,46 @@ pub fn zed_models() -> Vec<ExtModelInfo> {
     ]
 }
 
+pub fn github_copilot_models() -> Vec<ExtModelInfo> {
+    let mut gpt5_mini = m(
+        "gpt-5-mini",
+        0,
+        "github-copilot",
+        "github-copilot",
+        "GPT-5 mini",
+    );
+    gpt5_mini.supported_endpoints = Some(vec!["chat/completions".into()]);
+
+    let mut haiku = m(
+        "claude-haiku-4.5",
+        0,
+        "github-copilot",
+        "github-copilot",
+        "Claude Haiku 4.5",
+    );
+    haiku.supported_endpoints = Some(vec!["chat/completions".into()]);
+
+    let mut gpt41 = m(
+        "gpt-4.1",
+        0,
+        "github-copilot",
+        "github-copilot",
+        "GPT-4.1",
+    );
+    gpt41.supported_endpoints = Some(vec!["chat/completions".into()]);
+
+    let mut gpt4o = m(
+        "gpt-4o",
+        0,
+        "github-copilot",
+        "github-copilot",
+        "GPT-4o",
+    );
+    gpt4o.supported_endpoints = Some(vec!["chat/completions".into()]);
+
+    vec![gpt5_mini, haiku, gpt41, gpt4o]
+}
+
 // ── Lookup ────────────────────────────────────────────────────────────────────
 
 /// Get static model definitions for a given provider channel.
@@ -600,6 +641,7 @@ pub fn static_models_by_channel(channel: &str) -> Vec<ExtModelInfo> {
         "codex" | "openai" => openai_models(),
         "qwen" => qwen_models(),
         "zed" => zed_models(),
+        "github-copilot" => github_copilot_models(),
         "antigravity" => antigravity_model_config()
             .into_iter()
             .filter_map(|(id, cfg)| {
@@ -621,7 +663,7 @@ pub fn lookup_static_model(model_id: &str) -> Option<ExtModelInfo> {
     if model_id.is_empty() {
         return None;
     }
-    let all_channels = ["claude", "gemini", "codex", "qwen", "zed"];
+    let all_channels = ["github-copilot", "claude", "gemini", "codex", "qwen", "zed"];
     for channel in all_channels {
         for model in static_models_by_channel(channel) {
             if model.id == model_id {
@@ -639,4 +681,20 @@ pub fn lookup_static_model(model_id: &str) -> Option<ExtModelInfo> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::github_copilot_models;
+
+    #[test]
+    fn github_copilot_static_models_match_free_tier_defaults() {
+        let models = github_copilot_models();
+        let ids = models.into_iter().map(|model| model.id).collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec!["gpt-5-mini", "claude-haiku-4.5", "gpt-4.1", "gpt-4o"]
+        );
+    }
 }

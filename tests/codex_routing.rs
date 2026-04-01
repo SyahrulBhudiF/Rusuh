@@ -139,6 +139,7 @@ fn make_ext_model(id: &str, owned_by: &str, provider_type: &str) -> ExtModelInfo
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }

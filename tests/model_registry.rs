@@ -29,6 +29,7 @@ fn make_model(id: &str, provider: &str) -> ExtModelInfo {
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }
@@ -207,48 +208,133 @@ async fn refresh_provider_runtime_keeps_existing_registration_when_replacement_l
     );
 }
 
+#[test]
+fn supported_endpoints_survive_model_registration_and_lookup() {
+    let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+    runtime.block_on(async {
+        let registry = ModelRegistry::new();
+        let mut model = make_model("claude-3.7-sonnet", "github-copilot");
+        model.supported_endpoints = Some(vec!["chat/completions".into(), "responses".into()]);
+
+        registry
+            .register_client("github-copilot_0", "github-copilot", vec![model])
+            .await;
+
+        let stored = registry
+            .lookup_model_info("claude-3.7-sonnet", "github-copilot")
+            .await
+            .expect("model should exist");
+
+        assert_eq!(
+            stored.supported_endpoints,
+            Some(vec!["chat/completions".into(), "responses".into()])
+        );
+    });
+}
+
+#[test]
+fn github_copilot_static_metadata_marks_responses_only_models() {
+    let codex = rusuh::providers::static_models::lookup_static_model("gpt-5-codex")
+        .expect("static copilot codex metadata should exist");
+
+    assert_eq!(codex.provider_type, "github-copilot");
+    assert_eq!(
+        codex.supported_endpoints,
+        Some(vec!["responses".to_string()])
+    );
+}
+
+#[test]
+fn config_injects_github_copilot_dotted_claude_aliases() {
+    let cfg = Config::default();
+    let aliases = cfg
+        .oauth_model_alias
+        .get("github-copilot")
+        .expect("github-copilot aliases should be injected");
+
+    assert!(aliases.iter().any(|entry| {
+        entry.alias == "claude-sonnet-4.5" && entry.name == "claude-sonnet-4-5"
+    }));
+    assert!(aliases.iter().any(|entry| {
+        entry.alias == "claude-sonnet-4.5-thinking"
+            && entry.name == "claude-sonnet-4-5-thinking"
+    }));
+}
+
+#[test]
+fn static_metadata_enriches_live_models_without_inventing_extra_visible_models() {
+    let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+    runtime.block_on(async {
+        let registry = ModelRegistry::new();
+        registry
+            .register_client(
+                "github-copilot_0",
+                "github-copilot",
+                vec![make_model("claude-sonnet-4-5", "github-copilot")],
+            )
+            .await;
+
+        let available = registry.get_available_models("openai").await;
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0]["id"], "claude-sonnet-4-5");
+
+        let info = registry
+            .lookup_model_info("claude-sonnet-4-5", "github-copilot")
+            .await
+            .expect("registered live model should be returned");
+        assert_eq!(info.id, "claude-sonnet-4-5");
+        assert_eq!(info.provider_type, "github-copilot");
+    });
+}
+
 #[tokio::test]
 async fn refresh_provider_runtime_removes_orphaned_clients() {
     let dir = TempDir::new().unwrap();
+    let antigravity_base_url = spawn_antigravity_models_server("gemini-2.5-pro").await;
+
+    let auth_json = serde_json::json!({
+        "type": "antigravity",
+        "provider_key": "antigravity",
+        "email": "test@example.com",
+        "access_token": "ya29.test",
+        "refresh_token": "1//test",
+        "project_id": "test-project",
+        "base_url": antigravity_base_url,
+        "expired": "2030-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        dir.path().join("antigravity-test.json"),
+        serde_json::to_string_pretty(&auth_json).unwrap(),
+    )
+    .unwrap();
+
     let accounts = Arc::new(AccountManager::with_dir(dir.path()));
     accounts.reload().await.unwrap();
     let registry = Arc::new(ModelRegistry::new());
     registry
         .register_client(
-            "antigravity_0",
+            "antigravity-test.json",
             "antigravity",
             vec![make_model("gemini-2.5-pro", "antigravity")],
         )
         .await;
 
-    let state = ProxyState::new(Config::default(), accounts, registry.clone(), 0);
+    let config = Config::default();
+    let state = ProxyState::new(config.clone(), accounts.clone(), registry.clone(), 1);
+    let existing_providers = rusuh::providers::registry::build_providers(
+        &config,
+        &accounts,
+        registry.clone(),
+        state.kiro_runtime.clone(),
+    )
+    .await;
     state
-        .publish_runtime_from_providers(vec![Arc::new(
-            rusuh::providers::antigravity::AntigravityProvider::new(
-                rusuh::auth::store::AuthRecord {
-                    id: "antigravity-test.json".to_string(),
-                    provider: "antigravity".to_string(),
-                    provider_key: "antigravity".to_string(),
-                    label: "test@example.com".to_string(),
-                    disabled: false,
-                    status: rusuh::auth::store::AuthStatus::Active,
-                    status_message: None,
-                    last_refreshed_at: None,
-                    path: dir.path().join("antigravity-test.json"),
-                    metadata: std::collections::HashMap::from([
-                        ("type".to_string(), serde_json::json!("antigravity")),
-                        ("provider_key".to_string(), serde_json::json!("antigravity")),
-                        ("email".to_string(), serde_json::json!("test@example.com")),
-                        ("access_token".to_string(), serde_json::json!("ya29.test")),
-                        ("refresh_token".to_string(), serde_json::json!("1//test")),
-                        ("project_id".to_string(), serde_json::json!("test-project")),
-                    ]),
-                    updated_at: chrono::Utc::now(),
-                },
-            ),
-        )])
+        .publish_runtime_from_providers(existing_providers)
         .await
         .unwrap();
+
+    std::fs::remove_file(dir.path().join("antigravity-test.json")).unwrap();
+    accounts.reload().await.unwrap();
 
     state.refresh_provider_runtime().await.unwrap();
 

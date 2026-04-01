@@ -78,6 +78,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::CodexDeviceLogin => {
             run_codex_device_login(&cfg).await?;
         }
+        Commands::GithubCopilotLogin => {
+            let auth_dir = resolve_auth_dir(&cfg);
+            let store = auth::store::FileTokenStore::new(&auth_dir);
+            let saved = auth::github_copilot_login::login(&store).await?;
+            println!("\n✓ GitHub Copilot credentials saved to: {}", saved.display());
+        }
         Commands::ClaudeLogin => {
             println!("Claude Code login not yet implemented (milestone 2)");
         }

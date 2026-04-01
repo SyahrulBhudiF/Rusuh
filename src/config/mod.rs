@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level server configuration (mirrors config.example.yaml)
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Host to bind (empty = all interfaces)
@@ -40,7 +40,7 @@ pub struct Config {
     pub claude_api_keys: Vec<ProviderKeyEntry>,
     #[serde(rename = "openai-compatibility")]
     pub openai_compat: Vec<OpenAICompatProvider>,
-    #[serde(rename = "oauth-model-alias")]
+    #[serde(rename = "oauth-model-alias", default = "default_oauth_model_alias")]
     pub oauth_model_alias: HashMap<String, Vec<ModelAlias>>,
 }
 
@@ -120,6 +120,46 @@ pub struct ModelAlias {
     pub alias: String,
     #[serde(default)]
     pub fork: bool,
+}
+
+fn default_oauth_model_alias() -> HashMap<String, Vec<ModelAlias>> {
+    HashMap::from([(
+        "github-copilot".to_string(),
+        vec![
+            ModelAlias {
+                name: "claude-sonnet-4-5".to_string(),
+                alias: "claude-sonnet-4.5".to_string(),
+                fork: false,
+            },
+            ModelAlias {
+                name: "claude-sonnet-4-5-thinking".to_string(),
+                alias: "claude-sonnet-4.5-thinking".to_string(),
+                fork: false,
+            },
+        ],
+    )])
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: 0,
+            auth_dir: String::new(),
+            api_keys: Vec::new(),
+            debug: false,
+            request_retry: 0,
+            routing: RoutingConfig::default(),
+            proxy_url: None,
+            tls: TlsConfig::default(),
+            remote_management: ManagementConfig::default(),
+            gemini_api_keys: Vec::new(),
+            codex_api_keys: Vec::new(),
+            claude_api_keys: Vec::new(),
+            openai_compat: Vec::new(),
+            oauth_model_alias: default_oauth_model_alias(),
+        }
+    }
 }
 
 impl Config {

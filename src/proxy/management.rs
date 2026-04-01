@@ -91,6 +91,10 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/zed/import", axum::routing::post(import_zed_credential))
         .route("/zed/check-quota", axum::routing::post(check_zed_quota))
         .route("/zed/models", axum::routing::post(list_zed_models))
+        .route(
+            "/github-copilot/models",
+            axum::routing::post(list_github_copilot_models),
+        )
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn(rate_limit))
@@ -589,14 +593,22 @@ async fn upload_auth_file(
         let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
-    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error.to_string()})),
-        );
+    let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!("auth file upload runtime refresh failed for {}: {}", name, error);
+            Some(error.to_string())
+        }
+    };
+
+    let mut response = json!({"status": "ok", "name": name});
+    if let Some(warning) = refresh_warning {
+        response["warning"] = json!(format!(
+            "auth file saved but runtime refresh failed: {warning}"
+        ));
     }
 
-    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+    (StatusCode::OK, Json(response))
 }
 
 #[derive(Deserialize)]
@@ -1867,14 +1879,26 @@ async fn patch_auth_file_fields(
         );
     }
 
-    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error.to_string()})),
-        );
+    let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!(
+                "auth file field patch runtime refresh failed for {}: {}",
+                name,
+                error
+            );
+            Some(error.to_string())
+        }
+    };
+
+    let mut response = json!({"status": "ok", "name": name});
+    if let Some(warning) = refresh_warning {
+        response["warning"] = json!(format!(
+            "auth file updated but runtime refresh failed: {warning}"
+        ));
     }
 
-    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+    (StatusCode::OK, Json(response))
 }
 
 // ── Zed credential import ────────────────────────────────────────────────────
@@ -1918,20 +1942,29 @@ async fn import_zed_credential(
 
     match import_zed_credential(&auth_dir, name, user_id, credential_json) {
         Ok(filename) => {
-            if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": error.to_string()})),
-                );
+            let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+                Ok(()) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        "zed import runtime refresh failed for {}: {}",
+                        filename,
+                        error
+                    );
+                    Some(error.to_string())
+                }
+            };
+
+            let mut response = json!({
+                "status": "ok",
+                "filename": filename,
+            });
+            if let Some(warning) = refresh_warning {
+                response["warning"] = json!(format!(
+                    "credential imported but runtime refresh failed: {warning}"
+                ));
             }
 
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "status": "ok",
-                    "filename": filename,
-                })),
-            )
+            (StatusCode::OK, Json(response))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2343,6 +2376,62 @@ async fn list_zed_models(
         Json(json!({
             "account": record.id,
             "provider_key": "zed",
+            "models": models,
+        })),
+    )
+}
+
+async fn list_github_copilot_models(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckZedQuotaBody>,
+) -> impl IntoResponse {
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let accounts = state.accounts.accounts_for("github-copilot").await;
+    let record = accounts
+        .iter()
+        .find(|record| record.id == name || record.path.file_name().and_then(|f| f.to_str()) == Some(&name))
+        .cloned();
+
+    let Some(record) = record else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "GitHub Copilot auth file not found"})),
+        );
+    };
+
+    let provider = match crate::providers::github_copilot::GithubCopilotProvider::new(record.clone()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to initialize GitHub Copilot provider: {error}")})),
+            );
+        }
+    };
+
+    let models = match provider
+        .live_models()
+        .await
+        .map(|models| models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+    {
+        Ok(models) => models,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("failed to fetch GitHub Copilot models: {error}")})),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "account": record.id,
+            "provider_key": "github-copilot",
             "models": models,
         })),
     )

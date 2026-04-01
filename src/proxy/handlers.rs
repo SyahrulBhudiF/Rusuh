@@ -13,9 +13,13 @@ use crate::{
     proxy::ProxyState,
 };
 
-const PUBLIC_MODEL_SONNET_46: &str = "claude-sonnet-4.6";
-const PUBLIC_MODEL_SONNET_45: &str = "claude-sonnet-4.5";
-const PUBLIC_MODEL_SONNET_45_THINKING: &str = "claude-sonnet-4.5-thinking";
+const PUBLIC_MODEL_OPUS_46: &str = "claude-opus-4-6";
+const PUBLIC_MODEL_OPUS_45: &str = "claude-opus-4-5";
+const PUBLIC_MODEL_SONNET_46: &str = "claude-sonnet-4-6";
+const PUBLIC_MODEL_SONNET_45: &str = "claude-sonnet-4-5";
+const PUBLIC_MODEL_HAIKU_45: &str = "claude-haiku-4-5";
+const PUBLIC_MODEL_GPT_54: &str = "gpt-5.4";
+const PUBLIC_MODEL_GPT_53_CODEX: &str = "gpt-5.3-codex";
 
 #[derive(Clone, Copy)]
 struct RouteTarget {
@@ -186,9 +190,13 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
     let runtime_snapshot = state.current_runtime_snapshot().await;
 
     for public_model in [
+        PUBLIC_MODEL_OPUS_46,
+        PUBLIC_MODEL_OPUS_45,
         PUBLIC_MODEL_SONNET_46,
         PUBLIC_MODEL_SONNET_45,
-        PUBLIC_MODEL_SONNET_45_THINKING,
+        PUBLIC_MODEL_HAIKU_45,
+        PUBLIC_MODEL_GPT_54,
+        PUBLIC_MODEL_GPT_53_CODEX,
     ] {
         let targets = public_route_targets(public_model);
         let mut available = false;
@@ -233,11 +241,29 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
 
 fn public_route_targets(model: &str) -> &'static [RouteTarget] {
     match model {
-        PUBLIC_MODEL_SONNET_46 => &[RouteTarget {
-            provider: "zed",
-            model: "claude-sonnet-4-6",
+        PUBLIC_MODEL_OPUS_46 => &[RouteTarget {
+            provider: "github-copilot",
+            model: "claude-opus-4.6",
         }],
+        PUBLIC_MODEL_OPUS_45 => &[RouteTarget {
+            provider: "github-copilot",
+            model: "claude-opus-4.5",
+        }],
+        PUBLIC_MODEL_SONNET_46 => &[
+            RouteTarget {
+                provider: "zed",
+                model: "claude-sonnet-4-6",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-sonnet-4.6",
+            },
+        ],
         PUBLIC_MODEL_SONNET_45 => &[
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-sonnet-4-5-agentic",
+            },
             RouteTarget {
                 provider: "kiro",
                 model: "kiro-claude-sonnet-4-5",
@@ -246,17 +272,59 @@ fn public_route_targets(model: &str) -> &'static [RouteTarget] {
                 provider: "zed",
                 model: "claude-sonnet-4-5",
             },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-sonnet-4.5",
+            },
         ],
-        PUBLIC_MODEL_SONNET_45_THINKING => &[RouteTarget {
-            provider: "kiro",
-            model: "kiro-claude-sonnet-4-5-agentic",
-        }],
+        PUBLIC_MODEL_HAIKU_45 => &[
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-haiku-4-5-agentic",
+            },
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-haiku-4-5",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-haiku-4.5",
+            },
+        ],
+        PUBLIC_MODEL_GPT_54 => &[
+            RouteTarget {
+                provider: "codex",
+                model: "gpt-5.4",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "gpt-5.4",
+            },
+        ],
+        PUBLIC_MODEL_GPT_53_CODEX => &[
+            RouteTarget {
+                provider: "codex",
+                model: "gpt-5.3-codex",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "gpt-5.3-codex",
+            },
+        ],
         _ => &[],
     }
 }
 
+fn reserved_public_route_targets(_model: &str) -> &'static [RouteTarget] {
+    &[]
+}
+
+fn is_reserved_public_model(model: &str) -> bool {
+    !reserved_public_route_targets(model).is_empty()
+}
+
 fn is_public_model(model: &str) -> bool {
-    !public_route_targets(model).is_empty()
+    !public_route_targets(model).is_empty() || is_reserved_public_model(model)
 }
 
 /// Resolve model name through configured OAuth aliases only.
@@ -398,6 +466,10 @@ async fn route_chat(
         let public_targets = public_route_targets(&req.model);
         if !public_targets.is_empty() {
             return try_route_with_targets(state, &req, public_targets, is_stream).await;
+        }
+        let reserved_targets = reserved_public_route_targets(&req.model);
+        if !reserved_targets.is_empty() {
+            return try_route_with_targets(state, &req, reserved_targets, is_stream).await;
         }
 
         let config = state.config.read().await;
@@ -926,6 +998,7 @@ mod tests {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }

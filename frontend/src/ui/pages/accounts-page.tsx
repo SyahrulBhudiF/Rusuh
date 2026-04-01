@@ -32,6 +32,10 @@ import {
   useToggleAuthFileStatusMutation,
 } from '../../lib/management-auth-files'
 import { type CodexQuotaResponse, useCheckCodexQuotaMutation } from '../../lib/management-codex'
+import {
+  type CopilotModelsResponse,
+  useFetchCopilotModelsMutation,
+} from '../../lib/management-copilot'
 import { useCheckKiroQuotaMutation } from '../../lib/management-kiro'
 import {
   type ZedModelsResponse,
@@ -75,6 +79,7 @@ function providerLabel(key: string) {
   if (key === 'antigravity') return 'Antigravity'
   if (key === 'zed') return 'Zed'
   if (key === 'codex') return 'Codex'
+  if (key === 'github-copilot') return 'GitHub Copilot'
   return key
 }
 
@@ -114,6 +119,7 @@ export function AccountsPage() {
   const checkCodexQuota = useCheckCodexQuotaMutation()
   const checkZedQuota = useCheckZedQuotaMutation()
   const fetchZedModels = useFetchZedModelsMutation()
+  const fetchCopilotModels = useFetchCopilotModelsMutation()
 
   const [providerFilter, setProviderFilter] = useState(ALL_FILTER)
   const [statusFilter, setStatusFilter] = useState(ALL_FILTER)
@@ -125,6 +131,9 @@ export function AccountsPage() {
   const [codexQuotaResults, setCodexQuotaResults] = useState<Record<string, CodexQuotaResponse>>({})
   const [zedQuotaResults, setZedQuotaResults] = useState<Record<string, ZedQuotaResponse>>({})
   const [zedModelsResults, setZedModelsResults] = useState<Record<string, ZedModelsResponse>>({})
+  const [copilotModelsResults, setCopilotModelsResults] = useState<
+    Record<string, CopilotModelsResponse>
+  >({})
   const [deleteTarget, setDeleteTarget] = useState<ManagementAuthFile | null>(null)
 
   const items = useMemo(() => {
@@ -425,6 +434,29 @@ export function AccountsPage() {
                                     )}
                                   </div>
                                 ) : null}
+                                {item.provider_key === 'github-copilot' &&
+                                copilotModelsResults[item.id] ? (
+                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
+                                    <p className='text-xs font-medium'>Available Models:</p>
+                                    {copilotModelsResults[item.id].models.length > 0 ? (
+                                      <div className='mt-2 flex flex-wrap gap-2'>
+                                        {copilotModelsResults[item.id].models.map((model) => (
+                                          <Badge
+                                            key={`${item.id}-${model}`}
+                                            variant='outline'
+                                            className='rounded-full px-2.5 py-1 text-xs'
+                                          >
+                                            {model}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className='text-muted-foreground mt-1 text-xs'>
+                                        No models reported for this account.
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : null}
                                 {item.provider_key === 'codex' && codexQuotaResults[item.id] ? (
                                   <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
                                     <p className='text-xs font-medium'>Quota Status:</p>
@@ -612,6 +644,33 @@ export function AccountsPage() {
                                   className='h-10 rounded-xl px-3'
                                 >
                                   {fetchZedModels.isPending ? 'Loading…' : 'Get models'}
+                                </Button>
+                              ) : null}
+                              {item.provider_key === 'github-copilot' ? (
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  onClick={async () => {
+                                    try {
+                                      const result = await fetchCopilotModels.mutateAsync({
+                                        name: item.id,
+                                      })
+                                      setCopilotModelsResults((prev) => ({
+                                        ...prev,
+                                        [item.id]: result,
+                                      }))
+                                      toastInfo('Models fetched', item.id)
+                                    } catch (error) {
+                                      toastError(
+                                        'Failed to fetch models',
+                                        error instanceof Error ? error.message : 'Unknown error.',
+                                      )
+                                    }
+                                  }}
+                                  disabled={fetchCopilotModels.isPending}
+                                  className='h-10 rounded-xl px-3'
+                                >
+                                  {fetchCopilotModels.isPending ? 'Loading…' : 'Get models'}
                                 </Button>
                               ) : null}
                               {item.provider_key === 'codex' ? (
