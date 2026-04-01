@@ -998,6 +998,14 @@ pub async fn post_oauth_callback(
             .into_response();
     };
 
+    if provider == "github-copilot" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "GitHub Copilot only supports device-code flow, not manual OAuth callbacks"})),
+        )
+            .into_response();
+    }
+
     let mut callback_state = body.state.trim().to_string();
     let mut callback_code = body.code.trim().to_string();
     let mut callback_error = body.error.trim().to_string();
