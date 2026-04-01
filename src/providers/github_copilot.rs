@@ -6,7 +6,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
-use tracing::debug;
+use tracing::{debug, error};
 use url::Url;
 
 use crate::auth::github_copilot_runtime::{
@@ -221,7 +221,16 @@ impl GithubCopilotProvider {
     }
 
     fn normalize_chat_request(&self, request: &ChatCompletionRequest) -> Value {
-        let mut value = serde_json::to_value(request).unwrap_or_else(|_| json!({}));
+        let mut value = match serde_json::to_value(request) {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "failed to serialize ChatCompletionRequest to JSON, using empty object"
+                );
+                json!({})
+            }
+        };
         let body = value.as_object_mut().expect("chat request should serialize to object");
         body.insert("model".to_string(), json!(Self::normalize_model(&request.model)));
 
