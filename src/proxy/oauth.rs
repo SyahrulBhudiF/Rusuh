@@ -850,7 +850,7 @@ async fn request_github_copilot_device_code(client: &reqwest::Client) -> AppResu
 async fn poll_github_copilot_token(
     client: &reqwest::Client,
     device_code: &DeviceCodeResponse,
-) -> anyhow::Result<GithubOAuthTokenData> {
+) -> AppResult<GithubOAuthTokenData> {
     let mut poll_interval = if device_code.interval == 0 {
         Duration::from_millis(1)
     } else {
@@ -873,33 +873,50 @@ async fn poll_github_copilot_token(
             .await?;
 
         let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "github device token polling failed (status {}): {}",
-                status.as_u16(),
-                body.trim()
-            );
-        }
 
-        let payload: Value = response.json().await?;
+        // Always parse JSON body, even for non-2xx status (RFC 8628 device flow errors)
+        let payload: Value = match response.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(AppError::Upstream(format!(
+                    "github device token polling failed to parse response (status {}): {}",
+                    status.as_u16(),
+                    e
+                )));
+            }
+        };
+
+        // Check for RFC 8628 error responses
         if let Some(error) = payload.get("error").and_then(Value::as_str) {
             match error {
                 "authorization_pending" => {
                     if tokio::time::Instant::now() >= deadline {
-                        anyhow::bail!("github device authorization timed out");
+                        return Err(AppError::Auth("github device authorization timed out".to_string()));
                     }
                     continue;
                 }
                 "slow_down" => {
                     poll_interval += Duration::from_secs(5);
                     if tokio::time::Instant::now() >= deadline {
-                        anyhow::bail!("github device authorization timed out");
+                        return Err(AppError::Auth("github device authorization timed out".to_string()));
                     }
                     continue;
                 }
-                _ => anyhow::bail!("github device authorization failed: {error}"),
+                _ => {
+                    return Err(AppError::Auth(format!(
+                        "github device authorization failed: {error}"
+                    )));
+                }
             }
+        }
+
+        // If status is not success and no recognized error, fail with context
+        if !status.is_success() {
+            return Err(AppError::Upstream(format!(
+                "github device token polling failed (status {}): {}",
+                status.as_u16(),
+                serde_json::to_string(&payload).unwrap_or_else(|_| "unable to serialize response".to_string())
+            )));
         }
 
         let access_token = payload
@@ -907,7 +924,7 @@ async fn poll_github_copilot_token(
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("github token response missing access_token"))?
+            .ok_or_else(|| AppError::Upstream("github token response missing access_token".to_string()))?
             .to_string();
 
         return Ok(GithubOAuthTokenData {
