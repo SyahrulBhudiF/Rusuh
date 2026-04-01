@@ -50,6 +50,7 @@ use serde_json::{json, Value};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+use url::Url;
 
 // ── Session tracker ──────────────────────────────────────────────────────────
 
@@ -759,10 +760,42 @@ fn reject_legacy_kiro_social() -> Response {
 }
 
 fn github_copilot_auth_base_url() -> Option<String> {
-    std::env::var("RUSUH_GITHUB_COPILOT_AUTH_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
+    let raw_value = std::env::var("RUSUH_GITHUB_COPILOT_AUTH_BASE_URL").ok()?;
+    let trimmed = raw_value.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Parse and validate the URL to prevent token exfiltration
+    let parsed = Url::parse(trimmed).ok()?;
+
+    // Only allow HTTPS
+    if parsed.scheme() != "https" {
+        warn!(
+            url = %trimmed,
+            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL must use https scheme, ignoring"
+        );
+        return None;
+    }
+
+    // Only allow trusted GitHub domains
+    let host = parsed.host_str()?;
+    let is_trusted = host == "github.com"
+        || host == "api.github.com"
+        || host.ends_with(".github.com");
+
+    if !is_trusted {
+        warn!(
+            url = %trimmed,
+            host = %host,
+            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL host must be github.com, api.github.com, or *.github.com, ignoring"
+        );
+        return None;
+    }
+
+    // Return normalized URL without trailing slash
+    Some(trimmed.trim_end_matches('/').to_string())
 }
 
 fn github_copilot_device_code_url() -> String {
