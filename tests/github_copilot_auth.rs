@@ -189,7 +189,7 @@ async fn mock_device_code_handler() -> (StatusCode, Json<Value>) {
             "user_code": "ABCD-EFGH",
             "verification_uri": "https://github.com/login/device",
             "expires_in": 900,
-            "interval": 5
+            "interval": 0
         })),
     )
 }
