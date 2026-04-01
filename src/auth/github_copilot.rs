@@ -75,7 +75,8 @@ pub struct GithubCopilotTokenStorage {
 
 /// Build the canonical filename for a GitHub Copilot auth file.
 pub fn credential_file_name(username: &str) -> String {
-    format!("github-copilot-{}.json", sanitize_filename_component(username))
+    let normalized = username.to_lowercase();
+    format!("github-copilot-{}.json", sanitize_filename_component(&normalized))
 }
 
 /// Prefer email for labels, falling back to username.
