@@ -376,6 +376,10 @@ impl Provider for AntigravityProvider {
         "antigravity"
     }
 
+    fn client_id(&self) -> &str {
+        &self.record.id
+    }
+
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         let token = self.ensure_access_token().await?;
         let now = chrono::Utc::now().timestamp();

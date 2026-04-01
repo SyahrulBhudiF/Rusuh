@@ -1,4 +1,5 @@
 pub mod antigravity;
+pub mod codex;
 pub mod kiro;
 pub mod kiro_outcome;
 pub mod kiro_stream;
@@ -28,6 +29,14 @@ pub type BoxStream = Pin<Box<dyn Stream<Item = AppResult<Bytes>> + Send>>;
 pub trait Provider: Send + Sync {
     /// Human-readable name for logging
     fn name(&self) -> &str;
+
+    /// Canonical provider type used for routing and model catalog decisions.
+    fn provider_type(&self) -> &str {
+        self.name()
+    }
+
+    /// Stable auth/file-backed client identifier used for routing and registry lookups.
+    fn client_id(&self) -> &str;
 
     /// List models this provider exposes
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>>;

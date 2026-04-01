@@ -29,6 +29,13 @@ pub enum AppError {
     #[error("no available accounts for provider: {0}")]
     NoAccounts(String),
 
+    #[error("provider {provider} operation {op} failed: {source}")]
+    ProviderOperation {
+        op: &'static str,
+        provider: String,
+        source: anyhow::Error,
+    },
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }

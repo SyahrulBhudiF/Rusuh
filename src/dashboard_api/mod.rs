@@ -170,7 +170,9 @@ async fn build_overview(state: Arc<ProxyState>) -> DashboardOverview {
         .await
         .len();
     let provider_names = state
-        .providers
+        .current_runtime_snapshot()
+        .await
+        .providers()
         .iter()
         .map(|provider| provider.name().to_string())
         .collect::<Vec<_>>();
@@ -249,7 +251,9 @@ async fn build_api_keys_payload(state: Arc<ProxyState>) -> DashboardApiKeysPaylo
 async fn build_config_payload(state: Arc<ProxyState>) -> DashboardConfigPayload {
     let cfg = state.config.read().await.clone();
     let provider_names = state
-        .providers
+        .current_runtime_snapshot()
+        .await
+        .providers()
         .iter()
         .map(|provider| provider.name().to_string())
         .collect::<Vec<_>>();

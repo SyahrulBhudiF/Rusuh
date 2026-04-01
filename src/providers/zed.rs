@@ -151,6 +151,7 @@ impl TokenCache {
 /// Each instance corresponds to one Zed auth account.
 #[derive(Debug)]
 pub struct ZedProvider {
+    record_id: String,
     user_id: String,
     credential_json: String,
     pub token_cache: Arc<Mutex<Option<TokenCache>>>,
@@ -168,6 +169,7 @@ impl ZedProvider {
             .map_err(|e| AppError::Auth(format!("parse zed credential: {e}")))?;
 
         Ok(Self {
+            record_id: record.id,
             user_id,
             credential_json,
             token_cache: Arc::new(Mutex::new(None)),
@@ -391,6 +393,10 @@ impl ZedProvider {
 impl Provider for ZedProvider {
     fn name(&self) -> &str {
         "zed"
+    }
+
+    fn client_id(&self) -> &str {
+        &self.record_id
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
