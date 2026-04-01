@@ -102,13 +102,14 @@ impl GithubCopilotProvider {
 
         if let Some(url_str) = candidate {
             if let Ok(parsed) = Url::parse(url_str) {
-                if parsed.scheme() == "https" {
-                    if let Some(host) = parsed.host_str() {
-                        const ALLOWED_TOKEN_HOSTS: &[&str] = &["api.github.com"];
-                        if ALLOWED_TOKEN_HOSTS.contains(&host) {
-                            return url_str.to_string();
-                        }
-                    }
+                // Only allow exact Copilot exchange endpoint
+                if parsed.scheme() == "https"
+                    && parsed.host_str() == Some("api.github.com")
+                    && parsed.path() == "/copilot_internal/v2/token"
+                    && parsed.query().is_none()
+                    && parsed.fragment().is_none()
+                {
+                    return url_str.to_string();
                 }
             }
         }
