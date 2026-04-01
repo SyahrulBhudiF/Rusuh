@@ -314,16 +314,49 @@ impl GithubCopilotProvider {
                 "input": input.clone(),
             });
 
-            // Copy over other relevant fields from extra (but not "input" again)
+            // Copy over other relevant fields, preferring top-level fields over extra
             if let Some(obj) = body.as_object_mut() {
-                if let Some(temp) = request.extra.get("temperature") {
+                // Prefer top-level fields, fall back to extra
+                if let Some(temp) = request.temperature {
+                    obj.insert("temperature".to_string(), json!(temp));
+                } else if let Some(temp) = request.extra.get("temperature") {
                     obj.insert("temperature".to_string(), temp.clone());
                 }
-                if let Some(max_tokens) = request.extra.get("max_tokens") {
+
+                if let Some(max_tokens) = request.max_tokens {
+                    obj.insert("max_tokens".to_string(), json!(max_tokens));
+                } else if let Some(max_tokens) = request.extra.get("max_tokens") {
                     obj.insert("max_tokens".to_string(), max_tokens.clone());
                 }
-                if let Some(stream) = request.extra.get("stream") {
+
+                if let Some(stream) = request.stream {
+                    obj.insert("stream".to_string(), json!(stream));
+                } else if let Some(stream) = request.extra.get("stream") {
                     obj.insert("stream".to_string(), stream.clone());
+                }
+
+                if let Some(top_p) = request.top_p {
+                    obj.insert("top_p".to_string(), json!(top_p));
+                } else if let Some(top_p) = request.extra.get("top_p") {
+                    obj.insert("top_p".to_string(), top_p.clone());
+                }
+
+                if let Some(tools) = &request.tools {
+                    obj.insert("tools".to_string(), json!(tools));
+                } else if let Some(tools) = request.extra.get("tools") {
+                    obj.insert("tools".to_string(), tools.clone());
+                }
+
+                if let Some(tool_choice) = &request.tool_choice {
+                    obj.insert("tool_choice".to_string(), tool_choice.clone());
+                } else if let Some(tool_choice) = request.extra.get("tool_choice") {
+                    obj.insert("tool_choice".to_string(), tool_choice.clone());
+                }
+
+                if let Some(stop) = &request.stop {
+                    obj.insert("stop".to_string(), stop.clone());
+                } else if let Some(stop) = request.extra.get("stop") {
+                    obj.insert("stop".to_string(), stop.clone());
                 }
             }
 
@@ -346,16 +379,49 @@ impl GithubCopilotProvider {
             "input": input,
         });
 
-        // Copy over other relevant fields
+        // Copy over other relevant fields, preferring top-level fields over extra
         if let Some(obj) = body.as_object_mut() {
-            if let Some(temp) = request.extra.get("temperature") {
+            // Prefer top-level fields, fall back to extra
+            if let Some(temp) = request.temperature {
+                obj.insert("temperature".to_string(), json!(temp));
+            } else if let Some(temp) = request.extra.get("temperature") {
                 obj.insert("temperature".to_string(), temp.clone());
             }
-            if let Some(max_tokens) = request.extra.get("max_tokens") {
+
+            if let Some(max_tokens) = request.max_tokens {
+                obj.insert("max_tokens".to_string(), json!(max_tokens));
+            } else if let Some(max_tokens) = request.extra.get("max_tokens") {
                 obj.insert("max_tokens".to_string(), max_tokens.clone());
             }
-            if let Some(stream) = request.extra.get("stream") {
+
+            if let Some(stream) = request.stream {
+                obj.insert("stream".to_string(), json!(stream));
+            } else if let Some(stream) = request.extra.get("stream") {
                 obj.insert("stream".to_string(), stream.clone());
+            }
+
+            if let Some(top_p) = request.top_p {
+                obj.insert("top_p".to_string(), json!(top_p));
+            } else if let Some(top_p) = request.extra.get("top_p") {
+                obj.insert("top_p".to_string(), top_p.clone());
+            }
+
+            if let Some(tools) = &request.tools {
+                obj.insert("tools".to_string(), json!(tools));
+            } else if let Some(tools) = request.extra.get("tools") {
+                obj.insert("tools".to_string(), tools.clone());
+            }
+
+            if let Some(tool_choice) = &request.tool_choice {
+                obj.insert("tool_choice".to_string(), tool_choice.clone());
+            } else if let Some(tool_choice) = request.extra.get("tool_choice") {
+                obj.insert("tool_choice".to_string(), tool_choice.clone());
+            }
+
+            if let Some(stop) = &request.stop {
+                obj.insert("stop".to_string(), stop.clone());
+            } else if let Some(stop) = request.extra.get("stop") {
+                obj.insert("stop".to_string(), stop.clone());
             }
         }
 
