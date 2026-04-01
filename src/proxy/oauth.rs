@@ -779,17 +779,50 @@ fn github_copilot_auth_base_url() -> Option<String> {
         return None;
     }
 
-    // Only allow trusted GitHub domains
+    // Only allow github.com for login endpoints
     let host = parsed.host_str()?;
-    let is_trusted = host == "github.com"
-        || host == "api.github.com"
-        || host.ends_with(".github.com");
+    if host != "github.com" {
+        warn!(
+            url = %trimmed,
+            host = %host,
+            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL host must be github.com, ignoring"
+        );
+        return None;
+    }
+
+    // Return normalized URL without trailing slash
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
+fn github_copilot_api_base_url() -> Option<String> {
+    let raw_value = std::env::var("RUSUH_GITHUB_COPILOT_API_BASE_URL").ok()?;
+    let trimmed = raw_value.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Parse and validate the URL to prevent token exfiltration
+    let parsed = Url::parse(trimmed).ok()?;
+
+    // Only allow HTTPS
+    if parsed.scheme() != "https" {
+        warn!(
+            url = %trimmed,
+            "RUSUH_GITHUB_COPILOT_API_BASE_URL must use https scheme, ignoring"
+        );
+        return None;
+    }
+
+    // Only allow api.github.com or *.github.com for API endpoints
+    let host = parsed.host_str()?;
+    let is_trusted = host == "api.github.com" || host.ends_with(".github.com");
 
     if !is_trusted {
         warn!(
             url = %trimmed,
             host = %host,
-            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL host must be github.com, api.github.com, or *.github.com, ignoring"
+            "RUSUH_GITHUB_COPILOT_API_BASE_URL host must be api.github.com or *.github.com, ignoring"
         );
         return None;
     }
@@ -811,13 +844,13 @@ fn github_copilot_token_url() -> String {
 }
 
 fn github_copilot_user_url() -> String {
-    github_copilot_auth_base_url()
+    github_copilot_api_base_url()
         .map(|base_url| format!("{base_url}/user"))
         .unwrap_or_else(|| "https://api.github.com/user".to_string())
 }
 
 fn github_copilot_entitlement_url() -> String {
-    github_copilot_auth_base_url()
+    github_copilot_api_base_url()
         .map(|base_url| format!("{base_url}/copilot_internal/v2/token"))
         .unwrap_or_else(|| "https://api.github.com/copilot_internal/v2/token".to_string())
 }
