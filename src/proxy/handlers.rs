@@ -380,8 +380,10 @@ fn normalize_model_name_for_alias(model: &str) -> Option<String> {
         }
     }
 
-    // Reconstruct base model name up to and including the last version
-    last_version_index.map(|i| parts[..=i].join("-"))
+    // Only normalize if version is the final part (no trailing suffix like "-thinking")
+    last_version_index
+        .filter(|&i| i == parts.len() - 1)
+        .map(|i| parts[..=i].join("-"))
 }
 
 fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, AppError> {
