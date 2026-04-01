@@ -535,56 +535,41 @@ impl GithubCopilotProvider {
     }
 
     fn parse_responses_response(body: Value) -> AppResult<ChatCompletionResponse> {
-        // Extract text with step-by-step validation and logging
-        let text = match body.get("output") {
-            Some(output) => match output.as_array() {
-                Some(output_array) => match output_array.first() {
-                    Some(first_output) => match first_output.get("content") {
-                        Some(content) => match content.as_array() {
-                            Some(content_array) => match content_array.first() {
-                                Some(first_content) => match first_content.get("text") {
-                                    Some(text_value) => match text_value.as_str() {
-                                        Some(text_str) => text_str.to_string(),
-                                        None => {
-                                            debug!("parse_responses_response: 'text' field is not a string");
-                                            String::new()
-                                        }
-                                    },
-                                    None => {
-                                        debug!("parse_responses_response: 'text' field missing in first content item");
-                                        String::new()
-                                    }
-                                },
-                                None => {
-                                    debug!("parse_responses_response: content array is empty");
-                                    String::new()
-                                }
-                            },
-                            None => {
-                                debug!("parse_responses_response: 'content' field is not an array");
-                                String::new()
-                            }
-                        },
-                        None => {
-                            debug!("parse_responses_response: 'content' field missing in first output item");
-                            String::new()
-                        }
-                    },
-                    None => {
-                        debug!("parse_responses_response: output array is empty");
-                        String::new()
-                    }
-                },
-                None => {
-                    debug!("parse_responses_response: 'output' field is not an array");
-                    String::new()
+        // Validate and extract output array
+        let output_array = body
+            .get("output")
+            .ok_or_else(|| AppError::Upstream("responses response missing 'output' field".to_string()))?
+            .as_array()
+            .ok_or_else(|| AppError::Upstream("responses 'output' field is not an array".to_string()))?;
+
+        if output_array.is_empty() {
+            return Err(AppError::Upstream("responses 'output' array is empty".to_string()));
+        }
+
+        // Collect all text fragments from all outputs
+        let mut text_fragments = Vec::new();
+
+        for (output_idx, output_item) in output_array.iter().enumerate() {
+            let content_array = output_item
+                .get("content")
+                .ok_or_else(|| AppError::Upstream(format!("output[{}] missing 'content' field", output_idx)))?
+                .as_array()
+                .ok_or_else(|| AppError::Upstream(format!("output[{}] 'content' field is not an array", output_idx)))?;
+
+            for (content_idx, content_item) in content_array.iter().enumerate() {
+                if let Some(text_value) = content_item.get("text") {
+                    let text_str = text_value
+                        .as_str()
+                        .ok_or_else(|| AppError::Upstream(format!(
+                            "output[{}].content[{}].text is not a string",
+                            output_idx, content_idx
+                        )))?;
+                    text_fragments.push(text_str);
                 }
-            },
-            None => {
-                debug!("parse_responses_response: 'output' field missing");
-                String::new()
             }
-        };
+        }
+
+        let text = text_fragments.join("");
 
         let usage = body.get("usage").map(|usage| Usage {
             prompt_tokens: usage
