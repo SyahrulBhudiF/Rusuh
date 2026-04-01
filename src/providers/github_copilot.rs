@@ -307,12 +307,26 @@ impl GithubCopilotProvider {
     }
 
     fn convert_chat_to_responses_body(&self, request: &ChatCompletionRequest, canonical_model: &str) -> AppResult<Value> {
-        // If already has input field, use it directly
+        // If already has input field, extract it and build proper responses body
         if let Some(input) = request.extra.get("input") {
-            let mut body = serde_json::to_value(request)
-                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
-            let map = body.as_object_mut().expect("responses request should serialize to object");
-            map.insert("model".to_string(), json!(canonical_model));
+            let mut body = json!({
+                "model": canonical_model,
+                "input": input.clone(),
+            });
+
+            // Copy over other relevant fields from extra (but not "input" again)
+            if let Some(obj) = body.as_object_mut() {
+                if let Some(temp) = request.extra.get("temperature") {
+                    obj.insert("temperature".to_string(), temp.clone());
+                }
+                if let Some(max_tokens) = request.extra.get("max_tokens") {
+                    obj.insert("max_tokens".to_string(), max_tokens.clone());
+                }
+                if let Some(stream) = request.extra.get("stream") {
+                    obj.insert("stream".to_string(), stream.clone());
+                }
+            }
+
             return Ok(body);
         }
 
