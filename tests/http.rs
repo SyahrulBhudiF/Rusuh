@@ -1020,21 +1020,21 @@ async fn generic_claude_sonnet_45_prefers_kiro_agentic_then_kiro_then_zed_then_c
     let copilot_observed = Arc::new(Mutex::new(Vec::new()));
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
-            "kiro-agentic-display",
+            "kiro",
             "kiro_agentic_0",
             &["kiro-claude-sonnet-4-5-agentic"],
             kiro_agentic_observed.clone(),
             "kiro agentic quota exceeded",
         )),
         Arc::new(StubProvider::quota_exceeded(
-            "kiro-standard-display",
+            "kiro",
             "kiro_standard_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_standard_observed.clone(),
             "kiro standard quota exceeded",
         )),
         Arc::new(StubProvider::quota_exceeded(
-            "zed-display",
+            "zed",
             "zed_0",
             &["claude-sonnet-4-5"],
             zed_observed.clone(),
@@ -1123,14 +1123,14 @@ async fn generic_claude_haiku_45_prefers_kiro_agentic_then_kiro_then_copilot() {
     let copilot_observed = Arc::new(Mutex::new(Vec::new()));
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
-            "kiro-agentic-display",
+            "kiro",
             "kiro_agentic_0",
             &["kiro-claude-haiku-4-5-agentic"],
             kiro_agentic_observed.clone(),
             "kiro agentic quota exceeded",
         )),
         Arc::new(StubProvider::quota_exceeded(
-            "kiro-standard-display",
+            "kiro",
             "kiro_standard_0",
             &["kiro-claude-haiku-4-5"],
             kiro_standard_observed.clone(),
