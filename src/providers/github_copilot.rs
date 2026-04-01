@@ -621,8 +621,11 @@ impl Provider for GithubCopilotProvider {
             format!("{}/chat/completions", self.api_base_url())
         };
         let body = if self.is_responses_request(request) {
-            serde_json::to_value(request)
-                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?
+            let mut body = serde_json::to_value(request)
+                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
+            let map = body.as_object_mut().expect("responses request should serialize to object");
+            map.insert("model".to_string(), json!(Self::normalize_model(&request.model)));
+            body
         } else {
             self.normalize_chat_request(request)
         };
