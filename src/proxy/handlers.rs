@@ -366,7 +366,8 @@ fn normalize_model_name_for_alias(model: &str) -> Option<String> {
         return None;
     }
 
-    // Look for a part that matches version pattern (e.g., "4.5", "4.6")
+    // Look for the last part that matches version pattern (e.g., "4.5", "4.6")
+    let mut last_version_index = None;
     for (i, part) in parts.iter().enumerate() {
         if part.contains('.') {
             let version_parts: Vec<&str> = part.split('.').collect();
@@ -374,14 +375,13 @@ fn normalize_model_name_for_alias(model: &str) -> Option<String> {
                 && version_parts[0].chars().all(|c| c.is_ascii_digit())
                 && version_parts[1].chars().all(|c| c.is_ascii_digit())
             {
-                // Found version, reconstruct base model name up to and including version
-                let base_parts = &parts[..=i];
-                return Some(base_parts.join("-"));
+                last_version_index = Some(i);
             }
         }
     }
 
-    None
+    // Reconstruct base model name up to and including the last version
+    last_version_index.map(|i| parts[..=i].join("-"))
 }
 
 fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, AppError> {
