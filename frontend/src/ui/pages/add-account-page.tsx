@@ -26,9 +26,14 @@ import {
   useStartOAuthMutation,
   useSubmitOAuthCallbackMutation,
 } from '../../lib/management-oauth'
+import {
+  useStartZedLoginMutation,
+  useZedLoginStatusQuery,
+} from '../../lib/management-zed'
 import { buildOAuthTerminalFeedback } from '../../lib/oauth-feedback'
 import { toastError, toastInfo, toastSuccess } from '../../lib/toast'
 import {
+  formatOauthExpiryHint,
   resolveTrackedOauthSession,
   type AddAccountOauthProvider,
   type TrackedOauthStates,
@@ -49,6 +54,7 @@ export function AddAccountPage() {
   const startOAuth = useStartOAuthMutation()
   const submitOAuthCallback = useSubmitOAuthCallbackMutation()
   const startKiroBuilderId = useStartKiroBuilderIdMutation()
+  const startZedLogin = useStartZedLoginMutation()
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
 
@@ -62,6 +68,16 @@ export function AddAccountPage() {
   const [codexLabel, setCodexLabel] = useState('')
   const [codexAuthUrl, setCodexAuthUrl] = useState('')
   const [codexCallbackUrl, setCodexCallbackUrl] = useState('')
+
+  const [zedLabel, setZedLabel] = useState('')
+  const [zedLoginUrl, setZedLoginUrl] = useState('')
+  const [zedPort, setZedPort] = useState<number | null>(null)
+  const [zedSessionId, setZedSessionId] = useState<string | null>(null)
+
+  const [copilotLabel, setCopilotLabel] = useState('')
+  const [copilotUserCode, setCopilotUserCode] = useState('')
+  const [copilotVerificationUri, setCopilotVerificationUri] = useState('')
+  const [copilotExpiresIn, setCopilotExpiresIn] = useState<number | undefined>()
 
   const [kiroLabel, setKiroLabel] = useState('')
   const [kiroImportMode, setKiroImportMode] = useState<'structured' | 'json'>('structured')
@@ -86,32 +102,65 @@ export function AddAccountPage() {
   const kiroOauthState = oauthStates.kiro
   const antigravityOauthState = oauthStates.antigravity
   const codexOauthState = oauthStates.codex
+  const copilotOauthState = oauthStates['github-copilot']
 
   const kiroOauthStatus = useProviderOauthStatus(kiroOauthState)
   const antigravityOauthStatus = useProviderOauthStatus(antigravityOauthState)
   const codexOauthStatus = useProviderOauthStatus(codexOauthState)
+  const zedLoginStatus = useZedLoginStatusQuery(zedSessionId, Boolean(zedSessionId))
+  const copilotOauthStatus = useProviderOauthStatus(copilotOauthState)
 
   const oauthStatusByProvider = {
     kiro: kiroOauthStatus,
     antigravity: antigravityOauthStatus,
     codex: codexOauthStatus,
+    'github-copilot': copilotOauthStatus,
   } as const
 
-  const activeOauthState = oauthStates[provider]
-  const activeOauthStatus = oauthStatusByProvider[provider]
-  const activeOauthStatusData = activeOauthStatus.data
-  const activeOauthStatusSummary = activeOauthState
-    ? (activeOauthStatusData?.status ?? (activeOauthStatus.isFetching ? 'wait' : 'idle'))
-    : 'idle'
+  const activeOauthState = provider === 'zed' ? zedSessionId : oauthStates[provider]
+  const activeOauthStatus = provider === 'zed' ? null : oauthStatusByProvider[provider]
+  const activeOauthStatusData = activeOauthStatus?.data
+  const activeOauthStatusSummary =
+    provider === 'zed'
+      ? (zedLoginStatus.data?.status ?? (zedLoginStatus.isFetching ? 'waiting' : 'idle'))
+      : activeOauthState
+        ? (activeOauthStatusData?.status ?? (activeOauthStatus?.isFetching ? 'wait' : 'idle'))
+        : 'idle'
+  const copilotExpiryHint = formatOauthExpiryHint(copilotExpiresIn)
   const lastNotifiedOauthStates = useRef<Partial<Record<AddAccountOauthProvider, string>>>({})
+  const lastNotifiedZedSessionId = useRef<string | null>(null)
 
   useEffect(() => {
-    const trackedProviders: AddAccountOauthProvider[] = ['kiro', 'antigravity', 'codex']
+    const providerStatuses = {
+      kiro: {
+        status: kiroOauthStatus.data?.status,
+        error: kiroOauthStatus.data?.error,
+      },
+      antigravity: {
+        status: antigravityOauthStatus.data?.status,
+        error: antigravityOauthStatus.data?.error,
+      },
+      codex: {
+        status: codexOauthStatus.data?.status,
+        error: codexOauthStatus.data?.error,
+      },
+      'github-copilot': {
+        status: copilotOauthStatus.data?.status,
+        error: copilotOauthStatus.data?.error,
+      },
+    } as const
+
+    const trackedProviders: Array<Exclude<AddAccountOauthProvider, 'zed'>> = [
+      'kiro',
+      'antigravity',
+      'codex',
+      'github-copilot',
+    ]
 
     for (const trackedProvider of trackedProviders) {
       const trackedState = oauthStates[trackedProvider]
-      const trackedStatus = oauthStatusByProvider[trackedProvider].data?.status
-      const trackedError = oauthStatusByProvider[trackedProvider].data?.error
+      const trackedStatus = providerStatuses[trackedProvider].status
+      const trackedError = providerStatuses[trackedProvider].error
 
       if (!trackedState || !trackedStatus || trackedStatus === 'wait') {
         continue
@@ -142,7 +191,22 @@ export function AddAccountPage() {
     antigravityOauthStatus.data?.error,
     codexOauthStatus.data?.status,
     codexOauthStatus.data?.error,
+    copilotOauthStatus.data?.status,
+    copilotOauthStatus.data?.error,
   ])
+
+  useEffect(() => {
+    if (!zedSessionId || !zedLoginStatus.data?.status || zedLoginStatus.data.status === 'waiting') {
+      return
+    }
+
+    if (lastNotifiedZedSessionId.current === zedSessionId) {
+      return
+    }
+
+    toastSuccess('Zed login complete', 'Account connected. Open Accounts to review it.')
+    lastNotifiedZedSessionId.current = zedSessionId
+  }, [zedSessionId, zedLoginStatus.data?.status])
 
   function submitKiroStructuredImport() {
     importKiro.mutate(
@@ -223,9 +287,9 @@ export function AddAccountPage() {
         <section className='space-y-4'>
           <Tabs
             value={provider}
-            onValueChange={(value) => setProvider(value as 'kiro' | 'antigravity' | 'codex')}
+            onValueChange={(value) => setProvider(value as AddAccountOauthProvider)}
           >
-            <TabsList className='motion-panel grid w-full max-w-md grid-cols-3 rounded-2xl p-1'>
+            <TabsList className='motion-panel grid w-full max-w-2xl grid-cols-5 rounded-2xl p-1'>
               <TabsTrigger value='kiro' className='rounded-xl'>
                 Kiro
               </TabsTrigger>
@@ -234,6 +298,12 @@ export function AddAccountPage() {
               </TabsTrigger>
               <TabsTrigger value='codex' className='rounded-xl'>
                 Codex
+              </TabsTrigger>
+              <TabsTrigger value='zed' className='rounded-xl'>
+                Zed
+              </TabsTrigger>
+              <TabsTrigger value='github-copilot' className='rounded-xl'>
+                Copilot
               </TabsTrigger>
             </TabsList>
 
@@ -502,7 +572,7 @@ export function AddAccountPage() {
                         {
                           onSuccess: (data) => {
                             setOauthStates((prev) => ({ ...prev, [data.provider as AddAccountOauthProvider]: data.state }))
-                            setAntigravityAuthUrl(data.url)
+                            setAntigravityAuthUrl(data.url ?? '')
                             toastSuccess(
                               'Antigravity OAuth link ready',
                               'Open the link, login, then paste localhost callback URL below.',
@@ -622,7 +692,7 @@ export function AddAccountPage() {
                         {
                           onSuccess: (data) => {
                             setOauthStates((prev) => ({ ...prev, [data.provider as AddAccountOauthProvider]: data.state }))
-                            setCodexAuthUrl(data.url)
+                            setCodexAuthUrl(data.url ?? '')
                             toastSuccess(
                               'Codex OAuth link ready',
                               'Open the link, login, then paste localhost callback URL below.',
@@ -709,6 +779,215 @@ export function AddAccountPage() {
                       {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
                     </Button>
                   </div>
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value='zed' className='space-y-6 pt-2'>
+              <section className='space-y-3'>
+                <h3 className='text-lg font-semibold'>Zed</h3>
+                <p className='text-muted-foreground max-w-2xl text-sm'>
+                  Start the native-app sign-in flow here, then review the account on the Accounts page.
+                </p>
+              </section>
+
+              <section className='max-w-xl space-y-4'>
+                <Input
+                  type='text'
+                  value={zedLabel}
+                  onChange={(event) => setZedLabel(event.target.value)}
+                  className='h-11 rounded-2xl'
+                  placeholder='Optional label'
+                  maxLength={MAX_LABEL_LENGTH}
+                />
+                <div className='flex justify-end'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      startZedLogin.mutate(
+                        { name: zedLabel.trim() || undefined },
+                        {
+                          onSuccess: (data) => {
+                            setZedSessionId(data.session_id)
+                            setZedLoginUrl(data.login_url)
+                            setZedPort(data.port)
+                            toastSuccess(
+                              'Zed login started',
+                              'Open the login link and finish the native-app flow.',
+                            )
+                            window.open(data.login_url, '_blank', 'noopener,noreferrer')
+                          },
+                          onError: (error) => {
+                            toastError('Could not start Zed sign-in', error.message)
+                          },
+                        },
+                      )
+                    }
+                    disabled={startZedLogin.isPending}
+                    className='h-11 rounded-xl px-4'
+                  >
+                    {startZedLogin.isPending ? 'Launching…' : 'Start Zed login'}
+                  </Button>
+                </div>
+
+                {zedLoginUrl ? (
+                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                    <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
+                    <Input value={zedLoginUrl} readOnly className='h-11 rounded-2xl' />
+                    {zedPort ? (
+                      <p className='text-muted-foreground text-sm'>Native app callback port: {zedPort}</p>
+                    ) : null}
+                    <div className='flex justify-end'>
+                      <Button
+                        asChild
+                        type='button'
+                        variant='outline'
+                        className='h-11 rounded-xl px-4'
+                      >
+                        <a href={zedLoginUrl} target='_blank' rel='noopener noreferrer'>
+                          Open login link
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className='border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                  {activeOauthState ? (
+                    <>
+                      <p>
+                        Session ID <span className='text-foreground break-all'>{activeOauthState}</span>
+                      </p>
+                      <p>
+                        Status <span className='text-foreground'>{activeOauthStatusSummary}</span>
+                      </p>
+                      {zedLoginStatus.data?.filename ? (
+                        <p>
+                          Auth file <span className='text-foreground break-all'>{zedLoginStatus.data.filename}</span>
+                        </p>
+                      ) : null}
+                      {zedLoginStatus.data?.user_id ? (
+                        <p>
+                          User ID <span className='text-foreground break-all'>{zedLoginStatus.data.user_id}</span>
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p>No sign-in session started yet.</p>
+                  )}
+                  {zedLoginStatus.error ? (
+                    <p className='text-destructive mt-2'>{zedLoginStatus.error.message}</p>
+                  ) : null}
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value='github-copilot' className='space-y-6 pt-2'>
+              <section className='space-y-3'>
+                <h3 className='text-lg font-semibold'>GitHub Copilot</h3>
+                <p className='text-muted-foreground max-w-2xl text-sm'>
+                  Start the device-code flow, then approve it on GitHub.
+                </p>
+              </section>
+
+              <section className='max-w-xl space-y-4'>
+                <Input
+                  type='text'
+                  value={copilotLabel}
+                  onChange={(event) => setCopilotLabel(event.target.value)}
+                  className='h-11 rounded-2xl'
+                  placeholder='Optional label'
+                  maxLength={MAX_LABEL_LENGTH}
+                />
+                <div className='flex justify-end'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      startOAuth.mutate(
+                        {
+                          provider: 'github-copilot',
+                          label: copilotLabel.trim() || undefined,
+                        },
+                        {
+                          onSuccess: (data) => {
+                            setOauthStates((prev) => ({
+                              ...prev,
+                              'github-copilot': data.state,
+                            }))
+                            setCopilotUserCode(data.user_code ?? '')
+                            setCopilotVerificationUri(data.verification_uri ?? '')
+                            setCopilotExpiresIn(data.expires_in)
+                            toastSuccess(
+                              'GitHub Copilot sign-in started',
+                              'Open GitHub and enter the device code.',
+                            )
+                          },
+                          onError: (error) => {
+                            toastError('Could not start GitHub Copilot sign-in', error.message)
+                          },
+                        },
+                      )
+                    }
+                    disabled={startOAuth.isPending}
+                    className='h-11 rounded-xl px-4'
+                  >
+                    {startOAuth.isPending ? 'Starting…' : 'Start OAuth'}
+                  </Button>
+                </div>
+
+                {copilotUserCode ? (
+                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                    <p className='text-muted-foreground text-sm'>
+                      Enter this code on GitHub:
+                    </p>
+                    <Input
+                      value={copilotUserCode}
+                      readOnly
+                      className='h-11 rounded-2xl text-center font-mono text-lg font-semibold'
+                    />
+                    <Input
+                      value={copilotVerificationUri}
+                      readOnly
+                      className='h-11 rounded-2xl'
+                    />
+                    {copilotExpiryHint ? (
+                      <p className='text-muted-foreground text-sm'>{copilotExpiryHint}</p>
+                    ) : null}
+                    <div className='flex justify-end'>
+                      <Button
+                        asChild
+                        type='button'
+                        variant='outline'
+                        className='h-11 rounded-xl px-4'
+                      >
+                        <a
+                          href={copilotVerificationUri}
+                          target='_blank'
+                          rel='noopener noreferrer'
+                        >
+                          Open GitHub
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className='border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                  {activeOauthState ? (
+                    <>
+                      <p>
+                        Session ID <span className='text-foreground break-all'>{activeOauthState}</span>
+                      </p>
+                      <p>
+                        Status <span className='text-foreground'>{activeOauthStatusSummary}</span>
+                      </p>
+                    </>
+                  ) : (
+                    <p>No sign-in session started yet.</p>
+                  )}
+                  {activeOauthStatusData?.error ? (
+                    <p className='text-destructive mt-2'>{activeOauthStatusData.error}</p>
+                  ) : null}
                 </div>
               </section>
             </TabsContent>

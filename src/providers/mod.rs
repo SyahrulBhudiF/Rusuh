@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod codex;
+pub mod github_copilot;
 pub mod kiro;
 pub mod kiro_outcome;
 pub mod kiro_stream;

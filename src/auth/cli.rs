@@ -24,6 +24,9 @@ pub enum Commands {
     CodexLogin,
     /// Login to Codex via device code flow
     CodexDeviceLogin,
+    /// Login to GitHub Copilot via GitHub.com device flow
+    #[command(name = "github-copilot-login")]
+    GithubCopilotLogin,
     /// Login to Claude Code via OAuth
     ClaudeLogin,
     /// Login to Qwen Code via OAuth

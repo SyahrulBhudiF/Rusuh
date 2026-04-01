@@ -13,9 +13,13 @@ use crate::{
     proxy::ProxyState,
 };
 
-const PUBLIC_MODEL_SONNET_46: &str = "claude-sonnet-4.6";
-const PUBLIC_MODEL_SONNET_45: &str = "claude-sonnet-4.5";
-const PUBLIC_MODEL_SONNET_45_THINKING: &str = "claude-sonnet-4.5-thinking";
+const PUBLIC_MODEL_OPUS_46: &str = "claude-opus-4-6";
+const PUBLIC_MODEL_OPUS_45: &str = "claude-opus-4-5";
+const PUBLIC_MODEL_SONNET_46: &str = "claude-sonnet-4-6";
+const PUBLIC_MODEL_SONNET_45: &str = "claude-sonnet-4-5";
+const PUBLIC_MODEL_HAIKU_45: &str = "claude-haiku-4-5";
+const PUBLIC_MODEL_GPT_54: &str = "gpt-5.4";
+const PUBLIC_MODEL_GPT_53_CODEX: &str = "gpt-5.3-codex";
 
 #[derive(Clone, Copy)]
 struct RouteTarget {
@@ -186,9 +190,13 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
     let runtime_snapshot = state.current_runtime_snapshot().await;
 
     for public_model in [
+        PUBLIC_MODEL_OPUS_46,
+        PUBLIC_MODEL_OPUS_45,
         PUBLIC_MODEL_SONNET_46,
         PUBLIC_MODEL_SONNET_45,
-        PUBLIC_MODEL_SONNET_45_THINKING,
+        PUBLIC_MODEL_HAIKU_45,
+        PUBLIC_MODEL_GPT_54,
+        PUBLIC_MODEL_GPT_53_CODEX,
     ] {
         let targets = public_route_targets(public_model);
         let mut available = false;
@@ -233,11 +241,29 @@ async fn public_catalog_models(state: &ProxyState) -> Vec<ModelInfo> {
 
 fn public_route_targets(model: &str) -> &'static [RouteTarget] {
     match model {
-        PUBLIC_MODEL_SONNET_46 => &[RouteTarget {
-            provider: "zed",
-            model: "claude-sonnet-4-6",
+        PUBLIC_MODEL_OPUS_46 => &[RouteTarget {
+            provider: "github-copilot",
+            model: "claude-opus-4.6",
         }],
+        PUBLIC_MODEL_OPUS_45 => &[RouteTarget {
+            provider: "github-copilot",
+            model: "claude-opus-4.5",
+        }],
+        PUBLIC_MODEL_SONNET_46 => &[
+            RouteTarget {
+                provider: "zed",
+                model: "claude-sonnet-4-6",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-sonnet-4.6",
+            },
+        ],
         PUBLIC_MODEL_SONNET_45 => &[
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-sonnet-4-5-agentic",
+            },
             RouteTarget {
                 provider: "kiro",
                 model: "kiro-claude-sonnet-4-5",
@@ -246,8 +272,52 @@ fn public_route_targets(model: &str) -> &'static [RouteTarget] {
                 provider: "zed",
                 model: "claude-sonnet-4-5",
             },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-sonnet-4.5",
+            },
         ],
-        PUBLIC_MODEL_SONNET_45_THINKING => &[RouteTarget {
+        PUBLIC_MODEL_HAIKU_45 => &[
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-haiku-4-5-agentic",
+            },
+            RouteTarget {
+                provider: "kiro",
+                model: "kiro-claude-haiku-4-5",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "claude-haiku-4.5",
+            },
+        ],
+        PUBLIC_MODEL_GPT_54 => &[
+            RouteTarget {
+                provider: "codex",
+                model: "gpt-5.4",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "gpt-5.4",
+            },
+        ],
+        PUBLIC_MODEL_GPT_53_CODEX => &[
+            RouteTarget {
+                provider: "codex",
+                model: "gpt-5.3-codex",
+            },
+            RouteTarget {
+                provider: "github-copilot",
+                model: "gpt-5.3-codex",
+            },
+        ],
+        _ => &[],
+    }
+}
+
+fn reserved_public_route_targets(model: &str) -> &'static [RouteTarget] {
+    match model {
+        "claude-sonnet-4-5-thinking" => &[RouteTarget {
             provider: "kiro",
             model: "kiro-claude-sonnet-4-5-agentic",
         }],
@@ -255,12 +325,17 @@ fn public_route_targets(model: &str) -> &'static [RouteTarget] {
     }
 }
 
+fn is_reserved_public_model(model: &str) -> bool {
+    !reserved_public_route_targets(model).is_empty()
+}
+
 fn is_public_model(model: &str) -> bool {
-    !public_route_targets(model).is_empty()
+    !public_route_targets(model).is_empty() || is_reserved_public_model(model)
 }
 
 /// Resolve model name through configured OAuth aliases only.
 fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> String {
+    // Try exact match first
     for aliases in config.oauth_model_alias.values() {
         for entry in aliases {
             if entry.alias.eq_ignore_ascii_case(model) {
@@ -269,7 +344,46 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
         }
     }
 
+    // Try normalizing by stripping suffix after version number
+    // Pattern: claude-{family}-{major}.{minor}[-suffix]
+    // Example: "claude-sonnet-4.5-thinking" → "claude-sonnet-4.5"
+    if let Some(normalized) = normalize_model_name_for_alias(model) {
+        for aliases in config.oauth_model_alias.values() {
+            for entry in aliases {
+                if entry.alias.eq_ignore_ascii_case(&normalized) {
+                    return entry.name.clone();
+                }
+            }
+        }
+    }
+
     model.to_string()
+}
+
+fn normalize_model_name_for_alias(model: &str) -> Option<String> {
+    let parts: Vec<&str> = model.split('-').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    // Look for the last part that matches version pattern (e.g., "4.5", "4.6")
+    let mut last_version_index = None;
+    for (i, part) in parts.iter().enumerate() {
+        if part.contains('.') {
+            let version_parts: Vec<&str> = part.split('.').collect();
+            if version_parts.len() == 2
+                && version_parts[0].chars().all(|c| c.is_ascii_digit())
+                && version_parts[1].chars().all(|c| c.is_ascii_digit())
+            {
+                last_version_index = Some(i);
+            }
+        }
+    }
+
+    // Only normalize if version is the final part (no trailing suffix like "-thinking")
+    last_version_index
+        .filter(|&i| i == parts.len() - 1)
+        .map(|i| parts[..=i].join("-"))
 }
 
 fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, AppError> {
@@ -394,28 +508,31 @@ async fn route_chat(
 ) -> Result<Response, AppError> {
     let is_stream = req.stream.unwrap_or(false);
 
-    if provider_hint.is_none() {
-        let public_targets = public_route_targets(&req.model);
-        if !public_targets.is_empty() {
-            return try_route_with_targets(state, &req, public_targets, is_stream).await;
-        }
-
-        let config = state.config.read().await;
-        let resolved_model = resolve_oauth_model_alias(&config, &req.model);
-        if resolved_model != req.model || !is_public_model(&req.model) {
-            return Err(AppError::BadRequest(format!(
-                "Model '{}' is not available on the public endpoint. Use one of the curated public models or a provider-pinned route.",
-                req.model
-            )));
-        }
-    }
-
+    // Resolve aliases early so dotted models like "claude-sonnet-4.6" match public routes
     let mut req = req;
     let resolved_model = {
         let config = state.config.read().await;
         resolve_oauth_model_alias(&config, &req.model)
     };
     req.model = resolved_model;
+
+    if provider_hint.is_none() {
+        let public_targets = public_route_targets(&req.model);
+        if !public_targets.is_empty() {
+            return try_route_with_targets(state, &req, public_targets, is_stream).await;
+        }
+        let reserved_targets = reserved_public_route_targets(&req.model);
+        if !reserved_targets.is_empty() {
+            return try_route_with_targets(state, &req, reserved_targets, is_stream).await;
+        }
+
+        if !is_public_model(&req.model) {
+            return Err(AppError::BadRequest(format!(
+                "Model '{}' is not available on the public endpoint. Use one of the curated public models or a provider-pinned route.",
+                req.model
+            )));
+        }
+    }
 
     try_route_with_model(state, &req, &provider_hint, is_stream).await
 }
@@ -926,6 +1043,7 @@ mod tests {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }

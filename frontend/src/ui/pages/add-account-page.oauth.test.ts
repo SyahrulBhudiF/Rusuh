@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  formatOauthExpiryHint,
   parseOauthStateFromRedirectUrl,
   resolveTrackedOauthSession,
   type TrackedOauthStates,
@@ -11,10 +12,14 @@ describe('add-account-page OAuth session helpers', () => {
     const trackedStates: TrackedOauthStates = {
       antigravity: 'ag-state',
       codex: 'codex-state',
+      zed: 'zed-session',
+      'github-copilot': 'copilot-state',
     }
 
     expect(trackedStates.antigravity).toBe('ag-state')
     expect(trackedStates.codex).toBe('codex-state')
+    expect(trackedStates.zed).toBe('zed-session')
+    expect(trackedStates['github-copilot']).toBe('copilot-state')
     expect(trackedStates.kiro).toBeUndefined()
   })
 
@@ -64,5 +69,19 @@ describe('add-account-page OAuth session helpers', () => {
 
   test('returns null when callback URL state cannot be parsed', () => {
     expect(parseOauthStateFromRedirectUrl('not a url')).toBeNull()
+  })
+
+  test('formats short device-code expiry in seconds', () => {
+    expect(formatOauthExpiryHint(45)).toBe('Code expires in about 45 seconds.')
+  })
+
+  test('formats longer device-code expiry in minutes', () => {
+    expect(formatOauthExpiryHint(180)).toBe('Code expires in about 3 minutes.')
+  })
+
+  test('returns null when device-code expiry is missing or invalid', () => {
+    expect(formatOauthExpiryHint(undefined)).toBeNull()
+    expect(formatOauthExpiryHint(0)).toBeNull()
+    expect(formatOauthExpiryHint(Number.NaN)).toBeNull()
   })
 })

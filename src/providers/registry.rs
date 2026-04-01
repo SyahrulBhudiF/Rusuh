@@ -9,6 +9,7 @@ use crate::auth::manager::AccountManager;
 use crate::config::Config;
 use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::codex::CodexProvider;
+use crate::providers::github_copilot::GithubCopilotProvider;
 use crate::providers::kiro::KiroProvider;
 use crate::providers::model_registry::ModelRegistry;
 use crate::providers::zed::ZedProvider;
@@ -71,6 +72,25 @@ pub async fn build_providers(
             Err(e) => {
                 warn!(
                     "skipping codex account {} ({}): {e}",
+                    record.label, record.id
+                );
+            }
+        }
+    }
+
+    // ── GitHub Copilot ────────────────────────────────────────────────────
+    for record in accounts.accounts_for("github-copilot").await {
+        match GithubCopilotProvider::new(record.clone()) {
+            Ok(provider) => {
+                info!(
+                    "registering github-copilot provider: {} ({})",
+                    record.label, record.id
+                );
+                providers.push(Arc::new(provider));
+            }
+            Err(e) => {
+                warn!(
+                    "skipping github-copilot account {} ({}): {e}",
                     record.label, record.id
                 );
             }

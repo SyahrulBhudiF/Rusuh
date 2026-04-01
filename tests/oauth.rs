@@ -566,6 +566,33 @@ async fn start_oauth_accepts_openai_alias_for_codex() {
 }
 
 #[tokio::test]
+async fn start_oauth_accepts_github_copilot_aliases() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let alias_resp = app
+        .clone()
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/start?provider=github-copilot",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(alias_resp.status(), StatusCode::OK);
+    let alias_body = body_json(alias_resp).await;
+    assert_eq!(alias_body["status"], "ok");
+    assert_eq!(alias_body["provider"], "github-copilot");
+
+    let short_resp = app
+        .oneshot(mgmt_request("/v0/management/oauth/start?provider=copilot"))
+        .await
+        .unwrap();
+    assert_eq!(short_resp.status(), StatusCode::OK);
+    let short_body = body_json(short_resp).await;
+    assert_eq!(short_body["status"], "ok");
+    assert_eq!(short_body["provider"], "github-copilot");
+}
+
+#[tokio::test]
 async fn oauth_callback_writes_codex_callback_file_for_pending_session() {
     let dir = TempDir::new().unwrap();
     let cfg = mgmt_config(dir.path().to_str().unwrap());

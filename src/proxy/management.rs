@@ -91,6 +91,10 @@ pub fn router(state: Arc<ProxyState>) -> Router<Arc<ProxyState>> {
         .route("/zed/import", axum::routing::post(import_zed_credential))
         .route("/zed/check-quota", axum::routing::post(check_zed_quota))
         .route("/zed/models", axum::routing::post(list_zed_models))
+        .route(
+            "/github-copilot/models",
+            axum::routing::post(list_github_copilot_models),
+        )
         // ── Layers ───────────────────────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn(rate_limit))
@@ -589,14 +593,22 @@ async fn upload_auth_file(
         let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
-    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error.to_string()})),
-        );
+    let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!("auth file upload runtime refresh failed for {}: {}", name, error);
+            Some(error.to_string())
+        }
+    };
+
+    let mut response = json!({"status": "ok", "name": name});
+    if let Some(warning) = refresh_warning {
+        response["warning"] = json!(format!(
+            "auth file saved but runtime refresh failed: {warning}"
+        ));
     }
 
-    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+    (StatusCode::OK, Json(response))
 }
 
 #[derive(Deserialize)]
@@ -899,17 +911,27 @@ async fn check_kiro_quota(
         Err(e) => return e,
     };
 
-    // Find the auth record
-    let accounts = state.accounts.accounts_for("kiro").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(mut record) = record.cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Kiro auth file not found"})),
-        );
+    let mut record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("kiro"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Kiro auth file not found"})),
+            );
+        }
     };
 
     // Try quota check with current token
@@ -1223,16 +1245,27 @@ async fn check_codex_quota(
         Err(e) => return e,
     };
 
-    let accounts = _state.accounts.accounts_for("codex").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match _state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(record) = record.cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Codex auth file not found"})),
-        );
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("codex"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Codex auth file not found"})),
+            );
+        }
     };
 
     let response = probe_codex_quota(&_state, record).await;
@@ -1867,14 +1900,26 @@ async fn patch_auth_file_fields(
         );
     }
 
-    if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error.to_string()})),
-        );
+    let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::warn!(
+                "auth file field patch runtime refresh failed for {}: {}",
+                name,
+                error
+            );
+            Some(error.to_string())
+        }
+    };
+
+    let mut response = json!({"status": "ok", "name": name});
+    if let Some(warning) = refresh_warning {
+        response["warning"] = json!(format!(
+            "auth file updated but runtime refresh failed: {warning}"
+        ));
     }
 
-    (StatusCode::OK, Json(json!({"status": "ok", "name": name})))
+    (StatusCode::OK, Json(response))
 }
 
 // ── Zed credential import ────────────────────────────────────────────────────
@@ -1918,20 +1963,29 @@ async fn import_zed_credential(
 
     match import_zed_credential(&auth_dir, name, user_id, credential_json) {
         Ok(filename) => {
-            if let Err(error) = refresh_runtime_after_auth_change(&state).await {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": error.to_string()})),
-                );
+            let refresh_warning = match refresh_runtime_after_auth_change(&state).await {
+                Ok(()) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        "zed import runtime refresh failed for {}: {}",
+                        filename,
+                        error
+                    );
+                    Some(error.to_string())
+                }
+            };
+
+            let mut response = json!({
+                "status": "ok",
+                "filename": filename,
+            });
+            if let Some(warning) = refresh_warning {
+                response["warning"] = json!(format!(
+                    "credential imported but runtime refresh failed: {warning}"
+                ));
             }
 
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "status": "ok",
-                    "filename": filename,
-                })),
-            )
+            (StatusCode::OK, Json(response))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2040,7 +2094,7 @@ async fn get_zed_login_status(
         );
     };
 
-    let (private_key, callback_state) = {
+    let (private_key, callback_state, session_name) = {
         let mut sessions = state.zed_login_sessions.lock().await;
         cleanup_expired_sessions(&mut sessions);
 
@@ -2067,6 +2121,7 @@ async fn get_zed_login_status(
         (
             session.private_key.clone(),
             Arc::clone(&session.callback_state),
+            session.name.clone(),
         )
     };
 
@@ -2161,7 +2216,7 @@ async fn get_zed_login_status(
         None
     };
 
-    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json);
+    let record = build_zed_login_record(existing_record, &filename, &user_id, &credential_json, &session_name);
     if let Err(error) = state.accounts.store().save(&record).await {
         let error_msg = format!("save auth file: {error}");
         let mut sessions = state.zed_login_sessions.lock().await;
@@ -2220,6 +2275,7 @@ fn build_zed_login_record(
     filename: &str,
     user_id: &str,
     credential_json: &str,
+    session_name: &str,
 ) -> AuthRecord {
     let now = chrono::Utc::now();
 
@@ -2235,21 +2291,36 @@ fn build_zed_login_record(
             .metadata
             .insert("last_refreshed_at".to_string(), json!(now.to_rfc3339()));
 
+        if !session_name.is_empty() {
+            record.label = session_name.to_string();
+            record.metadata.insert("label".to_string(), json!(session_name));
+        }
+
         return record;
     }
 
-    let metadata = HashMap::from([
+    let label = if session_name.is_empty() {
+        user_id.to_string()
+    } else {
+        session_name.to_string()
+    };
+
+    let mut metadata = HashMap::from([
         ("type".to_string(), json!("zed")),
         ("user_id".to_string(), json!(user_id)),
         ("credential_json".to_string(), json!(credential_json)),
         ("last_refreshed_at".to_string(), json!(now.to_rfc3339())),
     ]);
 
+    if !session_name.is_empty() {
+        metadata.insert("label".to_string(), json!(session_name));
+    }
+
     AuthRecord {
         id: filename.to_string(),
         provider: "zed".to_string(),
         provider_key: "zed".to_string(),
-        label: user_id.to_string(),
+        label,
         disabled: false,
         status: AuthStatus::Active,
         status_message: None,
@@ -2270,17 +2341,27 @@ async fn check_zed_quota(
         Err(e) => return e,
     };
 
-    // Find the auth record
-    let accounts = state.accounts.accounts_for("zed").await;
-    let record = accounts
-        .iter()
-        .find(|r| r.id == name || r.path.file_name().and_then(|f| f.to_str()) == Some(&name));
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
 
-    let Some(record) = record else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Zed auth file not found"})),
-        );
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("zed"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Zed auth file not found"})),
+            );
+        }
     };
 
     // Parse Zed credential from metadata
@@ -2343,6 +2424,72 @@ async fn list_zed_models(
         Json(json!({
             "account": record.id,
             "provider_key": "zed",
+            "models": models,
+        })),
+    )
+}
+
+async fn list_github_copilot_models(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<CheckZedQuotaBody>,
+) -> impl IntoResponse {
+    let name = match sanitize_filename(body.name.as_deref().unwrap_or("")) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let records = match state.accounts.store().list().await {
+        Ok(records) => records,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to list auth files: {error}")})),
+            );
+        }
+    };
+
+    let record = match records
+        .into_iter()
+        .find(|record| record.id == name && record.provider_key.eq_ignore_ascii_case("github-copilot"))
+    {
+        Some(record) => record,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "GitHub Copilot auth file not found"})),
+            );
+        }
+    };
+
+    let provider = match crate::providers::github_copilot::GithubCopilotProvider::new(record.clone()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to initialize GitHub Copilot provider: {error}")})),
+            );
+        }
+    };
+
+    let models = match provider
+        .live_models()
+        .await
+        .map(|models| models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+    {
+        Ok(models) => models,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("failed to fetch GitHub Copilot models: {error}")})),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "account": record.id,
+            "provider_key": "github-copilot",
             "models": models,
         })),
     )

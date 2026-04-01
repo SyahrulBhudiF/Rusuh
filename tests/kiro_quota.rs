@@ -154,6 +154,7 @@ async fn exhausted_checker_marks_quota_exceeded_in_registry() {
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }];
@@ -213,6 +214,7 @@ async fn available_checker_clears_stale_quota_exceeded() {
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }];
@@ -275,6 +277,7 @@ async fn noop_checker_does_not_block_requests() {
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }];
