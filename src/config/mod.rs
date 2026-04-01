@@ -132,8 +132,18 @@ fn default_oauth_model_alias() -> HashMap<String, Vec<ModelAlias>> {
                 fork: false,
             },
             ModelAlias {
-                name: "claude-sonnet-4-5-thinking".to_string(),
-                alias: "claude-sonnet-4.5-thinking".to_string(),
+                name: "claude-sonnet-4-6".to_string(),
+                alias: "claude-sonnet-4.6".to_string(),
+                fork: false,
+            },
+            ModelAlias {
+                name: "claude-opus-4-5".to_string(),
+                alias: "claude-opus-4.5".to_string(),
+                fork: false,
+            },
+            ModelAlias {
+                name: "claude-opus-4-6".to_string(),
+                alias: "claude-opus-4.6".to_string(),
                 fork: false,
             },
         ],
