@@ -25,6 +25,7 @@ use crate::auth::kiro::{KiroTokenData, KiroTokenSource, BUILDER_ID_START_URL, DE
 use crate::auth::kiro_login::SSOOIDCClient;
 use crate::auth::kiro_record::KiroRecordInput;
 use crate::auth::store::{AuthRecord, AuthStatus};
+use crate::error::{AppError, AppResult};
 use crate::proxy::ProxyState;
 
 async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> anyhow::Result<()> {
@@ -584,7 +585,10 @@ pub async fn start_oauth(
     match provider {
         "antigravity" => start_antigravity_oauth(state, q.label).await,
         "codex" => start_codex_oauth(state).await,
-        "github-copilot" => start_github_copilot_oauth(state).await,
+        "github-copilot" => match start_github_copilot_oauth(state).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        },
         "kiro" => reject_legacy_kiro_social(),
         _ => (
             StatusCode::BAD_REQUEST,
@@ -687,23 +691,11 @@ async fn start_codex_oauth(state: Arc<ProxyState>) -> Response {
         .into_response()
 }
 
-async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> Response {
+async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> AppResult<Response> {
     let oauth_state = uuid::Uuid::new_v4().to_string();
     let client = reqwest::Client::new();
 
-    let device_code = match request_github_copilot_device_code(&client).await {
-        Ok(device_code) => device_code,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "status": "error",
-                    "error": error.to_string()
-                })),
-            )
-                .into_response();
-        }
-    };
+    let device_code = request_github_copilot_device_code(&client).await?;
 
     state
         .oauth_sessions
@@ -734,7 +726,7 @@ async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> Response {
         }
     });
 
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({
             "status": "ok",
@@ -747,7 +739,7 @@ async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> Response {
             "interval": device_code.interval,
         })),
     )
-        .into_response()
+        .into_response())
 }
 
 // ── Legacy KIRO social rejection ────────────────────────────────────────────
@@ -794,21 +786,29 @@ fn github_copilot_entitlement_url() -> String {
         .unwrap_or_else(|| "https://api.github.com/copilot_internal/v2/token".to_string())
 }
 
-async fn request_github_copilot_device_code(client: &reqwest::Client) -> anyhow::Result<DeviceCodeResponse> {
+async fn request_github_copilot_device_code(client: &reqwest::Client) -> AppResult<DeviceCodeResponse> {
     let response = client
         .post(github_copilot_device_code_url())
         .header(reqwest::header::ACCEPT, "application/json")
         .form(&[("client_id", GITHUB_COPILOT_CLIENT_ID), ("scope", "read:user")])
         .send()
-        .await?;
+        .await
+        .map_err(|error| AppError::Upstream(format!("github device code request failed: {error}")))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("github device code request failed (status {}): {}", status.as_u16(), body.trim());
+        return Err(AppError::Upstream(format!(
+            "github device code request failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        )));
     }
 
-    response.json::<DeviceCodeResponse>().await.map_err(Into::into)
+    response
+        .json::<DeviceCodeResponse>()
+        .await
+        .map_err(|error| AppError::Upstream(format!("failed to parse device code response: {error}")))
 }
 
 async fn poll_github_copilot_token(
@@ -954,27 +954,34 @@ async fn process_github_copilot_device_flow(
     state: &Arc<ProxyState>,
     oauth_state: &str,
     device_code: &DeviceCodeResponse,
-) -> anyhow::Result<()> {
+) -> AppResult<()> {
     let client = reqwest::Client::new();
-    let token_data = poll_github_copilot_token(&client, device_code).await?;
-    let user_info = fetch_github_copilot_user(&client, &token_data.access_token).await?;
-    validate_github_copilot_entitlement(&client, &token_data.access_token).await?;
+    let token_data = poll_github_copilot_token(&client, device_code)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot token polling failed: {error}")))?;
+    let user_info = fetch_github_copilot_user(&client, &token_data.access_token)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot user fetch failed: {error}")))?;
+    validate_github_copilot_entitlement(&client, &token_data.access_token)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot entitlement validation failed: {error}")))?;
 
     let bundle = GithubCopilotAuthBundle {
         token_data,
         user_info,
     };
-    let record = build_github_copilot_auth_record(&bundle)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let record = build_github_copilot_auth_record(&bundle)?;
 
     state
         .accounts
         .store()
         .save(&record)
         .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("save auth record: {error}")))?;
 
-    refresh_runtime_after_auth_change(state).await?;
+    refresh_runtime_after_auth_change(state)
+        .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("refresh runtime: {error}")))?;
     state.oauth_sessions.complete(oauth_state).await;
     Ok(())
 }
