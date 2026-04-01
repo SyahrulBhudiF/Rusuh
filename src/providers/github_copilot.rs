@@ -619,7 +619,13 @@ impl Provider for GithubCopilotProvider {
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         match self.live_models().await {
             Ok(models) => Ok(models),
-            Err(_) => Ok(self.static_models()),
+            Err(error) => {
+                debug!(
+                    error = %error,
+                    "failed to fetch live models, falling back to static models"
+                );
+                Ok(self.static_models())
+            }
         }
     }
 
