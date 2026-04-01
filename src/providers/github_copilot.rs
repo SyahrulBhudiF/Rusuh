@@ -306,6 +306,48 @@ impl GithubCopilotProvider {
             .unwrap_or_else(|| canonical_model.contains("codex"))
     }
 
+    fn convert_chat_to_responses_body(&self, request: &ChatCompletionRequest, canonical_model: &str) -> AppResult<Value> {
+        // If already has input field, use it directly
+        if let Some(input) = request.extra.get("input") {
+            let mut body = serde_json::to_value(request)
+                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
+            let map = body.as_object_mut().expect("responses request should serialize to object");
+            map.insert("model".to_string(), json!(canonical_model));
+            return Ok(body);
+        }
+
+        // Convert messages to input array
+        let input: Vec<Value> = request.messages.iter().map(|msg| {
+            json!({
+                "role": msg.role,
+                "content": match &msg.content {
+                    MessageContent::Text(text) => json!(text),
+                    MessageContent::Parts(parts) => json!(parts),
+                }
+            })
+        }).collect();
+
+        let mut body = json!({
+            "model": canonical_model,
+            "input": input,
+        });
+
+        // Copy over other relevant fields
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(temp) = request.extra.get("temperature") {
+                obj.insert("temperature".to_string(), temp.clone());
+            }
+            if let Some(max_tokens) = request.extra.get("max_tokens") {
+                obj.insert("max_tokens".to_string(), max_tokens.clone());
+            }
+            if let Some(stream) = request.extra.get("stream") {
+                obj.insert("stream".to_string(), stream.clone());
+            }
+        }
+
+        Ok(body)
+    }
+
     fn has_image_input(&self, request: &ChatCompletionRequest) -> bool {
         if let Some(input) = request.extra.get("input") {
             if input.to_string().contains("input_image") || input.to_string().contains("image_url") {
@@ -643,11 +685,7 @@ impl Provider for GithubCopilotProvider {
             format!("{}/chat/completions", self.api_base_url())
         };
         let body = if use_responses {
-            let mut body = serde_json::to_value(request)
-                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
-            let map = body.as_object_mut().expect("responses request should serialize to object");
-            map.insert("model".to_string(), json!(canonical_model));
-            body
+            self.convert_chat_to_responses_body(request, &canonical_model)?
         } else {
             self.normalize_chat_request(request)
         };
@@ -694,11 +732,7 @@ impl Provider for GithubCopilotProvider {
             format!("{}/chat/completions", self.api_base_url())
         };
         let body = if use_responses {
-            let mut body = serde_json::to_value(request)
-                .map_err(|error| AppError::BadRequest(format!("serialize responses request: {error}")))?;
-            let map = body.as_object_mut().expect("responses request should serialize to object");
-            map.insert("model".to_string(), json!(canonical_model));
-            body
+            self.convert_chat_to_responses_body(request, &canonical_model)?
         } else {
             self.normalize_chat_request(request)
         };
