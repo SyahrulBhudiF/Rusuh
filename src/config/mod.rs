@@ -146,6 +146,11 @@ fn default_oauth_model_alias() -> HashMap<String, Vec<ModelAlias>> {
                 alias: "claude-opus-4.6".to_string(),
                 fork: false,
             },
+            ModelAlias {
+                name: "claude-haiku-4-5".to_string(),
+                alias: "claude-haiku-4.5".to_string(),
+                fork: false,
+            },
         ],
     )])
 }

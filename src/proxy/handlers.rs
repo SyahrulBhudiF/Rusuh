@@ -329,6 +329,7 @@ fn is_public_model(model: &str) -> bool {
 
 /// Resolve model name through configured OAuth aliases only.
 fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> String {
+    // Try exact match first
     for aliases in config.oauth_model_alias.values() {
         for entry in aliases {
             if entry.alias.eq_ignore_ascii_case(model) {
@@ -337,7 +338,44 @@ fn resolve_oauth_model_alias(config: &crate::config::Config, model: &str) -> Str
         }
     }
 
+    // Try normalizing by stripping suffix after version number
+    // Pattern: claude-{family}-{major}.{minor}[-suffix]
+    // Example: "claude-sonnet-4.5-thinking" → "claude-sonnet-4.5"
+    if let Some(normalized) = normalize_model_name_for_alias(model) {
+        for aliases in config.oauth_model_alias.values() {
+            for entry in aliases {
+                if entry.alias.eq_ignore_ascii_case(&normalized) {
+                    return entry.name.clone();
+                }
+            }
+        }
+    }
+
     model.to_string()
+}
+
+fn normalize_model_name_for_alias(model: &str) -> Option<String> {
+    let parts: Vec<&str> = model.split('-').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    // Look for a part that matches version pattern (e.g., "4.5", "4.6")
+    for (i, part) in parts.iter().enumerate() {
+        if part.contains('.') {
+            let version_parts: Vec<&str> = part.split('.').collect();
+            if version_parts.len() == 2
+                && version_parts[0].chars().all(|c| c.is_ascii_digit())
+                && version_parts[1].chars().all(|c| c.is_ascii_digit())
+            {
+                // Found version, reconstruct base model name up to and including version
+                let base_parts = &parts[..=i];
+                return Some(base_parts.join("-"));
+            }
+        }
+    }
+
+    None
 }
 
 fn responses_body_to_chat_request(body: Value) -> Result<ChatCompletionRequest, AppError> {
