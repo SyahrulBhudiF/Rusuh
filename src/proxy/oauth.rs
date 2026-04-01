@@ -946,58 +946,62 @@ async fn poll_github_copilot_token(
 async fn fetch_github_copilot_user(
     client: &reqwest::Client,
     access_token: &str,
-) -> anyhow::Result<GithubUserInfo> {
+) -> AppResult<GithubUserInfo> {
     let response = client
         .get(github_copilot_user_url())
         .bearer_auth(access_token)
         .header(reqwest::header::USER_AGENT, "rusuh")
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
-        .await?;
+        .await
+        .map_err(|e| AppError::Upstream(format!("github user info request failed: {}", e)))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
+        return Err(AppError::Upstream(format!(
             "github user info request failed (status {}): {}",
             status.as_u16(),
             body.trim()
-        );
+        )));
     }
 
-    response.json::<GithubUserInfo>().await.map_err(Into::into)
+    response.json::<GithubUserInfo>().await
+        .map_err(|e| AppError::Upstream(format!("failed to parse github user info: {}", e)))
 }
 
 async fn validate_github_copilot_entitlement(
     client: &reqwest::Client,
     access_token: &str,
-) -> anyhow::Result<()> {
+) -> AppResult<()> {
     let response = client
         .get(github_copilot_entitlement_url())
         .bearer_auth(access_token)
         .header(reqwest::header::USER_AGENT, "rusuh")
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
-        .await?;
+        .await
+        .map_err(|e| AppError::Upstream(format!("copilot entitlement request failed: {}", e)))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
+        return Err(AppError::Upstream(format!(
             "copilot entitlement validation failed (status {}): {}",
             status.as_u16(),
             body.trim()
-        );
+        )));
     }
 
-    let payload: Value = response.json().await?;
+    let payload: Value = response.json().await
+        .map_err(|e| AppError::Upstream(format!("failed to parse copilot entitlement response: {}", e)))?;
     let token = payload
         .get("token")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default();
     if token.is_empty() {
-        anyhow::bail!("copilot entitlement response missing token");
+        return Err(AppError::Upstream("copilot entitlement response missing token".to_string()));
     }
 
     Ok(())
