@@ -474,7 +474,7 @@ async fn route_chat(
 
         let config = state.config.read().await;
         let resolved_model = resolve_oauth_model_alias(&config, &req.model);
-        if resolved_model != req.model || !is_public_model(&req.model) {
+        if !is_public_model(&resolved_model) {
             return Err(AppError::BadRequest(format!(
                 "Model '{}' is not available on the public endpoint. Use one of the curated public models or a provider-pinned route.",
                 req.model
