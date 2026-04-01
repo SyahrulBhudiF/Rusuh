@@ -12,11 +12,13 @@ describe('add-account-page OAuth session helpers', () => {
     const trackedStates: TrackedOauthStates = {
       antigravity: 'ag-state',
       codex: 'codex-state',
+      zed: 'zed-session',
       'github-copilot': 'copilot-state',
     }
 
     expect(trackedStates.antigravity).toBe('ag-state')
     expect(trackedStates.codex).toBe('codex-state')
+    expect(trackedStates.zed).toBe('zed-session')
     expect(trackedStates['github-copilot']).toBe('copilot-state')
     expect(trackedStates.kiro).toBeUndefined()
   })

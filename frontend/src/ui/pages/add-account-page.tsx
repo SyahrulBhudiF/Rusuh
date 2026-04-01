@@ -26,6 +26,10 @@ import {
   useStartOAuthMutation,
   useSubmitOAuthCallbackMutation,
 } from '../../lib/management-oauth'
+import {
+  useStartZedLoginMutation,
+  useZedLoginStatusQuery,
+} from '../../lib/management-zed'
 import { buildOAuthTerminalFeedback } from '../../lib/oauth-feedback'
 import { toastError, toastInfo, toastSuccess } from '../../lib/toast'
 import {
@@ -50,6 +54,7 @@ export function AddAccountPage() {
   const startOAuth = useStartOAuthMutation()
   const submitOAuthCallback = useSubmitOAuthCallbackMutation()
   const startKiroBuilderId = useStartKiroBuilderIdMutation()
+  const startZedLogin = useStartZedLoginMutation()
   const importKiro = useImportKiroMutation()
   const importKiroSocial = useImportKiroSocialMutation()
 
@@ -63,6 +68,11 @@ export function AddAccountPage() {
   const [codexLabel, setCodexLabel] = useState('')
   const [codexAuthUrl, setCodexAuthUrl] = useState('')
   const [codexCallbackUrl, setCodexCallbackUrl] = useState('')
+
+  const [zedLabel, setZedLabel] = useState('')
+  const [zedLoginUrl, setZedLoginUrl] = useState('')
+  const [zedPort, setZedPort] = useState<number | null>(null)
+  const [zedSessionId, setZedSessionId] = useState<string | null>(null)
 
   const [copilotLabel, setCopilotLabel] = useState('')
   const [copilotUserCode, setCopilotUserCode] = useState('')
@@ -97,6 +107,7 @@ export function AddAccountPage() {
   const kiroOauthStatus = useProviderOauthStatus(kiroOauthState)
   const antigravityOauthStatus = useProviderOauthStatus(antigravityOauthState)
   const codexOauthStatus = useProviderOauthStatus(codexOauthState)
+  const zedLoginStatus = useZedLoginStatusQuery(zedSessionId, Boolean(zedSessionId))
   const copilotOauthStatus = useProviderOauthStatus(copilotOauthState)
 
   const oauthStatusByProvider = {
@@ -106,14 +117,18 @@ export function AddAccountPage() {
     'github-copilot': copilotOauthStatus,
   } as const
 
-  const activeOauthState = oauthStates[provider]
-  const activeOauthStatus = oauthStatusByProvider[provider]
-  const activeOauthStatusData = activeOauthStatus.data
-  const activeOauthStatusSummary = activeOauthState
-    ? (activeOauthStatusData?.status ?? (activeOauthStatus.isFetching ? 'wait' : 'idle'))
-    : 'idle'
+  const activeOauthState = provider === 'zed' ? zedSessionId : oauthStates[provider]
+  const activeOauthStatus = provider === 'zed' ? null : oauthStatusByProvider[provider]
+  const activeOauthStatusData = activeOauthStatus?.data
+  const activeOauthStatusSummary =
+    provider === 'zed'
+      ? (zedLoginStatus.data?.status ?? (zedLoginStatus.isFetching ? 'waiting' : 'idle'))
+      : activeOauthState
+        ? (activeOauthStatusData?.status ?? (activeOauthStatus?.isFetching ? 'wait' : 'idle'))
+        : 'idle'
   const copilotExpiryHint = formatOauthExpiryHint(copilotExpiresIn)
   const lastNotifiedOauthStates = useRef<Partial<Record<AddAccountOauthProvider, string>>>({})
+  const lastNotifiedZedSessionId = useRef<string | null>(null)
 
   useEffect(() => {
     const providerStatuses = {
@@ -135,7 +150,7 @@ export function AddAccountPage() {
       },
     } as const
 
-    const trackedProviders: AddAccountOauthProvider[] = [
+    const trackedProviders: Array<Exclude<AddAccountOauthProvider, 'zed'>> = [
       'kiro',
       'antigravity',
       'codex',
@@ -179,6 +194,19 @@ export function AddAccountPage() {
     copilotOauthStatus.data?.status,
     copilotOauthStatus.data?.error,
   ])
+
+  useEffect(() => {
+    if (!zedSessionId || !zedLoginStatus.data?.status || zedLoginStatus.data.status === 'waiting') {
+      return
+    }
+
+    if (lastNotifiedZedSessionId.current === zedSessionId) {
+      return
+    }
+
+    toastSuccess('Zed login complete', 'Account connected. Open Accounts to review it.')
+    lastNotifiedZedSessionId.current = zedSessionId
+  }, [zedSessionId, zedLoginStatus.data?.status])
 
   function submitKiroStructuredImport() {
     importKiro.mutate(
@@ -261,7 +289,7 @@ export function AddAccountPage() {
             value={provider}
             onValueChange={(value) => setProvider(value as AddAccountOauthProvider)}
           >
-            <TabsList className='motion-panel grid w-full max-w-md grid-cols-4 rounded-2xl p-1'>
+            <TabsList className='motion-panel grid w-full max-w-2xl grid-cols-5 rounded-2xl p-1'>
               <TabsTrigger value='kiro' className='rounded-xl'>
                 Kiro
               </TabsTrigger>
@@ -270,6 +298,9 @@ export function AddAccountPage() {
               </TabsTrigger>
               <TabsTrigger value='codex' className='rounded-xl'>
                 Codex
+              </TabsTrigger>
+              <TabsTrigger value='zed' className='rounded-xl'>
+                Zed
               </TabsTrigger>
               <TabsTrigger value='github-copilot' className='rounded-xl'>
                 Copilot
@@ -748,6 +779,105 @@ export function AddAccountPage() {
                       {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
                     </Button>
                   </div>
+                </div>
+              </section>
+            </TabsContent>
+
+            <TabsContent value='zed' className='space-y-6 pt-2'>
+              <section className='space-y-3'>
+                <h3 className='text-lg font-semibold'>Zed</h3>
+                <p className='text-muted-foreground max-w-2xl text-sm'>
+                  Start the native-app sign-in flow here, then review the account on the Accounts page.
+                </p>
+              </section>
+
+              <section className='max-w-xl space-y-4'>
+                <Input
+                  type='text'
+                  value={zedLabel}
+                  onChange={(event) => setZedLabel(event.target.value)}
+                  className='h-11 rounded-2xl'
+                  placeholder='Optional label'
+                  maxLength={MAX_LABEL_LENGTH}
+                />
+                <div className='flex justify-end'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      startZedLogin.mutate(
+                        { name: zedLabel.trim() || undefined },
+                        {
+                          onSuccess: (data) => {
+                            setZedSessionId(data.session_id)
+                            setZedLoginUrl(data.login_url)
+                            setZedPort(data.port)
+                            toastSuccess(
+                              'Zed login started',
+                              'Open the login link and finish the native-app flow.',
+                            )
+                            window.open(data.login_url, '_blank', 'noopener,noreferrer')
+                          },
+                          onError: (error) => {
+                            toastError('Could not start Zed sign-in', error.message)
+                          },
+                        },
+                      )
+                    }
+                    disabled={startZedLogin.isPending}
+                    className='h-11 rounded-xl px-4'
+                  >
+                    {startZedLogin.isPending ? 'Launching…' : 'Start Zed login'}
+                  </Button>
+                </div>
+
+                {zedLoginUrl ? (
+                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                    <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
+                    <Input value={zedLoginUrl} readOnly className='h-11 rounded-2xl' />
+                    {zedPort ? (
+                      <p className='text-muted-foreground text-sm'>Native app callback port: {zedPort}</p>
+                    ) : null}
+                    <div className='flex justify-end'>
+                      <Button
+                        asChild
+                        type='button'
+                        variant='outline'
+                        className='h-11 rounded-xl px-4'
+                      >
+                        <a href={zedLoginUrl} target='_blank' rel='noopener noreferrer'>
+                          Open login link
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className='border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                  {activeOauthState ? (
+                    <>
+                      <p>
+                        Session ID <span className='text-foreground break-all'>{activeOauthState}</span>
+                      </p>
+                      <p>
+                        Status <span className='text-foreground'>{activeOauthStatusSummary}</span>
+                      </p>
+                      {zedLoginStatus.data?.filename ? (
+                        <p>
+                          Auth file <span className='text-foreground break-all'>{zedLoginStatus.data.filename}</span>
+                        </p>
+                      ) : null}
+                      {zedLoginStatus.data?.user_id ? (
+                        <p>
+                          User ID <span className='text-foreground break-all'>{zedLoginStatus.data.user_id}</span>
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p>No sign-in session started yet.</p>
+                  )}
+                  {zedLoginStatus.error ? (
+                    <p className='text-destructive mt-2'>{zedLoginStatus.error.message}</p>
+                  ) : null}
                 </div>
               </section>
             </TabsContent>
