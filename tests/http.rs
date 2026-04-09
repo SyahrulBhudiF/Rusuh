@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower::ServiceExt;
 
 use rusuh::auth::manager::AccountManager;
@@ -34,6 +34,8 @@ fn test_app(cfg: Config) -> axum::Router {
 #[derive(Debug)]
 struct StubProvider {
     name: &'static str,
+    provider_type: &'static str,
+    client_id: String,
     models: Vec<ModelInfo>,
     observed_models: Arc<Mutex<Vec<String>>>,
     result: StubCompletionResult,
@@ -49,11 +51,24 @@ enum StubCompletionResult {
 impl StubProvider {
     fn success(
         name: &'static str,
+        client_id: &str,
+        model_ids: &[&str],
+        observed_models: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
+        Self::success_with_type(name, name, client_id, model_ids, observed_models)
+    }
+
+    fn success_with_type(
+        name: &'static str,
+        provider_type: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
     ) -> Self {
         Self {
             name,
+            provider_type,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -70,12 +85,15 @@ impl StubProvider {
 
     fn success_with_tool_calls(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
         tool_calls: Vec<serde_json::Value>,
     ) -> Self {
         Self {
             name,
+            provider_type: name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -92,12 +110,15 @@ impl StubProvider {
 
     fn quota_exceeded(
         name: &'static str,
+        client_id: &str,
         model_ids: &[&str],
         observed_models: Arc<Mutex<Vec<String>>>,
         message: &str,
     ) -> Self {
         Self {
             name,
+            provider_type: name,
+            client_id: client_id.to_string(),
             models: model_ids
                 .iter()
                 .map(|id| ModelInfo {
@@ -117,6 +138,14 @@ impl StubProvider {
 impl Provider for StubProvider {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn provider_type(&self) -> &str {
+        self.provider_type
+    }
+
+    fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
@@ -209,6 +238,7 @@ fn make_ext_model(id: &str, owned_by: &str, provider_type: &str) -> ExtModelInfo
         context_length: 0,
         max_completion_tokens: 0,
         supported_parameters: vec![],
+        supported_endpoints: None,
         thinking: None,
         user_defined: false,
     }
@@ -227,9 +257,14 @@ fn test_state_with_providers(
     providers: Vec<Arc<dyn Provider>>,
 ) -> Arc<ProxyState> {
     let accounts = Arc::new(AccountManager::with_dir("/tmp/rusuh_test_nonexistent"));
-    let mut state = ProxyState::new(cfg, accounts, registry, providers.len());
-    state.providers = providers;
-    Arc::new(state)
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, providers.len()));
+    futures::executor::block_on(async {
+        state
+            .publish_runtime_from_providers(providers)
+            .await
+            .expect("test providers should publish");
+    });
+    state
 }
 
 fn basic_chat_request(model: &str) -> serde_json::Value {
@@ -237,6 +272,99 @@ fn basic_chat_request(model: &str) -> serde_json::Value {
         "model": model,
         "messages": [{"role": "user", "content": "test"}]
     })
+}
+
+#[derive(Debug)]
+struct BlockingProvider {
+    name: &'static str,
+    client_id: String,
+    models: Vec<ModelInfo>,
+    list_started: Arc<Notify>,
+    list_release: Arc<Notify>,
+    chat_started: Arc<Notify>,
+    chat_release: Arc<Notify>,
+}
+
+impl BlockingProvider {
+    fn new(
+        name: &'static str,
+        client_id: impl Into<String>,
+        model_ids: &[&str],
+        list_started: Arc<Notify>,
+        list_release: Arc<Notify>,
+        chat_started: Arc<Notify>,
+        chat_release: Arc<Notify>,
+    ) -> Self {
+        Self {
+            name,
+            client_id: client_id.into(),
+            models: model_ids
+                .iter()
+                .map(|id| ModelInfo {
+                    id: (*id).to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: name.to_string(),
+                })
+                .collect(),
+            list_started,
+            list_release,
+            chat_started,
+            chat_release,
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for BlockingProvider {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn client_id(&self) -> &str {
+        self.client_id.as_str()
+    }
+
+    async fn list_models(&self) -> rusuh::error::AppResult<Vec<ModelInfo>> {
+        self.list_started.notify_one();
+        self.list_release.notified().await;
+        Ok(self.models.clone())
+    }
+
+    async fn chat_completion(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> rusuh::error::AppResult<ChatCompletionResponse> {
+        self.chat_started.notify_one();
+        self.chat_release.notified().await;
+
+        Ok(ChatCompletionResponse {
+            id: format!("{}-ok", self.name),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: req.model.clone(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(format!("handled by {}", self.name)),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                }),
+                delta: None,
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: None,
+        })
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        _req: &ChatCompletionRequest,
+    ) -> rusuh::error::AppResult<BoxStream> {
+        unreachable!("streaming is not used in this test")
+    }
 }
 
 #[tokio::test]
@@ -470,6 +598,7 @@ async fn public_claude_sonnet_4_6_does_not_use_kiro_alias_routing() {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }];
@@ -480,11 +609,14 @@ async fn public_claude_sonnet_4_6_does_not_use_kiro_alias_routing() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     let body = serde_json::json!({
-        "model": "claude-sonnet-4.6",
+        "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "test"}]
     });
 
@@ -529,6 +661,64 @@ async fn chat_completions_rejects_non_public_model_on_public_endpoint() {
 }
 
 #[tokio::test]
+async fn responses_endpoint_rejects_non_public_model_on_public_endpoint() {
+    let app = test_app(Config::default());
+
+    let body = serde_json::json!({
+        "model": "gpt-4",
+        "input": "hello"
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn responses_compact_endpoint_rejects_non_public_model_on_public_endpoint() {
+    let app = test_app(Config::default());
+
+    let body = serde_json::json!({
+        "model": "gpt-4",
+        "input": "hello"
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses/compact")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn responses_compact_handler_documents_intentional_parity() {
+    let source = std::fs::read_to_string("src/proxy/handlers.rs").expect("read handlers source");
+
+    assert!(
+        source.contains("TODO: /v1/responses/compact currently matches /v1/responses intentionally"),
+        "responses_compact should document why it currently routes identically"
+    );
+}
+
+#[tokio::test]
 async fn gemini_models_endpoint() {
     let app = test_app(Config::default());
 
@@ -552,11 +742,13 @@ async fn gemini_models_fallback_uses_provider_models_when_registry_is_empty() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6"],
             zed_observed,
         )),
@@ -655,6 +847,7 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }];
@@ -670,12 +863,15 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
-    // Request with generic "claude-sonnet-4.6" name
+    // Request with generic "claude-sonnet-4-6" name
     let body = serde_json::json!({
-        "model": "claude-sonnet-4.6",
+        "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "test"}]
     });
 
@@ -694,6 +890,730 @@ async fn generic_claude_model_routes_to_kiro_with_fallback() {
 
     // Should get quota exceeded error since Kiro is unavailable and no other provider configured
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn generic_claude_haiku_45_routes_to_copilot_before_other_providers() {
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let zed_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["claude-haiku-4.5"],
+            copilot_observed.clone(),
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "zed-display",
+            "zed",
+            "zed_0",
+            &["claude-haiku-4-5"],
+            zed_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-haiku-4.5", "github-copilot", "github-copilot")],
+        )
+        .await;
+    registry
+        .register_client(
+            "zed_0",
+            "zed",
+            vec![make_ext_model("claude-haiku-4-5", "zed", "zed")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("claude-haiku-4-5").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(copilot_observed.lock().await.as_slice(), ["claude-haiku-4.5"]);
+    assert!(zed_observed.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn generic_claude_sonnet_46_prefers_zed_then_copilot() {
+    let zed_observed = Arc::new(Mutex::new(Vec::new()));
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success_with_type(
+            "zed-display",
+            "zed",
+            "zed_0",
+            &["claude-sonnet-4-6"],
+            zed_observed.clone(),
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["claude-sonnet-4.6"],
+            copilot_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "zed_0",
+            "zed",
+            vec![make_ext_model("claude-sonnet-4-6", "zed", "zed")],
+        )
+        .await;
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-sonnet-4.6", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("claude-sonnet-4-6").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(zed_observed.lock().await.as_slice(), ["claude-sonnet-4-6"]);
+    assert!(copilot_observed.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn generic_claude_sonnet_45_prefers_kiro_agentic_then_kiro_then_zed_then_copilot() {
+    let kiro_agentic_observed = Arc::new(Mutex::new(Vec::new()));
+    let kiro_standard_observed = Arc::new(Mutex::new(Vec::new()));
+    let zed_observed = Arc::new(Mutex::new(Vec::new()));
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::quota_exceeded(
+            "kiro",
+            "kiro_agentic_0",
+            &["kiro-claude-sonnet-4-5-agentic"],
+            kiro_agentic_observed.clone(),
+            "kiro agentic quota exceeded",
+        )),
+        Arc::new(StubProvider::quota_exceeded(
+            "kiro",
+            "kiro_standard_0",
+            &["kiro-claude-sonnet-4-5"],
+            kiro_standard_observed.clone(),
+            "kiro standard quota exceeded",
+        )),
+        Arc::new(StubProvider::quota_exceeded(
+            "zed",
+            "zed_0",
+            &["claude-sonnet-4-5"],
+            zed_observed.clone(),
+            "zed quota exceeded",
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["claude-sonnet-4.5"],
+            copilot_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "kiro_agentic_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-sonnet-4-5-agentic", "kiro", "kiro")],
+        )
+        .await;
+    registry
+        .register_client(
+            "kiro_standard_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-sonnet-4-5", "kiro", "kiro")],
+        )
+        .await;
+    registry
+        .register_client(
+            "zed_0",
+            "zed",
+            vec![make_ext_model("claude-sonnet-4-5", "zed", "zed")],
+        )
+        .await;
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-sonnet-4.5", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("claude-sonnet-4-5").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        kiro_agentic_observed.lock().await.as_slice(),
+        ["kiro-claude-sonnet-4-5-agentic"]
+    );
+    assert_eq!(
+        kiro_standard_observed.lock().await.as_slice(),
+        ["kiro-claude-sonnet-4-5"]
+    );
+    assert_eq!(
+        zed_observed.lock().await.as_slice(),
+        ["claude-sonnet-4-5"]
+    );
+    assert_eq!(
+        copilot_observed.lock().await.as_slice(),
+        ["claude-sonnet-4.5"]
+    );
+}
+
+#[tokio::test]
+async fn generic_claude_haiku_45_prefers_kiro_agentic_then_kiro_then_copilot() {
+    let kiro_agentic_observed = Arc::new(Mutex::new(Vec::new()));
+    let kiro_standard_observed = Arc::new(Mutex::new(Vec::new()));
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::quota_exceeded(
+            "kiro",
+            "kiro_agentic_0",
+            &["kiro-claude-haiku-4-5-agentic"],
+            kiro_agentic_observed.clone(),
+            "kiro agentic quota exceeded",
+        )),
+        Arc::new(StubProvider::quota_exceeded(
+            "kiro",
+            "kiro_standard_0",
+            &["kiro-claude-haiku-4-5"],
+            kiro_standard_observed.clone(),
+            "kiro standard quota exceeded",
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["claude-haiku-4.5"],
+            copilot_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "kiro_agentic_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-haiku-4-5-agentic", "kiro", "kiro")],
+        )
+        .await;
+    registry
+        .register_client(
+            "kiro_standard_0",
+            "kiro",
+            vec![make_ext_model("kiro-claude-haiku-4-5", "kiro", "kiro")],
+        )
+        .await;
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-haiku-4.5", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("claude-haiku-4-5").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        kiro_agentic_observed.lock().await.as_slice(),
+        ["kiro-claude-haiku-4-5-agentic"]
+    );
+    assert_eq!(
+        kiro_standard_observed.lock().await.as_slice(),
+        ["kiro-claude-haiku-4-5"]
+    );
+    assert_eq!(
+        copilot_observed.lock().await.as_slice(),
+        ["claude-haiku-4.5"]
+    );
+}
+
+#[tokio::test]
+async fn public_gpt_54_routes_to_codex_before_copilot() {
+    let codex_observed = Arc::new(Mutex::new(Vec::new()));
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success_with_type(
+            "codex-display",
+            "codex",
+            "codex_0",
+            &["gpt-5.4"],
+            codex_observed.clone(),
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["gpt-5.4"],
+            copilot_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5.4", "codex", "codex")],
+        )
+        .await;
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("gpt-5.4", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("gpt-5.4").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(codex_observed.lock().await.as_slice(), ["gpt-5.4"]);
+    assert!(copilot_observed.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn public_gpt_53_codex_routes_to_codex_before_copilot() {
+    let codex_observed = Arc::new(Mutex::new(Vec::new()));
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success_with_type(
+            "codex-display",
+            "codex",
+            "codex_0",
+            &["gpt-5.3-codex"],
+            codex_observed.clone(),
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "github-copilot-display",
+            "github-copilot",
+            "github-copilot_0",
+            &["gpt-5.3-codex"],
+            copilot_observed.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5.3-codex", "codex", "codex")],
+        )
+        .await;
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("gpt-5.3-codex", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(basic_chat_request("gpt-5.3-codex").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(codex_observed.lock().await.as_slice(), ["gpt-5.3-codex"]);
+    assert!(copilot_observed.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn public_catalog_includes_opus_models_when_copilot_provides_them() {
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_type(
+        "github-copilot-display",
+        "github-copilot",
+        "github-copilot_0",
+        &["claude-opus-4.6", "claude-opus-4.5"],
+        copilot_observed,
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![
+                make_ext_model("claude-opus-4.6", "github-copilot", "github-copilot"),
+                make_ext_model("claude-opus-4.5", "github-copilot", "github-copilot"),
+            ],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let ids: Vec<String> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+
+    assert!(ids.contains(&"claude-opus-4-6".to_string()));
+    assert!(ids.contains(&"claude-opus-4-5".to_string()));
+}
+
+#[tokio::test]
+async fn reserved_opus_model_routes_to_copilot_opus_46() {
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_type(
+        "github-copilot-display",
+        "github-copilot",
+        "github-copilot_0",
+        &["claude-opus-4.6"],
+        copilot_observed.clone(),
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-opus-4.6", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&basic_chat_request("claude-opus-4-6")).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(copilot_observed.lock().await.as_slice(), ["claude-opus-4.6"]);
+}
+
+#[tokio::test]
+async fn reserved_opus_45_model_routes_to_copilot_opus_45() {
+    let copilot_observed = Arc::new(Mutex::new(Vec::new()));
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_type(
+        "github-copilot-display",
+        "github-copilot",
+        "github-copilot_0",
+        &["claude-opus-4.5"],
+        copilot_observed.clone(),
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "github-copilot_0",
+            "github-copilot",
+            vec![make_ext_model("claude-opus-4.5", "github-copilot", "github-copilot")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&basic_chat_request("claude-opus-4-5")).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(copilot_observed.lock().await.as_slice(), ["claude-opus-4.5"]);
+}
+
+#[tokio::test]
+async fn public_route_failed_selected_auth_request_does_not_poison_execution_session() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
+        "zed",
+        "zed_0",
+        &["claude-sonnet-4-6"],
+        seen.clone(),
+    ))];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "zed_0",
+            "zed",
+            vec![make_ext_model("claude-sonnet-4-6", "zed", "zed")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let initial_body = serde_json::json!({
+        "model": "claude-sonnet-4-6",
+        "selected_auth_id": "zed_99",
+        "execution_session_id": "session-public",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let initial_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&initial_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial_resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let follow_up_body = serde_json::json!({
+        "model": "claude-sonnet-4-6",
+        "execution_session_id": "session-public",
+        "messages": [{"role": "user", "content": "continue"}]
+    });
+
+    let follow_up_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&follow_up_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up_resp.status(), StatusCode::OK);
+    assert_eq!(seen.lock().await.as_slice(), &["claude-sonnet-4-6"]);
+}
+
+#[tokio::test]
+async fn chat_execution_session_sticks_selected_auth_across_requests() {
+    let first_seen = Arc::new(Mutex::new(Vec::new()));
+    let second_seen = Arc::new(Mutex::new(Vec::new()));
+
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success(
+            "codex",
+            "codex_0",
+            &["gpt-5-codex"],
+            first_seen.clone(),
+        )),
+        Arc::new(StubProvider::success(
+            "codex",
+            "codex_1",
+            &["gpt-5-codex"],
+            second_seen.clone(),
+        )),
+    ];
+
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+    registry
+        .register_client(
+            "codex_1",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+
+    let app = test_app_with_state(test_state_with_providers(
+        Config::default(),
+        registry,
+        providers,
+    ));
+
+    let initial_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "selected_auth_id": "codex_1",
+        "execution_session_id": "session-http",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+
+    let initial_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&initial_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial_resp.status(), StatusCode::OK);
+
+    let follow_up_body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "execution_session_id": "session-http",
+        "messages": [{"role": "user", "content": "continue"}]
+    });
+
+    let follow_up_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/provider/codex/v1/chat/completions")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&follow_up_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up_resp.status(), StatusCode::OK);
+
+    assert!(first_seen.lock().await.is_empty());
+    assert_eq!(
+        second_seen.lock().await.as_slice(),
+        &["gpt-5-codex", "gpt-5-codex"]
+    );
 }
 
 #[tokio::test]
@@ -837,6 +1757,7 @@ async fn kiro_routing_skips_quota_exceeded_auth() {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }];
@@ -856,8 +1777,11 @@ async fn kiro_routing_skips_quota_exceeded_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should use kiro_1, not kiro_0
     let body = serde_json::json!({
@@ -971,6 +1895,7 @@ async fn kiro_routing_skips_suspended_auth() {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }];
@@ -992,8 +1917,11 @@ async fn kiro_routing_skips_suspended_auth() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should use kiro_1, not kiro_0
     let body = serde_json::json!({
@@ -1086,6 +2014,7 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
             context_length: 0,
             max_completion_tokens: 0,
             supported_parameters: vec![],
+            supported_endpoints: None,
             thinking: None,
             user_defined: false,
         }];
@@ -1104,8 +2033,11 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
     // Build app state
     let mut state = ProxyState::new(config, accounts, registry, providers.len());
     state.kiro_runtime = runtime;
-    state.providers = providers;
     let state = Arc::new(state);
+    state
+        .publish_runtime_from_providers(providers)
+        .await
+        .expect("test providers should publish");
 
     // Make a request - should return error
     let body = serde_json::json!({
@@ -1132,10 +2064,32 @@ async fn kiro_routing_returns_error_when_all_unavailable() {
 
 #[tokio::test]
 async fn public_models_catalog_is_curated_to_three_router_models() {
+    let zed_observed = Arc::new(Mutex::new(Vec::new()));
+    let kiro_observed = Arc::new(Mutex::new(Vec::new()));
+    let zed_client_id = "auth-zed-record-1";
+    let kiro_client_id = "auth-kiro-record-1";
+
+    let providers: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(StubProvider::success_with_type(
+            "zed-display",
+            "zed",
+            zed_client_id,
+            &["claude-sonnet-4-6", "claude-sonnet-4-5"],
+            zed_observed,
+        )),
+        Arc::new(StubProvider::success_with_type(
+            "kiro-display",
+            "kiro",
+            kiro_client_id,
+            &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
+            kiro_observed,
+        )),
+    ];
+
     let registry = Arc::new(ModelRegistry::new());
     registry
         .register_client(
-            "zed_0",
+            zed_client_id,
             "zed",
             vec![
                 make_ext_model("claude-sonnet-4-6", "zed", "zed"),
@@ -1145,7 +2099,7 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         .await;
     registry
         .register_client(
-            "kiro_0",
+            kiro_client_id,
             "kiro",
             vec![
                 make_ext_model("kiro-claude-sonnet-4-5", "kiro", "kiro"),
@@ -1154,7 +2108,6 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
         )
         .await;
 
-    let providers: Vec<Arc<dyn Provider>> = vec![];
     let app = test_app_with_state(test_state_with_providers(
         Config::default(),
         registry,
@@ -1187,9 +2140,8 @@ async fn public_models_catalog_is_curated_to_three_router_models() {
     assert_eq!(
         ids,
         vec![
-            "claude-sonnet-4.6".to_string(),
-            "claude-sonnet-4.5".to_string(),
-            "claude-sonnet-4.5-thinking".to_string(),
+            "claude-sonnet-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
         ]
     );
 }
@@ -1202,16 +2154,19 @@ async fn provider_pinned_kiro_models_expose_only_raw_kiro_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_first_observed,
         )),
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_1",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_second_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_observed,
         )),
@@ -1262,16 +2217,19 @@ async fn provider_pinned_zed_models_expose_only_raw_zed_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5", "kiro-claude-sonnet-4-5-agentic"],
             kiro_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_first_observed,
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-6", "claude-sonnet-4-5"],
             zed_second_observed,
         )),
@@ -1321,11 +2279,13 @@ async fn public_endpoint_rejects_provider_native_model_ids() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1382,11 +2342,13 @@ async fn public_claude_sonnet_4_6_routes_only_to_zed_native_model() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-6"],
             kiro_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-6"],
             zed_seen.clone(),
         )),
@@ -1412,7 +2374,7 @@ async fn public_claude_sonnet_4_6_routes_only_to_zed_native_model() {
         registry,
         providers,
     ));
-    let body = basic_chat_request("claude-sonnet-4.6");
+    let body = basic_chat_request("claude-sonnet-4-6");
 
     let resp = app
         .oneshot(
@@ -1438,12 +2400,14 @@ async fn public_claude_sonnet_4_5_routes_kiro_first_then_falls_back_to_zed() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5"],
             kiro_seen.clone(),
             "kiro unavailable",
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_1",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1469,7 +2433,7 @@ async fn public_claude_sonnet_4_5_routes_kiro_first_then_falls_back_to_zed() {
         registry,
         providers,
     ));
-    let body = basic_chat_request("claude-sonnet-4.5");
+    let body = basic_chat_request("claude-sonnet-4-5");
 
     let resp = app
         .oneshot(
@@ -1499,17 +2463,20 @@ async fn public_thinking_model_stays_on_kiro_without_zed_fallback() {
     let providers: Vec<Arc<dyn Provider>> = vec![
         Arc::new(StubProvider::quota_exceeded(
             "kiro",
+            "kiro_0",
             &["kiro-claude-sonnet-4-5-agentic"],
             kiro_first_seen.clone(),
             "first kiro unavailable",
         )),
         Arc::new(StubProvider::success(
             "kiro",
+            "kiro_1",
             &["kiro-claude-sonnet-4-5-agentic"],
             kiro_second_seen.clone(),
         )),
         Arc::new(StubProvider::success(
             "zed",
+            "zed_0",
             &["claude-sonnet-4-5"],
             zed_seen.clone(),
         )),
@@ -1550,7 +2517,7 @@ async fn public_thinking_model_stays_on_kiro_without_zed_fallback() {
         registry,
         providers,
     ));
-    let body = basic_chat_request("claude-sonnet-4.5-thinking");
+    let body = basic_chat_request("claude-sonnet-4-5-thinking");
 
     let resp = app
         .oneshot(
@@ -1581,6 +2548,7 @@ async fn public_claude_sonnet_4_5_non_stream_returns_chat_completion_response() 
     let kiro_seen = Arc::new(Mutex::new(Vec::new()));
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success(
         "kiro",
+        "kiro_0",
         &["kiro-claude-sonnet-4-5"],
         kiro_seen.clone(),
     ))];
@@ -1599,7 +2567,7 @@ async fn public_claude_sonnet_4_5_non_stream_returns_chat_completion_response() 
         providers,
     ));
     let body = serde_json::json!({
-        "model": "claude-sonnet-4.5",
+        "model": "claude-sonnet-4-5",
         "stream": false,
         "messages": [{"role": "user", "content": "hello"}]
     });
@@ -1645,6 +2613,7 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
     })];
     let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider::success_with_tool_calls(
         "kiro",
+        "kiro_0",
         &["kiro-claude-sonnet-4-5"],
         kiro_seen.clone(),
         tool_calls.clone(),
@@ -1664,7 +2633,7 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
         providers,
     ));
     let body = serde_json::json!({
-        "model": "claude-sonnet-4.5",
+        "model": "claude-sonnet-4-5",
         "stream": false,
         "messages": [{"role": "user", "content": "hello"}]
     });
@@ -1697,4 +2666,193 @@ async fn public_claude_sonnet_4_5_non_stream_preserves_final_tool_calls() {
         json["choices"][0]["message"]["tool_calls"],
         serde_json::Value::Array(tool_calls)
     );
+}
+
+#[test]
+fn blocking_provider_uses_explicit_client_id() {
+    let provider = BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    );
+
+    assert_eq!(provider.client_id(), "codex_0");
+}
+
+#[tokio::test]
+async fn provider_models_request_does_not_hold_providers_lock_while_listing_models() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        list_started.clone(),
+        list_release.clone(),
+        chat_started,
+        chat_release,
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    let state = test_state_with_providers(Config::default(), registry, providers);
+    let app = test_app_with_state(state.clone());
+
+    let request = Request::builder()
+        .uri("/api/provider/codex/v1/models")
+        .body(Body::empty())
+        .unwrap();
+
+    let request_task = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+
+    list_started.notified().await;
+
+    let write_attempt = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _guard = state.providers.write().await;
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), write_attempt)
+        .await
+        .expect("providers write lock should not be blocked by model listing")
+        .expect("write-lock task should complete successfully");
+
+    list_release.notify_waiters();
+
+    let resp = request_task.await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn provider_chat_request_does_not_hold_providers_lock_while_awaiting_upstream() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+
+    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        list_started,
+        list_release,
+        chat_started.clone(),
+        chat_release.clone(),
+    ))];
+    let registry = Arc::new(ModelRegistry::new());
+    registry
+        .register_client(
+            "codex_0",
+            "codex",
+            vec![make_ext_model("gpt-5-codex", "codex", "codex")],
+        )
+        .await;
+    let state = test_state_with_providers(Config::default(), registry, providers);
+    let app = test_app_with_state(state.clone());
+
+    let body = serde_json::json!({
+        "model": "gpt-5-codex",
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/provider/codex/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+
+    let request_task = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+
+    chat_started.notified().await;
+
+    let write_attempt = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _guard = state.providers.write().await;
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), write_attempt)
+        .await
+        .expect("providers write lock should not be blocked by chat completion")
+        .expect("write-lock task should complete successfully");
+
+    chat_release.notify_waiters();
+
+    let resp = request_task.await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn blocking_provider_start_signals_are_not_lost_if_observed_after_spawn() {
+    let list_started = Arc::new(Notify::new());
+    let list_release = Arc::new(Notify::new());
+    let chat_started = Arc::new(Notify::new());
+    let chat_release = Arc::new(Notify::new());
+    let provider = BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        list_started.clone(),
+        list_release.clone(),
+        chat_started.clone(),
+        chat_release.clone(),
+    );
+
+    let list_task = tokio::spawn(async move { provider.list_models().await });
+    tokio::task::yield_now().await;
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        list_started.notified(),
+    )
+    .await
+    .expect("list_started signal should be retained for a later waiter");
+    list_release.notify_waiters();
+    assert!(list_task.await.unwrap().is_ok());
+
+    let provider = BlockingProvider::new(
+        "codex",
+        "codex_0",
+        &["gpt-5-codex"],
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        chat_started.clone(),
+        chat_release.clone(),
+    );
+    let req = ChatCompletionRequest {
+        model: "gpt-5-codex".to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        stream: None,
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        tools: None,
+        tool_choice: None,
+        stop: None,
+        extra: std::collections::HashMap::new(),
+    };
+
+    let chat_task = tokio::spawn(async move { provider.chat_completion(&req).await });
+    tokio::task::yield_now().await;
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        chat_started.notified(),
+    )
+    .await
+    .expect("chat_started signal should be retained for a later waiter");
+    chat_release.notify_waiters();
+    assert!(chat_task.await.unwrap().is_ok());
 }

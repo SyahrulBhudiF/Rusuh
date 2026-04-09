@@ -1,6 +1,13 @@
 pub mod antigravity;
 pub mod antigravity_login;
 pub mod cli;
+pub mod codex;
+pub mod codex_device;
+pub mod codex_login;
+pub mod codex_runtime;
+pub mod github_copilot;
+pub mod github_copilot_login;
+pub mod github_copilot_runtime;
 pub mod kiro;
 pub mod kiro_login;
 pub mod kiro_record;

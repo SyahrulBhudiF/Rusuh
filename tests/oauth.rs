@@ -50,6 +50,16 @@ fn mgmt_request(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn mgmt_request_json(method: &str, uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {SECRET}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn body_json(resp: axum::response::Response) -> Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
@@ -528,4 +538,259 @@ fn builder_id_auth_record_rejects_empty_access_token() {
     let error =
         rusuh::proxy::oauth::build_builder_id_auth_record(&context, token_resp, None).unwrap_err();
     assert!(error.to_string().contains("empty access token"));
+}
+
+#[tokio::test]
+async fn start_oauth_accepts_openai_alias_for_codex() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request("/v0/management/oauth/start?provider=openai"))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["provider"], "codex");
+    assert!(body["url"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("auth.openai.com/oauth/authorize"));
+    assert!(body["url"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("code_challenge_method=S256"));
+    assert!(!body["state"].as_str().unwrap_or_default().is_empty());
+}
+
+#[tokio::test]
+async fn start_oauth_accepts_github_copilot_aliases() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let alias_resp = app
+        .clone()
+        .oneshot(mgmt_request(
+            "/v0/management/oauth/start?provider=github-copilot",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(alias_resp.status(), StatusCode::OK);
+    let alias_body = body_json(alias_resp).await;
+    assert_eq!(alias_body["status"], "ok");
+    assert_eq!(alias_body["provider"], "github-copilot");
+
+    let short_resp = app
+        .oneshot(mgmt_request("/v0/management/oauth/start?provider=copilot"))
+        .await
+        .unwrap();
+    assert_eq!(short_resp.status(), StatusCode::OK);
+    let short_body = body_json(short_resp).await;
+    assert_eq!(short_body["status"], "ok");
+    assert_eq!(short_body["provider"], "github-copilot");
+}
+
+#[tokio::test]
+async fn oauth_callback_writes_codex_callback_file_for_pending_session() {
+    let dir = TempDir::new().unwrap();
+    let cfg = mgmt_config(dir.path().to_str().unwrap());
+    let auth_dir = cfg.auth_dir.clone();
+    let accounts = Arc::new(AccountManager::with_dir(auth_dir));
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, 0));
+
+    let session_state = "codex-state-123";
+    state.oauth_sessions.register(session_state, "codex").await;
+
+    let app = build_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state,
+        rusuh::middleware::auth::api_key_auth,
+    ));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/oauth-callback",
+            json!({
+                "provider": "openai",
+                "redirect_url": format!(
+                    "http://localhost:1455/auth/callback?code=auth_code_1&state={session_state}"
+                )
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+
+    let callback_file = dir
+        .path()
+        .join(format!(".oauth-codex-{session_state}.oauth"));
+    assert!(callback_file.exists());
+
+    let callback: Value =
+        serde_json::from_str(&std::fs::read_to_string(callback_file).unwrap()).unwrap();
+    assert_eq!(callback["code"], "auth_code_1");
+    assert_eq!(callback["state"], session_state);
+    assert_eq!(callback["error"], "");
+}
+
+#[tokio::test]
+async fn oauth_callback_rejects_unknown_state() {
+    let dir = TempDir::new().unwrap();
+    let app = test_app(mgmt_config(dir.path().to_str().unwrap()));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/oauth-callback",
+            json!({
+                "provider": "codex",
+                "state": "unknown-state",
+                "code": "auth_code_2"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn oauth_callback_rejects_provider_mismatch_for_state() {
+    let dir = TempDir::new().unwrap();
+    let cfg = mgmt_config(dir.path().to_str().unwrap());
+    let auth_dir = cfg.auth_dir.clone();
+    let accounts = Arc::new(AccountManager::with_dir(auth_dir));
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, 0));
+
+    let session_state = "mismatch-state-456";
+    state
+        .oauth_sessions
+        .register(session_state, "antigravity")
+        .await;
+
+    let app = build_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state,
+        rusuh::middleware::auth::api_key_auth,
+    ));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/oauth-callback",
+            json!({
+                "provider": "codex",
+                "state": session_state,
+                "code": "auth_code_3"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("provider does not match state"));
+}
+
+#[tokio::test]
+async fn oauth_callback_rejects_non_pending_state() {
+    let dir = TempDir::new().unwrap();
+    let cfg = mgmt_config(dir.path().to_str().unwrap());
+    let auth_dir = cfg.auth_dir.clone();
+    let accounts = Arc::new(AccountManager::with_dir(auth_dir));
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, 0));
+
+    let session_state = "complete-state-789";
+    state.oauth_sessions.register(session_state, "codex").await;
+    state.oauth_sessions.complete(session_state).await;
+
+    let app = build_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state,
+        rusuh::middleware::auth::api_key_auth,
+    ));
+
+    let resp = app
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/oauth-callback",
+            json!({
+                "provider": "codex",
+                "state": session_state,
+                "code": "auth_code_4"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn oauth_callback_sets_error_when_codex_callback_cannot_be_processed() {
+    let dir = TempDir::new().unwrap();
+    let cfg = mgmt_config(dir.path().to_str().unwrap());
+    let auth_dir = cfg.auth_dir.clone();
+    let accounts = Arc::new(AccountManager::with_dir(auth_dir));
+    let registry = Arc::new(ModelRegistry::new());
+    let state = Arc::new(ProxyState::new(cfg, accounts, registry, 0));
+
+    let session_state = "codex-no-verifier-state";
+    state.oauth_sessions.register(session_state, "codex").await;
+
+    let app = build_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state,
+        rusuh::middleware::auth::api_key_auth,
+    ));
+
+    let callback_resp = app
+        .clone()
+        .oneshot(mgmt_request_json(
+            "POST",
+            "/v0/management/oauth-callback",
+            json!({
+                "provider": "codex",
+                "state": session_state,
+                "code": "auth_code_5"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(callback_resp.status(), StatusCode::OK);
+
+    let mut status_value = String::new();
+    for _ in 0..20 {
+        let status_resp = app
+            .clone()
+            .oneshot(mgmt_request(&format!(
+                "/v0/management/oauth/status?state={session_state}"
+            )))
+            .await
+            .unwrap();
+
+        let body = body_json(status_resp).await;
+        status_value = body["status"].as_str().unwrap_or_default().to_string();
+        if status_value != "wait" {
+            assert_eq!(status_value, "error");
+            assert!(body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("PKCE verifier"));
+            return;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    panic!("expected codex oauth session to leave wait status, got {status_value}");
 }

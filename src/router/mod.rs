@@ -48,9 +48,10 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
             "/v1/completions",
             post(crate::proxy::handlers::chat_completions),
         )
+        .route("/v1/responses", post(crate::proxy::handlers::responses))
         .route(
-            "/v1/responses",
-            post(crate::proxy::handlers::chat_completions),
+            "/v1/responses/compact",
+            post(crate::proxy::handlers::responses_compact),
         )
         .route(
             "/v1/messages",
