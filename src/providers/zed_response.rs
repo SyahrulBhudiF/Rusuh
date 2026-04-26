@@ -413,9 +413,8 @@ mod tests {
 
     #[test]
     fn test_jsonlines_response_rejects_missing_model_without_fallback() {
-        let response = Value::String(
-            r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
-        );
+        let response =
+            Value::String(r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string());
 
         let result = parse_zed_response(&response);
         assert!(result.is_err());

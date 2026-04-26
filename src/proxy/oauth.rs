@@ -8,13 +8,38 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::auth::antigravity::*;
+use crate::auth::codex;
+use crate::auth::codex_login::{
+    derive_code_challenge, exchange_code_for_tokens_with_redirect, generate_auth_url,
+    generate_pkce_codes, parse_manual_callback_url, PKCECodes,
+};
+use crate::auth::github_copilot::{
+    build_github_copilot_auth_record, GithubCopilotAuthBundle, GithubOAuthTokenData,
+    GithubUserInfo, CLIENT_ID as GITHUB_COPILOT_CLIENT_ID,
+};
+use crate::auth::github_copilot_login::DeviceCodeResponse;
 use crate::auth::kiro::{KiroTokenData, KiroTokenSource, BUILDER_ID_START_URL, DEFAULT_REGION};
 use crate::auth::kiro_login::SSOOIDCClient;
 use crate::auth::kiro_record::KiroRecordInput;
 use crate::auth::store::{AuthRecord, AuthStatus};
+use crate::error::{AppError, AppResult};
 use crate::proxy::ProxyState;
+
+async fn refresh_runtime_after_auth_change(state: &Arc<ProxyState>) -> anyhow::Result<()> {
+    state
+        .accounts
+        .reload()
+        .await
+        .map_err(|error| anyhow::anyhow!("reload accounts: {error}"))?;
+    state
+        .refresh_provider_runtime()
+        .await
+        .map_err(|error| anyhow::anyhow!("refresh provider runtime: {error}"))?;
+    Ok(())
+}
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -22,8 +47,10 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+use url::Url;
 
 // ── Session tracker ──────────────────────────────────────────────────────────
 
@@ -132,6 +159,13 @@ impl OAuthSessionStore {
             .map(|s| s.context.clone())
     }
 
+    pub async fn is_pending_provider(&self, state: &str, provider: &str) -> bool {
+        match self.get_status(state).await {
+            Some((session_provider, OAuthSessionStatus::Pending)) => session_provider == provider,
+            _ => false,
+        }
+    }
+
     /// Clean up sessions older than `max_age` seconds.
     pub async fn cleanup(&self, max_age_secs: i64) {
         let cutoff = Utc::now() - chrono::Duration::seconds(max_age_secs);
@@ -140,6 +174,107 @@ impl OAuthSessionStore {
             .await
             .retain(|_, s| s.created_at > cutoff);
     }
+}
+
+const OAUTH_STATE_MAX_LEN: usize = 128;
+
+#[derive(Debug, Deserialize)]
+pub struct OAuthCallbackBody {
+    provider: String,
+    #[serde(default)]
+    redirect_url: String,
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    error: String,
+}
+
+fn normalize_oauth_provider(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_lowercase().as_str() {
+        "anthropic" | "claude" => Some("anthropic"),
+        "codex" | "openai" => Some("codex"),
+        "gitlab" => Some("gitlab"),
+        "gemini" | "google" => Some("gemini"),
+        "iflow" | "i-flow" => Some("iflow"),
+        "antigravity" | "anti-gravity" => Some("antigravity"),
+        "qwen" => Some("qwen"),
+        "kiro" => Some("kiro"),
+        "github-copilot" | "copilot" => Some("github-copilot"),
+        "github" => Some("github"),
+        _ => None,
+    }
+}
+
+fn validate_oauth_state(state: &str) -> bool {
+    let trimmed = state.trim();
+    if trimmed.is_empty() || trimmed.len() > OAUTH_STATE_MAX_LEN {
+        return false;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return false;
+    }
+    trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn parse_manual_callback_pkce_codes(callback_url: &str) -> Option<PKCECodes> {
+    let parsed = url::Url::parse(callback_url.trim()).ok()?;
+    let mut code_verifier: Option<String> = None;
+
+    for (key, value) in parsed.query_pairs() {
+        if key == "code_verifier" {
+            let verifier = value.trim();
+            if !verifier.is_empty() {
+                code_verifier = Some(verifier.to_string());
+            }
+        }
+    }
+
+    let code_verifier = code_verifier?;
+    let code_challenge = derive_code_challenge(&code_verifier);
+
+    Some(PKCECodes {
+        code_verifier,
+        code_challenge,
+    })
+}
+
+#[derive(serde::Serialize)]
+struct OAuthCallbackFilePayload<'a> {
+    code: &'a str,
+    state: &'a str,
+    error: &'a str,
+}
+
+async fn write_oauth_callback_file(
+    auth_dir: &std::path::Path,
+    provider: &str,
+    state: &str,
+    code: &str,
+    error: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    if auth_dir.as_os_str().is_empty() {
+        anyhow::bail!("auth dir is empty");
+    }
+
+    fs::create_dir_all(auth_dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("create auth dir: {e}"))?;
+
+    let file_name = format!(".oauth-{provider}-{state}.oauth");
+    let file_path = auth_dir.join(file_name);
+    let payload = OAuthCallbackFilePayload { code, state, error };
+    let serialized = serde_json::to_vec(&payload)
+        .map_err(|e| anyhow::anyhow!("serialize oauth callback payload: {e}"))?;
+
+    fs::write(&file_path, serialized)
+        .await
+        .map_err(|e| anyhow::anyhow!("write oauth callback file: {e}"))?;
+
+    Ok(file_path)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -380,10 +515,7 @@ async fn process_antigravity_callback(
         "credentials saved via web OAuth"
     );
 
-    // Reload accounts
-    if let Err(e) = state.accounts.reload().await {
-        warn!("failed to reload accounts after OAuth: {e}");
-    }
+    refresh_runtime_after_auth_change(state).await?;
 
     // Mark session complete
     state.oauth_sessions.complete(oauth_state).await;
@@ -435,20 +567,38 @@ pub async fn start_oauth(
     State(state): State<Arc<ProxyState>>,
     Query(q): Query<StartOAuthQuery>,
 ) -> impl IntoResponse {
-    let provider = q.provider.trim().to_lowercase();
-    match provider.as_str() {
+    let provider_raw = q.provider.trim().to_lowercase();
+    if matches!(provider_raw.as_str(), "kiro-google" | "kiro-github") {
+        return reject_legacy_kiro_social();
+    }
+
+    let Some(provider) = normalize_oauth_provider(&provider_raw) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "error": format!("unsupported provider '{}'", q.provider.trim())
+            })),
+        )
+            .into_response();
+    };
+
+    match provider {
         "antigravity" => start_antigravity_oauth(state, q.label).await,
-        "kiro-google" | "kiro-github" => reject_legacy_kiro_social(),
+        "codex" => start_codex_oauth(state).await,
+        "github-copilot" => match start_github_copilot_oauth(state).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        },
+        "kiro" => reject_legacy_kiro_social(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "status": "error",
-                "error": format!(
-                    "unsupported provider '{}' — supported: antigravity; Kiro uses provider-specific /v0/management/kiro/* endpoints",
-                    provider
-                )
+                "error": format!("provider '{}' is not yet supported in management oauth/start", provider)
             })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -500,6 +650,102 @@ async fn start_antigravity_oauth(state: Arc<ProxyState>, _label: Option<String>)
         .into_response()
 }
 
+async fn start_codex_oauth(state: Arc<ProxyState>) -> Response {
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let pkce = generate_pkce_codes();
+
+    let auth_url = match generate_auth_url(&oauth_state, &pkce, codex::REDIRECT_URI) {
+        Ok(url) => url,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "status": "error",
+                    "error": error.to_string()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    state
+        .oauth_sessions
+        .register_with_code_verifier(&oauth_state, "codex", Some(pkce.code_verifier))
+        .await;
+    state.oauth_sessions.cleanup(600).await;
+
+    info!(
+        provider = "codex",
+        state = %oauth_state,
+        "OAuth flow initiated via management API"
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "url": auth_url,
+            "state": oauth_state,
+            "provider": "codex"
+        })),
+    )
+        .into_response()
+}
+
+async fn start_github_copilot_oauth(state: Arc<ProxyState>) -> AppResult<Response> {
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to build HTTP client: {e}")))?;
+
+    let device_code = request_github_copilot_device_code(&client).await?;
+
+    state
+        .oauth_sessions
+        .register(&oauth_state, "github-copilot")
+        .await;
+    state.oauth_sessions.cleanup(600).await;
+
+    let state_clone = state.clone();
+    let oauth_state_clone = oauth_state.clone();
+    let device_code_clone = device_code.clone();
+    tokio::spawn(async move {
+        if let Err(error) = process_github_copilot_device_flow(
+            &state_clone,
+            &oauth_state_clone,
+            &device_code_clone,
+        )
+        .await
+        {
+            warn!(
+                provider = "github-copilot",
+                state = %oauth_state_clone,
+                "device flow processing failed: {error}"
+            );
+            state_clone
+                .oauth_sessions
+                .set_error(&oauth_state_clone, &error.to_string())
+                .await;
+        }
+    });
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "provider": "github-copilot",
+            "state": oauth_state,
+            "auth_method": "device_code",
+            "verification_uri": device_code.verification_uri,
+            "user_code": device_code.user_code,
+            "expires_in": device_code.expires_in,
+            "interval": device_code.interval,
+        })),
+    )
+        .into_response())
+}
+
 // ── Legacy KIRO social rejection ────────────────────────────────────────────
 
 fn reject_legacy_kiro_social() -> Response {
@@ -511,6 +757,533 @@ fn reject_legacy_kiro_social() -> Response {
         })),
     )
         .into_response()
+}
+
+fn github_copilot_auth_base_url() -> Option<String> {
+    let raw_value = std::env::var("RUSUH_GITHUB_COPILOT_AUTH_BASE_URL").ok()?;
+    let trimmed = raw_value.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Parse and validate the URL to prevent token exfiltration
+    let parsed = Url::parse(trimmed).ok()?;
+
+    // Only allow HTTPS
+    if parsed.scheme() != "https" {
+        warn!(
+            url = %trimmed,
+            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL must use https scheme, ignoring"
+        );
+        return None;
+    }
+
+    // Only allow github.com for login endpoints
+    let host = parsed.host_str()?;
+    if host != "github.com" {
+        warn!(
+            url = %trimmed,
+            host = %host,
+            "RUSUH_GITHUB_COPILOT_AUTH_BASE_URL host must be github.com, ignoring"
+        );
+        return None;
+    }
+
+    // Return normalized URL without trailing slash
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
+fn github_copilot_api_base_url() -> Option<String> {
+    let raw_value = std::env::var("RUSUH_GITHUB_COPILOT_API_BASE_URL").ok()?;
+    let trimmed = raw_value.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Parse and validate the URL to prevent token exfiltration
+    let parsed = Url::parse(trimmed).ok()?;
+
+    // Only allow HTTPS
+    if parsed.scheme() != "https" {
+        warn!(
+            url = %trimmed,
+            "RUSUH_GITHUB_COPILOT_API_BASE_URL must use https scheme, ignoring"
+        );
+        return None;
+    }
+
+    // Only allow api.github.com or *.github.com for API endpoints
+    let host = parsed.host_str()?;
+    let is_trusted = host == "api.github.com" || host.ends_with(".github.com");
+
+    if !is_trusted {
+        warn!(
+            url = %trimmed,
+            host = %host,
+            "RUSUH_GITHUB_COPILOT_API_BASE_URL host must be api.github.com or *.github.com, ignoring"
+        );
+        return None;
+    }
+
+    // Return normalized URL without trailing slash
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
+fn github_copilot_device_code_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/login/device/code"))
+        .unwrap_or_else(|| "https://github.com/login/device/code".to_string())
+}
+
+fn github_copilot_token_url() -> String {
+    github_copilot_auth_base_url()
+        .map(|base_url| format!("{base_url}/login/oauth/access_token"))
+        .unwrap_or_else(|| "https://github.com/login/oauth/access_token".to_string())
+}
+
+fn github_copilot_user_url() -> String {
+    github_copilot_api_base_url()
+        .map(|base_url| format!("{base_url}/user"))
+        .unwrap_or_else(|| "https://api.github.com/user".to_string())
+}
+
+fn github_copilot_entitlement_url() -> String {
+    github_copilot_api_base_url()
+        .map(|base_url| format!("{base_url}/copilot_internal/v2/token"))
+        .unwrap_or_else(|| "https://api.github.com/copilot_internal/v2/token".to_string())
+}
+
+async fn request_github_copilot_device_code(client: &reqwest::Client) -> AppResult<DeviceCodeResponse> {
+    let response = client
+        .post(github_copilot_device_code_url())
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(&[("client_id", GITHUB_COPILOT_CLIENT_ID), ("scope", "read:user")])
+        .send()
+        .await
+        .map_err(|error| AppError::Upstream(format!("github device code request failed: {error}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Upstream(format!(
+            "github device code request failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        )));
+    }
+
+    response
+        .json::<DeviceCodeResponse>()
+        .await
+        .map_err(|error| AppError::Upstream(format!("failed to parse device code response: {error}")))
+}
+
+async fn poll_github_copilot_token(
+    client: &reqwest::Client,
+    device_code: &DeviceCodeResponse,
+) -> AppResult<GithubOAuthTokenData> {
+    let mut poll_interval = if device_code.interval == 0 {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(device_code.interval)
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(device_code.expires_in.max(1));
+
+    loop {
+        tokio::time::sleep(poll_interval).await;
+
+        let response = client
+            .post(github_copilot_token_url())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&[
+                ("client_id", GITHUB_COPILOT_CLIENT_ID),
+                ("device_code", device_code.device_code.as_str()),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await?;
+
+        let status = response.status();
+
+        // Always parse JSON body, even for non-2xx status (RFC 8628 device flow errors)
+        let payload: Value = match response.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(AppError::Upstream(format!(
+                    "github device token polling failed to parse response (status {}): {}",
+                    status.as_u16(),
+                    e
+                )));
+            }
+        };
+
+        // Check for RFC 8628 error responses
+        if let Some(error) = payload.get("error").and_then(Value::as_str) {
+            match error {
+                "authorization_pending" => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(AppError::Auth("github device authorization timed out".to_string()));
+                    }
+                    continue;
+                }
+                "slow_down" => {
+                    poll_interval += Duration::from_secs(5);
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(AppError::Auth("github device authorization timed out".to_string()));
+                    }
+                    continue;
+                }
+                _ => {
+                    return Err(AppError::Auth(format!(
+                        "github device authorization failed: {error}"
+                    )));
+                }
+            }
+        }
+
+        // If status is not success and no recognized error, fail with context
+        if !status.is_success() {
+            return Err(AppError::Upstream(format!(
+                "github device token polling failed (status {}): {}",
+                status.as_u16(),
+                serde_json::to_string(&payload).unwrap_or_else(|_| "unable to serialize response".to_string())
+            )));
+        }
+
+        let access_token = payload
+            .get("access_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::Upstream("github token response missing access_token".to_string()))?
+            .to_string();
+
+        return Ok(GithubOAuthTokenData {
+            access_token,
+            token_type: payload
+                .get("token_type")
+                .and_then(Value::as_str)
+                .unwrap_or("bearer")
+                .to_string(),
+            scope: payload
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+}
+
+async fn fetch_github_copilot_user(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> AppResult<GithubUserInfo> {
+    let response = client
+        .get(github_copilot_user_url())
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, "rusuh")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| AppError::Upstream(format!("github user info request failed: {}", e)))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Upstream(format!(
+            "github user info request failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        )));
+    }
+
+    response.json::<GithubUserInfo>().await
+        .map_err(|e| AppError::Upstream(format!("failed to parse github user info: {}", e)))
+}
+
+async fn validate_github_copilot_entitlement(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> AppResult<()> {
+    let response = client
+        .get(github_copilot_entitlement_url())
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, "rusuh")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| AppError::Upstream(format!("copilot entitlement request failed: {}", e)))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Upstream(format!(
+            "copilot entitlement validation failed (status {}): {}",
+            status.as_u16(),
+            body.trim()
+        )));
+    }
+
+    let payload: Value = response.json().await
+        .map_err(|e| AppError::Upstream(format!("failed to parse copilot entitlement response: {}", e)))?;
+    let token = payload
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(AppError::Upstream("copilot entitlement response missing token".to_string()));
+    }
+
+    Ok(())
+}
+
+async fn process_github_copilot_device_flow(
+    state: &Arc<ProxyState>,
+    oauth_state: &str,
+    device_code: &DeviceCodeResponse,
+) -> AppResult<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to build HTTP client: {e}")))?;
+    let token_data = poll_github_copilot_token(&client, device_code)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot token polling failed: {error}")))?;
+    let user_info = fetch_github_copilot_user(&client, &token_data.access_token)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot user fetch failed: {error}")))?;
+    validate_github_copilot_entitlement(&client, &token_data.access_token)
+        .await
+        .map_err(|error| AppError::Auth(format!("github copilot entitlement validation failed: {error}")))?;
+
+    let bundle = GithubCopilotAuthBundle {
+        token_data,
+        user_info,
+    };
+    let record = build_github_copilot_auth_record(&bundle)?;
+
+    state
+        .accounts
+        .store()
+        .save(&record)
+        .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("save auth record: {error}")))?;
+
+    refresh_runtime_after_auth_change(state)
+        .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("refresh runtime: {error}")))?;
+    state.oauth_sessions.complete(oauth_state).await;
+    Ok(())
+}
+
+pub async fn post_oauth_callback(
+    State(state): State<Arc<ProxyState>>,
+    Json(body): Json<OAuthCallbackBody>,
+) -> impl IntoResponse {
+    let Some(provider) = normalize_oauth_provider(&body.provider) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "unsupported provider"})),
+        )
+            .into_response();
+    };
+
+    if provider == "github-copilot" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "GitHub Copilot only supports device-code flow, not manual OAuth callbacks"})),
+        )
+            .into_response();
+    }
+
+    let mut callback_state = body.state.trim().to_string();
+    let mut callback_code = body.code.trim().to_string();
+    let mut callback_error = body.error.trim().to_string();
+
+    if !body.redirect_url.trim().is_empty() {
+        match parse_manual_callback_url(&body.redirect_url) {
+            Ok(parsed) => {
+                if callback_state.is_empty() {
+                    callback_state = parsed.state.unwrap_or_default();
+                }
+                if callback_code.is_empty() {
+                    callback_code = parsed.code.unwrap_or_default();
+                }
+                if callback_error.is_empty() {
+                    callback_error = parsed.error.unwrap_or_default();
+                }
+            }
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": "error", "error": "invalid redirect_url"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    if !validate_oauth_state(&callback_state) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "invalid state"})),
+        )
+            .into_response();
+    }
+
+    if callback_code.is_empty() && callback_error.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "code or error is required"})),
+        )
+            .into_response();
+    }
+
+    match state.oauth_sessions.get_status(&callback_state).await {
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": "error", "error": "unknown or expired state"})),
+            )
+                .into_response();
+        }
+        Some((session_provider, OAuthSessionStatus::Pending)) => {
+            if session_provider != provider {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": "error", "error": "provider does not match state"})),
+                )
+                    .into_response();
+            }
+        }
+        Some((_, _)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"status": "error", "error": "oauth flow is not pending"})),
+            )
+                .into_response();
+        }
+    }
+
+    if provider == "codex" {
+        let auth_dir = state.accounts.store().base_dir().await;
+        if write_oauth_callback_file(
+            auth_dir.as_path(),
+            provider,
+            &callback_state,
+            &callback_code,
+            &callback_error,
+        )
+        .await
+        .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "error": "failed to persist oauth callback"})),
+            )
+                .into_response();
+        }
+
+        let state_clone = state.clone();
+        let callback_state_clone = callback_state.clone();
+        let callback_code_clone = callback_code.clone();
+        let callback_error_clone = callback_error.clone();
+        let redirect_url_clone = body.redirect_url.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = process_codex_manual_callback(
+                &state_clone,
+                &callback_state_clone,
+                &callback_code_clone,
+                &callback_error_clone,
+                &redirect_url_clone,
+            )
+            .await
+            {
+                warn!(
+                    provider = "codex",
+                    state = %callback_state_clone,
+                    "manual oauth callback processing failed: {error}"
+                );
+                state_clone
+                    .oauth_sessions
+                    .set_error(&callback_state_clone, &error.to_string())
+                    .await;
+                return;
+            }
+
+            state_clone
+                .oauth_sessions
+                .complete(&callback_state_clone)
+                .await;
+        });
+
+        return (StatusCode::OK, Json(json!({"status": "ok"}))).into_response();
+    }
+
+    let auth_dir = state.accounts.store().base_dir().await;
+    match write_oauth_callback_file(
+        auth_dir.as_path(),
+        provider,
+        &callback_state,
+        &callback_code,
+        &callback_error,
+    )
+    .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "error", "error": "failed to persist oauth callback"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn process_codex_manual_callback(
+    state: &Arc<ProxyState>,
+    callback_state: &str,
+    callback_code: &str,
+    callback_error: &str,
+    redirect_url: &str,
+) -> anyhow::Result<()> {
+    if !callback_error.trim().is_empty() {
+        anyhow::bail!("oauth callback error: {}", callback_error.trim());
+    }
+
+    let code = callback_code.trim();
+    if code.is_empty() {
+        anyhow::bail!("oauth callback missing authorization code");
+    }
+
+    let code_verifier = match state.oauth_sessions.get_code_verifier(callback_state).await {
+        Some(value) => value,
+        None => parse_manual_callback_pkce_codes(redirect_url)
+            .map(|codes| codes.code_verifier)
+            .ok_or_else(|| anyhow::anyhow!("missing PKCE verifier for codex oauth session"))?,
+    };
+
+    let pkce_codes = PKCECodes {
+        code_challenge: derive_code_challenge(&code_verifier),
+        code_verifier,
+    };
+
+    let client = reqwest::Client::new();
+    let bundle =
+        exchange_code_for_tokens_with_redirect(&client, code, codex::REDIRECT_URI, &pkce_codes)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    codex::save_auth_bundle(state.accounts.store(), &bundle, true)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    refresh_runtime_after_auth_change(state).await?;
+
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -812,11 +1585,7 @@ async fn process_builder_id_callback(
         "Builder ID credentials saved via management OAuth"
     );
 
-    state
-        .accounts
-        .reload()
-        .await
-        .map_err(|error| anyhow::anyhow!("reload accounts: {error}"))?;
+    refresh_runtime_after_auth_change(state).await?;
 
     state.oauth_sessions.complete(session_id).await;
     Ok(())
@@ -837,4 +1606,43 @@ pub fn log_builder_id_callback_error(error: &dyn std::fmt::Display) {
         provider = "kiro",
         "Builder ID callback processing failed: {error}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_runtime_after_auth_change;
+    use crate::auth::manager::AccountManager;
+    use crate::config::{Config, ManagementConfig};
+    use crate::providers::model_registry::ModelRegistry;
+    use crate::proxy::ProxyState;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    const SECRET: &str = "test-oauth-secret";
+
+    fn test_config(auth_dir: &str) -> Config {
+        Config {
+            auth_dir: auth_dir.into(),
+            remote_management: ManagementConfig {
+                allow_remote: true,
+                secret_key: SECRET.into(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_runtime_after_auth_change_returns_error_when_account_reload_fails() {
+        let auth_file = NamedTempFile::new().unwrap();
+        let auth_path = auth_file.path().to_string_lossy().into_owned();
+        let config = test_config(&auth_path);
+        let accounts = Arc::new(AccountManager::with_dir(config.auth_dir.clone()));
+        let registry = Arc::new(ModelRegistry::new());
+        let state = Arc::new(ProxyState::new(config, accounts, registry, 0));
+
+        let result = refresh_runtime_after_auth_change(&state).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("reload accounts"));
+    }
 }

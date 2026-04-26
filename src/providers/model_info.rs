@@ -36,6 +36,8 @@ pub struct ExtModelInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_parameters: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_endpoints: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSupport>,
     /// True if defined via config file (not static).
     #[serde(skip)]
