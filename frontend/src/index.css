@@ -18,43 +18,43 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --background: #f5f7fb;
-  --foreground: #1b1f3b;
+  --background: #f6f1ff;
+  --foreground: #2a2148;
   --card: #ffffff;
-  --card-foreground: #1b1f3b;
+  --card-foreground: #2a2148;
   --popover: #ffffff;
-  --popover-foreground: #1b1f3b;
-  --primary: #6366f1;
+  --popover-foreground: #2a2148;
+  --primary: #8a6cff;
   --primary-foreground: #ffffff;
-  --secondary: #4f46e5;
+  --secondary: #b184ff;
   --secondary-foreground: #ffffff;
-  --muted: #e8ecf5;
-  --muted-foreground: #6b7280;
-  --accent: #06b6d4;
-  --accent-foreground: #0a0e27;
-  --destructive: #ef4444;
+  --muted: #efe7ff;
+  --muted-foreground: #766a98;
+  --accent: #f09bd5;
+  --accent-foreground: #2a2148;
+  --destructive: #f26b8a;
   --destructive-foreground: #ffffff;
-  --border: #d7ddea;
-  --input: #d7ddea;
-  --ring: #6366f1;
-  --chart-1: #6366f1;
-  --chart-2: #06b6d4;
-  --chart-3: #10b981;
-  --chart-4: #f59e0b;
-  --chart-5: #ef4444;
+  --border: #e2d7fb;
+  --input: #e2d7fb;
+  --ring: #8a6cff;
+  --chart-1: #8a6cff;
+  --chart-2: #f09bd5;
+  --chart-3: #7bdcb5;
+  --chart-4: #ffc782;
+  --chart-5: #f26b8a;
   --radius: 0.75rem;
-  --sidebar: #eef1f8;
-  --sidebar-foreground: #1b1f3b;
-  --sidebar-primary: #6366f1;
+  --sidebar: #efe9ff;
+  --sidebar-foreground: #2a2148;
+  --sidebar-primary: #8a6cff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #06b6d4;
-  --sidebar-accent-foreground: #0a0e27;
-  --sidebar-border: #d7ddea;
-  --sidebar-ring: #6366f1;
+  --sidebar-accent: #f09bd5;
+  --sidebar-accent-foreground: #2a2148;
+  --sidebar-border: #e2d7fb;
+  --sidebar-ring: #8a6cff;
   --surface-1: color-mix(in srgb, var(--card) 92%, transparent);
   --surface-2: color-mix(in srgb, var(--card) 80%, transparent);
-  --surface-border: color-mix(in srgb, var(--border) 80%, transparent);
-  --surface-glow: color-mix(in srgb, var(--primary) 16%, transparent);
+  --surface-border: color-mix(in srgb, var(--border) 85%, transparent);
+  --surface-glow: color-mix(in srgb, var(--primary) 18%, transparent);
   --font-sans: 'Geist', 'Geist Fallback';
   --font-mono: 'Geist Mono', 'Geist Mono Fallback';
   --tracking-normal: 0em;
@@ -75,13 +75,13 @@ body {
   margin: 0;
   background:
     radial-gradient(
-      circle at 14% 12%,
-      color-mix(in srgb, var(--primary) 12%, transparent),
-      transparent 45%
+      circle at 18% 12%,
+      color-mix(in srgb, var(--primary) 16%, transparent),
+      transparent 46%
     ),
     radial-gradient(
-      circle at 88% 10%,
-      color-mix(in srgb, var(--accent) 10%, transparent),
+      circle at 84% 8%,
+      color-mix(in srgb, var(--accent) 16%, transparent),
       transparent 42%
     ),
     var(--background);
@@ -92,15 +92,15 @@ body {
   background:
     radial-gradient(
       circle at 14% 12%,
-      color-mix(in srgb, var(--primary) 24%, transparent),
-      transparent 42%
+      color-mix(in srgb, var(--primary) 28%, transparent),
+      transparent 44%
     ),
     radial-gradient(
       circle at 88% 10%,
-      color-mix(in srgb, var(--accent) 18%, transparent),
-      transparent 40%
+      color-mix(in srgb, var(--accent) 22%, transparent),
+      transparent 42%
     ),
-    linear-gradient(180deg, #0b1026 0%, #0a0f24 40%, #090d22 100%);
+    linear-gradient(180deg, #18152b 0%, #141126 45%, #120f23 100%);
 }
 :root {
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
@@ -158,17 +158,17 @@ body {
 .dashboard-card {
   background: linear-gradient(160deg, var(--surface-1), var(--surface-2));
   border: 1px solid var(--surface-border);
-  box-shadow: 0 14px 36px rgba(4, 8, 22, 0.55);
+  box-shadow: 0 12px 30px rgba(66, 45, 132, 0.18);
   transition:
-    transform 220ms var(--ease-out-quart),
-    box-shadow 220ms var(--ease-out-quart),
-    border-color 220ms var(--ease-out-quart),
-    background-color 220ms var(--ease-out-quart);
+    transform 320ms var(--ease-out-quart),
+    box-shadow 320ms var(--ease-out-quart),
+    border-color 320ms var(--ease-out-quart),
+    background-color 320ms var(--ease-out-quart);
 }
 
 .dashboard-card:hover {
   transform: translate3d(0, -2px, 0);
-  box-shadow: 0 22px 48px rgba(4, 8, 22, 0.6);
+  box-shadow: 0 20px 44px rgba(66, 45, 132, 0.24);
 }
 
 .page-hero::before {
@@ -196,13 +196,13 @@ body {
 .dashboard-surface {
   background: linear-gradient(145deg, var(--surface-1), var(--surface-2));
   border: 1px solid var(--surface-border);
-  box-shadow: 0 26px 64px rgba(4, 8, 22, 0.6);
+  box-shadow: 0 24px 60px rgba(66, 45, 132, 0.22);
 }
 
 .dashboard-panel {
-  background: color-mix(in srgb, var(--card) 86%, transparent);
+  background: color-mix(in srgb, var(--card) 88%, transparent);
   border: 1px solid var(--surface-border);
-  box-shadow: 0 12px 28px rgba(4, 8, 22, 0.55);
+  box-shadow: 0 10px 26px rgba(66, 45, 132, 0.16);
 }
 
 .dashboard-sidebar {
@@ -235,6 +235,10 @@ body {
   background: color-mix(in srgb, var(--border) 70%, transparent);
 }
 
+.dashboard-fade-soft {
+  animation: dashboard-fade-up 520ms var(--ease-out-quint) both;
+}
+
 .page-hero > * {
   position: relative;
   z-index: 1;
@@ -242,10 +246,10 @@ body {
 
 .dashboard-action {
   transition:
-    transform 140ms var(--ease-out-quart),
-    box-shadow 200ms var(--ease-out-quart),
-    background-color 200ms var(--ease-out-quart),
-    border-color 200ms var(--ease-out-quart);
+    transform 240ms var(--ease-out-quart),
+    box-shadow 280ms var(--ease-out-quart),
+    background-color 280ms var(--ease-out-quart),
+    border-color 280ms var(--ease-out-quart);
 }
 
 .dashboard-action:hover {
@@ -258,9 +262,9 @@ body {
 
 .dashboard-status {
   transition:
-    transform 180ms var(--ease-out-quart),
-    background-color 180ms var(--ease-out-quart),
-    border-color 180ms var(--ease-out-quart);
+    transform 240ms var(--ease-out-quart),
+    background-color 240ms var(--ease-out-quart),
+    border-color 240ms var(--ease-out-quart);
 }
 
 .dashboard-status:hover {
@@ -268,7 +272,7 @@ body {
 }
 
 .motion-panel {
-  animation: dashboard-fade-scale 480ms var(--ease-out-quint) both;
+  animation: dashboard-fade-scale 520ms var(--ease-out-quint) both;
   will-change: transform, opacity;
 }
 
@@ -387,42 +391,42 @@ a {
 }
 .dark {
   color-scheme: dark;
-  --background: #0a0e27;
-  --foreground: #e8eaf6;
-  --card: #151a3a;
-  --card-foreground: #e8eaf6;
-  --popover: #151a3a;
-  --popover-foreground: #e8eaf6;
-  --primary: #6366f1;
+  --background: #151225;
+  --foreground: #f4efff;
+  --card: #1e1a33;
+  --card-foreground: #f4efff;
+  --popover: #1e1a33;
+  --popover-foreground: #f4efff;
+  --primary: #9b7bff;
   --primary-foreground: #ffffff;
-  --secondary: #4f46e5;
+  --secondary: #b98dff;
   --secondary-foreground: #ffffff;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #06b6d4;
-  --accent-foreground: #0a0e27;
-  --destructive: #ef4444;
+  --muted: #252040;
+  --muted-foreground: #b9a9d8;
+  --accent: #f2a3d6;
+  --accent-foreground: #1b142c;
+  --destructive: #f36e94;
   --destructive-foreground: #ffffff;
-  --border: #1e293b;
-  --input: #1e293b;
-  --ring: #6366f1;
-  --chart-1: #6366f1;
-  --chart-2: #06b6d4;
-  --chart-3: #10b981;
-  --chart-4: #f59e0b;
-  --chart-5: #ef4444;
-  --sidebar: #0f1629;
-  --sidebar-foreground: #e8eaf6;
-  --sidebar-primary: #6366f1;
+  --border: #2e2946;
+  --input: #2e2946;
+  --ring: #9b7bff;
+  --chart-1: #9b7bff;
+  --chart-2: #f2a3d6;
+  --chart-3: #7bdcb5;
+  --chart-4: #ffc782;
+  --chart-5: #f36e94;
+  --sidebar: #17152a;
+  --sidebar-foreground: #f4efff;
+  --sidebar-primary: #9b7bff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #06b6d4;
-  --sidebar-accent-foreground: #0a0e27;
-  --sidebar-border: #1e293b;
-  --sidebar-ring: #6366f1;
+  --sidebar-accent: #f2a3d6;
+  --sidebar-accent-foreground: #1b142c;
+  --sidebar-border: #2e2946;
+  --sidebar-ring: #9b7bff;
   --surface-1: color-mix(in srgb, var(--card) 92%, transparent);
   --surface-2: color-mix(in srgb, var(--card) 80%, transparent);
   --surface-border: color-mix(in srgb, var(--border) 70%, transparent);
-  --surface-glow: color-mix(in srgb, var(--primary) 18%, transparent);
+  --surface-glow: color-mix(in srgb, var(--primary) 22%, transparent);
   --font-sans: 'Geist', 'Geist Fallback';
   --font-mono: 'Geist Mono', 'Geist Mono Fallback';
   --radius: 0.75rem;

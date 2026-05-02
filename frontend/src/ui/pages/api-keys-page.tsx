@@ -102,8 +102,8 @@ export function ApiKeysPage() {
   return (
     <PageShell
       eyebrow='API Keys'
-      title='Management access keys'
-      description='Create and rotate the keys that clients use to access the proxy API.'
+      title='API access keys'
+      description='Create, rotate, and track keys used for proxy access.'
       actions={
         <div className='flex flex-col gap-3 sm:flex-row sm:flex-wrap'>
           <Button
@@ -133,7 +133,7 @@ export function ApiKeysPage() {
       >
         {apiKeys.data ? (
           <div className='space-y-6'>
-            <div className='space-y-5'>
+               <div className='space-y-6'>
               <div className='flex flex-col gap-2'>
                 <p className='text-muted-foreground text-sm'>
                   {apiKeys.data.total} key{apiKeys.data.total === 1 ? '' : 's'} ·{' '}
@@ -148,12 +148,12 @@ export function ApiKeysPage() {
                 ) : null}
               </div>
 
-                   <div className='grid gap-4 xl:grid-cols-2'>
+               <div className='grid gap-7 xl:grid-cols-2'>
                 <section className='space-y-3'>
                   <div>
-                    <h3 className='text-lg font-semibold'>Add New Key</h3>
+                    <h3 className='text-lg font-semibold'>Create key</h3>
                     <p className='text-muted-foreground mt-1 text-sm'>
-                      Generate and label a management key.
+                      Add a label, generate, and share with clients.
                     </p>
                   </div>
                   <div className='dashboard-panel rounded-2xl p-5'>
@@ -165,12 +165,12 @@ export function ApiKeysPage() {
                           value={newKeyValue}
                           onChange={(event) => setNewKeyValue(event.target.value)}
                           className='border-border text-foreground bg-background/70 h-11 rounded-2xl px-4'
-                          placeholder='e.g. Production API Key'
+                          placeholder='e.g. Production API'
                           maxLength={MAX_KEY_LENGTH}
                         />
                       </label>
                       <p className='text-muted-foreground text-xs'>
-                        Give this key a descriptive name to easily identify it later.
+                        Use a short label so it is easy to find later.
                       </p>
                       <Button
                         type='button'
@@ -178,7 +178,7 @@ export function ApiKeysPage() {
                         disabled={appendKey.isPending || newKeyValue.trim().length === 0}
                         className='h-11 rounded-full px-5'
                       >
-                        {appendKey.isPending ? 'Generating…' : 'Generate Key'}
+                        {appendKey.isPending ? 'Generating…' : 'Generate key'}
                       </Button>
                     </div>
                   </div>
@@ -187,9 +187,9 @@ export function ApiKeysPage() {
                 <section className='space-y-3'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
                     <div>
-                      <h3 className='text-lg font-semibold'>Active Keys</h3>
+                      <h3 className='text-lg font-semibold'>Active keys</h3>
                       <p className='text-muted-foreground mt-1 text-sm'>
-                        Rotate keys regularly and keep track of usage.
+                        Rotation-ready keys with quick actions.
                       </p>
                     </div>
                     <Badge variant='outline' className='w-fit rounded-full px-3 py-1 text-xs'>
@@ -209,9 +209,9 @@ export function ApiKeysPage() {
                         className='dashboard-panel rounded-2xl p-4'
                       >
                         <div className='flex flex-col gap-3'>
-                          <div className='flex items-start justify-between gap-3'>
+                           <div className='flex items-start justify-between gap-3'>
                             <div>
-                              <p className='text-foreground text-sm font-semibold'>KEY #{index + 1}</p>
+                              <p className='text-foreground text-sm font-semibold'>Key #{index + 1}</p>
                               <p className='text-muted-foreground mt-1 text-xs'>
                                 sk_•••{item.slice(-6)}
                               </p>

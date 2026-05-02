@@ -77,7 +77,7 @@ export function ConfigPage() {
     <PageShell
       eyebrow='Config'
       title='Runtime configuration'
-      description='Manage and view your runtime settings.'
+      description='Settings, providers, and API entries in one view.'
         actions={
           <div className='dashboard-panel grid grid-cols-1 gap-2 rounded-2xl p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
             {(['structured', 'json', 'yaml'] as const).map((value) => (
@@ -102,10 +102,10 @@ export function ConfigPage() {
         {config.data ? (
           format === 'structured' ? (
             <div className='space-y-5'>
-              <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+              <div className='grid gap-5 sm:grid-cols-2 xl:grid-cols-4'>
                 <div className='dashboard-panel rounded-2xl p-4'>
                   <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
-                    Listen Address
+                    Listen address
                   </p>
                   <p className='text-foreground mt-2 text-lg font-semibold break-all'>
                     {config.data.listen_addr}
@@ -113,7 +113,7 @@ export function ConfigPage() {
                 </div>
                 <div className='dashboard-panel rounded-2xl p-4'>
                   <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
-                    Routing Method
+                    Routing method
                   </p>
                   <p className='text-foreground mt-2 text-lg font-semibold'>
                     {config.data.routing_strategy}
@@ -129,7 +129,7 @@ export function ConfigPage() {
                 </div>
                 <div className='dashboard-panel rounded-2xl p-4'>
                   <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
-                    API Keys
+                    API keys
                   </p>
                   <p className='text-foreground mt-2 text-lg font-semibold'>
                     {config.data.api_key_count}
@@ -137,7 +137,7 @@ export function ConfigPage() {
                 </div>
               </div>
 
-              <div className='grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
+              <div className='grid gap-7 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]'>
                 <section className='dashboard-panel rounded-2xl p-5'>
                   <div>
                     <h3 className='text-lg font-semibold'>Runtime settings</h3>
@@ -197,7 +197,7 @@ export function ConfigPage() {
                 <section className='space-y-4'>
                   <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                     <div>
-                      <h3 className='text-lg font-semibold'>Configured providers</h3>
+                    <h3 className='text-lg font-semibold'>Configured providers</h3>
                       <p className='text-muted-foreground mt-1 text-sm'>
                         Configured providers and key inventories.
                       </p>

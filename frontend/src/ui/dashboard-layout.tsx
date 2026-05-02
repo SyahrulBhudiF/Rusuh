@@ -86,7 +86,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
   const providerCount = overview.data?.provider_names.length ?? 0
   return (
     <div className='dashboard-app bg-background text-foreground min-h-screen'>
-      <div className='mx-auto flex min-h-screen max-w-[1440px] gap-6 overflow-x-clip px-3 py-4 md:px-6 md:py-6'>
+      <div className='flex min-h-screen w-full gap-6 overflow-x-clip px-0 py-0'>
         <aside className='dashboard-sidebar hidden w-72 flex-col px-5 py-6 md:flex lg:w-80 lg:px-6 lg:py-7'>
           <div>
             <p className='text-muted-foreground/90 text-[0.7rem] font-medium tracking-[0.34em] uppercase'>
@@ -164,7 +164,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
             </div>
           </div>
         </aside>
-        <div className='flex min-h-screen flex-1 flex-col'>
+        <div className='flex min-h-screen flex-1 flex-col px-3 py-4 md:px-6 md:py-6'>
           <div className='dashboard-panel sticky top-3 z-20 mx-3 mt-0 px-4 py-3 backdrop-blur md:hidden'>
             <div className='flex items-center justify-between gap-3'>
               <div>

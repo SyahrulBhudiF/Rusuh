@@ -181,8 +181,8 @@ export function AccountsPage() {
   return (
     <PageShell
       eyebrow='Accounts'
-      title='Manage connected accounts'
-      description='Review status, update labels, and handle provider account maintenance.'
+      title='Account inventory'
+      description='Connected accounts, health signals, and provider coverage.'
       actions={
         <Button
           type='button'
@@ -244,8 +244,8 @@ export function AccountsPage() {
             </AlertDialog>
 
              <div className='space-y-6'>
-               <section className='flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between'>
-                 <div className='flex-1 flex flex-wrap items-center gap-2'>
+                <section className='flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between'>
+                  <div className='flex-1 flex flex-wrap items-center gap-3'>
                    <label className='space-y-2'>
                      <span className='text-muted-foreground text-sm'>Provider</span>
                      <Select value={providerFilter} onValueChange={setProviderFilter}>
@@ -293,8 +293,8 @@ export function AccountsPage() {
                    </Button>
                  </div>
 
-                 <div className='flex flex-wrap items-center gap-2'>
-                   {providerGroups.map((group) => (
+                  <div className='flex flex-wrap items-center gap-2'>
+                    {providerGroups.map((group) => (
                      <Badge
                        key={group.key}
                        variant='outline'
@@ -328,7 +328,7 @@ export function AccountsPage() {
                  </section>
                ) : null}
 
-              <div className='space-y-8'>
+                <div className='space-y-9'>
                 {providerGroups.map((group) => {
                   const firstItem = group.items[0]
                   if (!firstItem) return null
@@ -341,7 +341,7 @@ export function AccountsPage() {
                         </Badge>
                       </div>
 
-                      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>
+                      <div className='grid gap-5 sm:grid-cols-2 xl:grid-cols-3'>
                         <Card className={`${cardClass} dashboard-card motion-panel`}>
                           <CardContent className='space-y-4 p-5'>
                             <div className='flex items-start justify-between gap-3'>
@@ -361,7 +361,7 @@ export function AccountsPage() {
                             <div className='dashboard-divider' />
                             <div className='grid gap-3 text-sm'>
                               <div className='flex items-center justify-between'>
-                                <span className='text-muted-foreground'>Total Usage</span>
+                                <span className='text-muted-foreground'>Total usage</span>
                                 <span className='text-foreground font-medium'>
                                   {group.items.length * 265} req
                                 </span>
