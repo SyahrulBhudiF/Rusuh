@@ -14,13 +14,13 @@ export function PageShell({
 }>) {
   return (
     <>
-      <header className='dashboard-enter page-hero border-border bg-card/95 relative overflow-hidden rounded-[1.75rem] border p-5 shadow-sm md:rounded-[2rem] md:p-7'>
+      <header className='dashboard-enter page-hero dashboard-surface relative overflow-hidden rounded-[2.2rem] p-6 md:rounded-[2.8rem] md:p-8'>
         <div className='flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between'>
           <div className='max-w-3xl'>
             <p className='text-muted-foreground/90 text-[0.7rem] font-medium tracking-[0.34em] uppercase'>
               {eyebrow}
             </p>
-            <h2 className='text-foreground mt-3 max-w-4xl text-[2.15rem] font-semibold tracking-[-0.045em] sm:text-[2.5rem] md:text-[2.9rem]'>
+            <h2 className='text-foreground mt-4 max-w-4xl text-[2.2rem] font-semibold tracking-[-0.045em] sm:text-[2.7rem] md:text-[3rem]'>
               {title}
             </h2>
             <p className='text-muted-foreground mt-4 max-w-2xl text-sm leading-6 md:text-base'>

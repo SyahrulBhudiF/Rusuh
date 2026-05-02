@@ -15,7 +15,7 @@ export function QueryState({
 }) {
   if (isLoading) {
     return (
-      <div className='dashboard-loading border-border bg-card/80 text-muted-foreground rounded-3xl border p-8 text-sm shadow-sm'>
+      <div className='dashboard-loading dashboard-panel text-muted-foreground rounded-3xl p-8 text-sm'>
         <p className='text-foreground'>Loading…</p>
         <p className='mt-2'>Fetching the latest dashboard data.</p>
       </div>
