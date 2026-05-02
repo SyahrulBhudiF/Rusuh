@@ -181,8 +181,8 @@ export function AccountsPage() {
   return (
     <PageShell
       eyebrow='Accounts'
-      title='Account inventory'
-      description='Connected accounts, health signals, and provider coverage.'
+      title='Accounts'
+      description='Review provider access, status, and usage in one place.'
       actions={
         <Button
           type='button'

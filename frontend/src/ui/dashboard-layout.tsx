@@ -93,7 +93,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
               Rusuh Dashboard
             </p>
             <h1 className='mt-3 text-[2rem] font-semibold tracking-[-0.045em] lg:text-[2.2rem]'>
-              Management UI
+              Control Center
             </h1>
           </div>
           <nav className='mt-10 space-y-2'>
@@ -106,7 +106,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
                   className={cn(
                     'flex min-h-11 w-full items-center rounded-2xl px-4 text-left text-sm font-medium transition-colors',
                     active
-                      ? 'bg-primary text-primary-foreground shadow-[0_16px_40px_rgba(12,16,40,0.45)]'
+                      ? 'bg-primary text-white font-semibold shadow-[0_16px_40px_rgba(12,16,40,0.45)]'
                       : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground',
                   )}
                   activeOptions={{ exact: item.to === '/' }}
@@ -171,7 +171,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
                 <p className='text-muted-foreground text-xs tracking-[0.24em] uppercase'>
                   Rusuh Dashboard
                 </p>
-                <h1 className='mt-1 text-lg font-semibold'>Management UI</h1>
+                <h1 className='mt-1 text-lg font-semibold'>Control Center</h1>
               </div>
               <div className='flex items-center justify-end gap-2'>
               <Button
@@ -217,7 +217,7 @@ export function DashboardLayout({ children }: PropsWithChildren<object>) {
                         className={cn(
                           'flex min-h-11 items-center rounded-2xl px-4 text-sm font-medium transition-colors',
                           active
-                            ? 'bg-primary text-primary-foreground'
+                            ? 'bg-primary text-white font-semibold'
                             : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground',
                         )}
                         activeOptions={{ exact: item.to === '/' }}

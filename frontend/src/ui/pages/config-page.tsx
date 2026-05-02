@@ -76,8 +76,8 @@ export function ConfigPage() {
   return (
     <PageShell
       eyebrow='Config'
-      title='Runtime configuration'
-      description='Settings, providers, and API entries in one view.'
+      title='Runtime Configuration'
+      description='Settings, providers, and API entries at a glance.'
         actions={
           <div className='dashboard-panel grid grid-cols-1 gap-2 rounded-2xl p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
             {(['structured', 'json', 'yaml'] as const).map((value) => (

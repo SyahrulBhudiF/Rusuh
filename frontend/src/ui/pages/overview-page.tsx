@@ -46,9 +46,9 @@ export function OverviewPage() {
 
   return (
     <PageShell
-      eyebrow="Overview"
-      title="Proxy Runtime Overview"
-      description="Health, routing, and model availability in one clean snapshot."
+      eyebrow="Dashboard"
+      title="Runtime Overview"
+      description="Monitor system health, manage providers, and control proxy infrastructure from one unified dashboard."
       actions={
         <Button
           type="button"
@@ -113,32 +113,44 @@ export function OverviewPage() {
                           Routing strategy, service name, and model availability.
                         </p>
                       </div>
-                      <dl className="mt-4 space-y-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <dt className="text-muted-foreground">Routing strategy</dt>
-                          <dd className="text-foreground font-medium">
-                            {overview.data.routing_strategy}
-                          </dd>
+                      <div className="mt-4 grid gap-3">
+                        <div className="dashboard-panel flex items-center justify-between rounded-2xl px-4 py-3 text-sm">
+                          <div>
+                            <p className="text-muted-foreground text-xs uppercase tracking-[0.18em]">
+                              Routing Strategy
+                            </p>
+                            <p className="text-foreground mt-1 font-medium">
+                              {overview.data.routing_strategy}
+                            </p>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between">
-                          <dt className="text-muted-foreground">Service name</dt>
-                          <dd className="text-foreground font-medium">
-                            {overview.data.health.service}
-                          </dd>
+                        <div className="dashboard-panel flex items-center justify-between rounded-2xl px-4 py-3 text-sm">
+                          <div>
+                            <p className="text-muted-foreground text-xs uppercase tracking-[0.18em]">
+                              Service Name
+                            </p>
+                            <p className="text-foreground mt-1 font-medium">
+                              {overview.data.health.service}
+                            </p>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between">
-                          <dt className="text-muted-foreground">Active models</dt>
-                          <dd className="text-foreground font-medium">
-                            {overview.data.available_model_count}
-                          </dd>
+                        <div className="dashboard-panel flex items-center justify-between rounded-2xl px-4 py-3 text-sm">
+                          <div>
+                            <p className="text-muted-foreground text-xs uppercase tracking-[0.18em]">
+                              Active Models
+                            </p>
+                            <p className="text-foreground mt-1 font-medium">
+                              {overview.data.available_model_count}
+                            </p>
+                          </div>
                         </div>
-                      </dl>
+                      </div>
                     </div>
 
                     <div className="dashboard-panel rounded-2xl p-5">
                       <div className="flex items-center justify-between">
                         <div>
-                          <h3 className="text-lg font-semibold">Connected providers</h3>
+                          <h3 className="text-lg font-semibold">Connected Providers</h3>
                           <p className="text-muted-foreground text-sm">
                             Live provider connectivity.
                           </p>
@@ -173,7 +185,7 @@ export function OverviewPage() {
                   <section className="space-y-4">
                     <div className="flex items-center justify-between">
                       <div>
-                        <h3 className="text-lg font-semibold">Provider details</h3>
+                          <h3 className="text-lg font-semibold">Provider Details</h3>
                         <p className="text-muted-foreground text-sm">
                           Status and connected accounts by provider.
                         </p>

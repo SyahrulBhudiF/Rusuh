@@ -102,8 +102,8 @@ export function ApiKeysPage() {
   return (
     <PageShell
       eyebrow='API Keys'
-      title='API access keys'
-      description='Create, rotate, and track keys used for proxy access.'
+      title='API Keys'
+      description='Create, rotate, and manage client access keys.'
       actions={
         <div className='flex flex-col gap-3 sm:flex-row sm:flex-wrap'>
           <Button
@@ -153,7 +153,7 @@ export function ApiKeysPage() {
                   <div>
                     <h3 className='text-lg font-semibold'>Create key</h3>
                     <p className='text-muted-foreground mt-1 text-sm'>
-                      Add a label, generate, and share with clients.
+                      Add a label, then generate a key.
                     </p>
                   </div>
                   <div className='dashboard-panel rounded-2xl p-5'>
