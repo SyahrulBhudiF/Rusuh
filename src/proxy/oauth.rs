@@ -903,7 +903,8 @@ async fn poll_github_copilot_token(
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ])
             .send()
-            .await?;
+            .await
+            .map_err(|error| AppError::Upstream(format!("github device token polling failed: {error}")))?;
 
         let status = response.status();
 

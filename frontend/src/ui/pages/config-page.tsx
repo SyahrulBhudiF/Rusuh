@@ -77,20 +77,20 @@ export function ConfigPage() {
     <PageShell
       eyebrow='Config'
       title='Runtime configuration'
-      description='Read-only runtime config. Use this page to inspect the current setup, not to edit it.'
-      actions={
-        <div className='border-border bg-background/60 grid grid-cols-1 gap-2 rounded-2xl border p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
-          {(['structured', 'json', 'yaml'] as const).map((value) => (
-            <Button
-              key={value}
-              type='button'
-              variant={format === value ? 'default' : 'ghost'}
-              onClick={() => setFormat(value)}
-              className='h-11 rounded-xl px-3 capitalize'
-            >
-              {value}
-            </Button>
-          ))}
+      description='Manage and view your runtime settings.'
+        actions={
+          <div className='dashboard-panel grid grid-cols-1 gap-2 rounded-2xl p-1 sm:w-fit sm:grid-cols-3 lg:self-center'>
+            {(['structured', 'json', 'yaml'] as const).map((value) => (
+              <Button
+                key={value}
+                type='button'
+                variant={format === value ? 'default' : 'ghost'}
+                onClick={() => setFormat(value)}
+                className='h-11 rounded-full px-5 capitalize'
+              >
+                {value}
+              </Button>
+            ))}
         </div>
       }
     >
@@ -103,26 +103,34 @@ export function ConfigPage() {
           format === 'structured' ? (
             <div className='space-y-5'>
               <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
-                <div className='border-border rounded-2xl border p-4'>
-                  <p className='text-muted-foreground text-sm'>Listen addr</p>
+                <div className='dashboard-panel rounded-2xl p-4'>
+                  <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                    Listen Address
+                  </p>
                   <p className='text-foreground mt-2 text-lg font-semibold break-all'>
                     {config.data.listen_addr}
                   </p>
                 </div>
-                <div className='border-border rounded-2xl border p-4'>
-                  <p className='text-muted-foreground text-sm'>Routing</p>
+                <div className='dashboard-panel rounded-2xl p-4'>
+                  <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                    Routing Method
+                  </p>
                   <p className='text-foreground mt-2 text-lg font-semibold'>
                     {config.data.routing_strategy}
                   </p>
                 </div>
-                <div className='border-border rounded-2xl border p-4'>
-                  <p className='text-muted-foreground text-sm'>Providers</p>
+                <div className='dashboard-panel rounded-2xl p-4'>
+                  <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                    Providers
+                  </p>
                   <p className='text-foreground mt-2 text-lg font-semibold'>
                     {config.data.provider_count}
                   </p>
                 </div>
-                <div className='border-border rounded-2xl border p-4'>
-                  <p className='text-muted-foreground text-sm'>API keys</p>
+                <div className='dashboard-panel rounded-2xl p-4'>
+                  <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                    API Keys
+                  </p>
                   <p className='text-foreground mt-2 text-lg font-semibold'>
                     {config.data.api_key_count}
                   </p>
@@ -130,53 +138,53 @@ export function ConfigPage() {
               </div>
 
               <div className='grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
-                <section className='space-y-3'>
+                <section className='dashboard-panel rounded-2xl p-5'>
                   <div>
                     <h3 className='text-lg font-semibold'>Runtime settings</h3>
                     <p className='text-muted-foreground mt-1 text-sm'>
                       Runtime behavior and management flags.
                     </p>
                   </div>
-                  <dl className='space-y-2'>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                  <dl className='mt-4 space-y-3 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Host</dt>
                       <dd className='text-foreground text-right'>
                         {config.data.host || '(all interfaces)'}
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Port</dt>
                       <dd className='text-foreground text-right'>{config.data.port}</dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Auth dir</dt>
                       <dd className='text-foreground max-w-[18rem] text-right break-all'>
                         {config.data.auth_dir || '(default)'}
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Request retry</dt>
                       <dd className='text-foreground text-right'>{config.data.request_retry}</dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Debug</dt>
                       <dd>
                         <BoolPill value={config.data.debug} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Management API</dt>
                       <dd>
                         <BoolPill value={config.data.management.enabled} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>Remote management</dt>
                       <dd>
                         <BoolPill value={config.data.management.allow_remote} />
                       </dd>
                     </div>
-                    <div className='flex items-start justify-between gap-4 py-2 text-sm'>
+                    <div className='flex items-center justify-between'>
                       <dt className='text-muted-foreground'>OAuth alias rules</dt>
                       <dd className='text-foreground text-right'>
                         {config.data.oauth_alias_count} across{' '}
@@ -199,7 +207,7 @@ export function ConfigPage() {
                     </Badge>
                   </div>
 
-                  <div>
+                  <div className='dashboard-panel rounded-2xl p-4'>
                     <p className='text-muted-foreground text-sm'>Registered providers</p>
                     {hasProviders ? (
                       <div className='mt-3 flex flex-wrap gap-2'>
@@ -218,26 +226,26 @@ export function ConfigPage() {
                   </div>
 
                   <div className='grid gap-3 sm:grid-cols-2'>
-                    <div className='border-border rounded-2xl border p-4'>
-                      <p className='text-muted-foreground text-sm'>Gemini API key entries</p>
+                    <div className='dashboard-panel rounded-2xl p-4'>
+                      <p className='text-muted-foreground text-sm'>Gemini</p>
                       <p className='text-foreground mt-2 text-2xl font-semibold'>
                         {config.data.gemini_api_keys.length}
                       </p>
                     </div>
-                    <div className='border-border rounded-2xl border p-4'>
-                      <p className='text-muted-foreground text-sm'>Codex API key entries</p>
+                    <div className='dashboard-panel rounded-2xl p-4'>
+                      <p className='text-muted-foreground text-sm'>Codex</p>
                       <p className='text-foreground mt-2 text-2xl font-semibold'>
                         {config.data.codex_api_keys.length}
                       </p>
                     </div>
-                    <div className='border-border rounded-2xl border p-4'>
-                      <p className='text-muted-foreground text-sm'>Claude API key entries</p>
+                    <div className='dashboard-panel rounded-2xl p-4'>
+                      <p className='text-muted-foreground text-sm'>Claude</p>
                       <p className='text-foreground mt-2 text-2xl font-semibold'>
                         {config.data.claude_api_keys.length}
                       </p>
                     </div>
-                    <div className='border-border rounded-2xl border p-4'>
-                      <p className='text-muted-foreground text-sm'>OpenAI-compatible providers</p>
+                    <div className='dashboard-panel rounded-2xl p-4'>
+                      <p className='text-muted-foreground text-sm'>OpenAI-compatible</p>
                       <p className='text-foreground mt-2 text-2xl font-semibold'>
                         {config.data.openai_compat.length}
                       </p>
@@ -247,7 +255,7 @@ export function ConfigPage() {
               </div>
             </div>
           ) : (
-            <Card className='border-border bg-card rounded-3xl border'>
+            <Card className='dashboard-panel rounded-3xl'>
               <CardContent className='p-5 md:p-6'>
                 <p className='text-muted-foreground mb-4 text-sm'>
                   Raw {format.toUpperCase()} view of the current runtime snapshot.

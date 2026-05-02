@@ -269,13 +269,13 @@ export function AddAccountPage() {
       title='Add a provider account'
       description='Choose a provider to connect. Review and manage accounts on the Accounts page.'
       actions={
-        <Button asChild variant='outline' className='rounded-xl'>
+        <Button asChild variant='outline' className='rounded-full px-5'>
           <Link to='/accounts'>Back to Accounts</Link>
         </Button>
       }
     >
       <div className='space-y-8'>
-        <section className='dashboard-enter-delay-1 motion-panel border-border bg-muted/30 rounded-3xl border p-5'>
+        <section className='dashboard-enter-delay-1 motion-panel dashboard-panel rounded-3xl p-5'>
           <p className='text-sm font-medium'>Start here</p>
           <ol className='text-muted-foreground mt-3 grid gap-2 text-sm md:grid-cols-3'>
             <li>1. Choose a provider</li>
@@ -289,20 +289,20 @@ export function AddAccountPage() {
             value={provider}
             onValueChange={(value) => setProvider(value as AddAccountOauthProvider)}
           >
-            <TabsList className='motion-panel grid w-full max-w-2xl grid-cols-5 rounded-2xl p-1'>
-              <TabsTrigger value='kiro' className='rounded-xl'>
+            <TabsList className='motion-panel dashboard-panel grid w-full max-w-2xl grid-cols-5 rounded-2xl p-1'>
+              <TabsTrigger value='kiro' className='rounded-full'>
                 Kiro
               </TabsTrigger>
-              <TabsTrigger value='antigravity' className='rounded-xl'>
+              <TabsTrigger value='antigravity' className='rounded-full'>
                 Antigravity
               </TabsTrigger>
-              <TabsTrigger value='codex' className='rounded-xl'>
+              <TabsTrigger value='codex' className='rounded-full'>
                 Codex
               </TabsTrigger>
-              <TabsTrigger value='zed' className='rounded-xl'>
+              <TabsTrigger value='zed' className='rounded-full'>
                 Zed
               </TabsTrigger>
-              <TabsTrigger value='github-copilot' className='rounded-xl'>
+              <TabsTrigger value='github-copilot' className='rounded-full'>
                 Copilot
               </TabsTrigger>
             </TabsList>
@@ -321,7 +321,7 @@ export function AddAccountPage() {
               </section>
 
               <section className='space-y-3'>
-                <div className='motion-panel flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between'>
+                <div className='motion-panel dashboard-panel flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between'>
                   <div>
                     <p className='font-medium'>Builder ID</p>
                     <p className='text-muted-foreground text-sm'>
@@ -349,13 +349,13 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={startKiroBuilderId.isPending}
-                    className='rounded-xl px-4'
+                    className='rounded-full px-5'
                   >
                     {startKiroBuilderId.isPending ? 'Launching…' : 'Start Builder ID'}
                   </Button>
                 </div>
 
-                <div className='motion-panel border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                <div className='motion-panel dashboard-panel text-muted-foreground rounded-2xl p-4 text-sm leading-6'>
                   {activeOauthState ? (
                     <>
                       <p>
@@ -386,7 +386,7 @@ export function AddAccountPage() {
                     value={kiroImportMode}
                     onValueChange={(value) => setKiroImportMode(value as 'structured' | 'json')}
                   >
-                    <SelectTrigger className='h-10 w-[180px] rounded-xl'>
+                     <SelectTrigger className='h-11 w-[180px] rounded-full'>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -396,14 +396,14 @@ export function AddAccountPage() {
                   </Select>
                 </div>
 
-                <Input
-                  type='text'
-                  value={kiroLabel}
-                  onChange={(event) => setKiroLabel(event.target.value)}
-                  placeholder='Optional label'
-                  maxLength={MAX_LABEL_LENGTH}
-                  className='h-11 rounded-2xl'
-                />
+                 <Input
+                   type='text'
+                   value={kiroLabel}
+                   onChange={(event) => setKiroLabel(event.target.value)}
+                   placeholder='Optional label'
+                   maxLength={MAX_LABEL_LENGTH}
+                   className='h-11 rounded-2xl'
+                 />
 
                 {kiroImportMode === 'structured' ? (
                   <div className='grid gap-3 lg:grid-cols-2'>
@@ -495,7 +495,7 @@ export function AddAccountPage() {
                       }
                     }}
                     disabled={importKiro.isPending}
-                    className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                   >
                     {importKiro.isPending ? 'Importing…' : 'Import Kiro auth'}
                   </Button>
@@ -509,12 +509,12 @@ export function AddAccountPage() {
                     Use this only if you already have a refresh token.
                   </p>
                 </div>
-                <Textarea
-                  value={kiroSocialRefreshToken}
-                  onChange={(event) => setKiroSocialRefreshToken(event.target.value)}
-                  placeholder='aorAAAAAG...'
-                  className='min-h-24 rounded-2xl px-4 py-3'
-                />
+                 <Textarea
+                   value={kiroSocialRefreshToken}
+                   onChange={(event) => setKiroSocialRefreshToken(event.target.value)}
+                   placeholder='aorAAAAAG...'
+                   className='min-h-24 rounded-2xl px-4 py-3'
+                 />
                 <div className='flex justify-end'>
                   <Button
                     type='button'
@@ -535,7 +535,7 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={importKiroSocial.isPending}
-                    className='h-11 rounded-xl px-4'
+                   className='h-11 rounded-full px-5'
                   >
                     {importKiroSocial.isPending ? 'Importing…' : 'Import social token'}
                   </Button>
@@ -552,14 +552,14 @@ export function AddAccountPage() {
               </section>
 
               <section className='max-w-xl space-y-4'>
-                <Input
-                  type='text'
-                  value={antigravityLabel}
-                  onChange={(event) => setAntigravityLabel(event.target.value)}
-                  className='h-11 rounded-2xl'
-                  placeholder='Optional label'
-                  maxLength={MAX_LABEL_LENGTH}
-                />
+                 <Input
+                   type='text'
+                   value={antigravityLabel}
+                   onChange={(event) => setAntigravityLabel(event.target.value)}
+                   className='h-11 rounded-2xl'
+                   placeholder='Optional label'
+                   maxLength={MAX_LABEL_LENGTH}
+                 />
                 <div className='flex justify-end'>
                   <Button
                     type='button'
@@ -585,23 +585,23 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={startOAuth.isPending}
-                    className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                   >
                     {startOAuth.isPending ? 'Generating link…' : 'Start OAuth'}
                   </Button>
                 </div>
 
                 {antigravityAuthUrl ? (
-                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                     <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
                     <Input value={antigravityAuthUrl} readOnly className='h-11 rounded-2xl' />
                     <div className='flex justify-end'>
-                      <Button
-                        asChild
-                        type='button'
-                        variant='outline'
-                        className='h-11 rounded-xl px-4'
-                      >
+                     <Button
+                       asChild
+                       type='button'
+                       variant='outline'
+                       className='h-11 rounded-full px-5'
+                     >
                         <a href={antigravityAuthUrl} target='_blank' rel='noopener noreferrer'>
                           Open login link
                         </a>
@@ -610,7 +610,7 @@ export function AddAccountPage() {
                   </div>
                 ) : null}
 
-                <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                   <p className='text-muted-foreground text-sm'>
                     Paste localhost callback URL after login:
                   </p>
@@ -654,7 +654,7 @@ export function AddAccountPage() {
                       disabled={
                         submitOAuthCallback.isPending || antigravityCallbackUrl.trim().length === 0
                       }
-                      className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                     >
                       {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
                     </Button>
@@ -672,14 +672,14 @@ export function AddAccountPage() {
               </section>
 
               <section className='max-w-xl space-y-4'>
-                <Input
-                  type='text'
-                  value={codexLabel}
-                  onChange={(event) => setCodexLabel(event.target.value)}
-                  className='h-11 rounded-2xl'
-                  placeholder='Optional label'
-                  maxLength={MAX_LABEL_LENGTH}
-                />
+                 <Input
+                   type='text'
+                   value={codexLabel}
+                   onChange={(event) => setCodexLabel(event.target.value)}
+                   className='h-11 rounded-2xl'
+                   placeholder='Optional label'
+                   maxLength={MAX_LABEL_LENGTH}
+                 />
                 <div className='flex justify-end'>
                   <Button
                     type='button'
@@ -705,23 +705,23 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={startOAuth.isPending}
-                    className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                   >
                     {startOAuth.isPending ? 'Generating link…' : 'Start OAuth'}
                   </Button>
                 </div>
 
                 {codexAuthUrl ? (
-                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                     <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
                     <Input value={codexAuthUrl} readOnly className='h-11 rounded-2xl' />
                     <div className='flex justify-end'>
-                      <Button
-                        asChild
-                        type='button'
-                        variant='outline'
-                        className='h-11 rounded-xl px-4'
-                      >
+                     <Button
+                       asChild
+                       type='button'
+                       variant='outline'
+                       className='h-11 rounded-full px-5'
+                     >
                         <a href={codexAuthUrl} target='_blank' rel='noopener noreferrer'>
                           Open login link
                         </a>
@@ -730,7 +730,7 @@ export function AddAccountPage() {
                   </div>
                 ) : null}
 
-                <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                   <p className='text-muted-foreground text-sm'>
                     Paste localhost callback URL after login:
                   </p>
@@ -774,7 +774,7 @@ export function AddAccountPage() {
                       disabled={
                         submitOAuthCallback.isPending || codexCallbackUrl.trim().length === 0
                       }
-                      className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                     >
                       {submitOAuthCallback.isPending ? 'Submitting…' : 'Submit callback URL'}
                     </Button>
@@ -792,14 +792,14 @@ export function AddAccountPage() {
               </section>
 
               <section className='max-w-xl space-y-4'>
-                <Input
-                  type='text'
-                  value={zedLabel}
-                  onChange={(event) => setZedLabel(event.target.value)}
-                  className='h-11 rounded-2xl'
-                  placeholder='Optional label'
-                  maxLength={MAX_LABEL_LENGTH}
-                />
+                 <Input
+                   type='text'
+                   value={zedLabel}
+                   onChange={(event) => setZedLabel(event.target.value)}
+                   className='h-11 rounded-2xl'
+                   placeholder='Optional label'
+                   maxLength={MAX_LABEL_LENGTH}
+                 />
                 <div className='flex justify-end'>
                   <Button
                     type='button'
@@ -824,26 +824,26 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={startZedLogin.isPending}
-                    className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                   >
                     {startZedLogin.isPending ? 'Launching…' : 'Start Zed login'}
                   </Button>
                 </div>
 
                 {zedLoginUrl ? (
-                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                     <p className='text-muted-foreground text-sm'>Open this login link manually:</p>
                     <Input value={zedLoginUrl} readOnly className='h-11 rounded-2xl' />
                     {zedPort ? (
                       <p className='text-muted-foreground text-sm'>Native app callback port: {zedPort}</p>
                     ) : null}
                     <div className='flex justify-end'>
-                      <Button
-                        asChild
-                        type='button'
-                        variant='outline'
-                        className='h-11 rounded-xl px-4'
-                      >
+                     <Button
+                       asChild
+                       type='button'
+                       variant='outline'
+                       className='h-11 rounded-full px-5'
+                     >
                         <a href={zedLoginUrl} target='_blank' rel='noopener noreferrer'>
                           Open login link
                         </a>
@@ -852,7 +852,7 @@ export function AddAccountPage() {
                   </div>
                 ) : null}
 
-                <div className='border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                <div className='dashboard-panel text-muted-foreground rounded-2xl p-4 text-sm leading-6'>
                   {activeOauthState ? (
                     <>
                       <p>
@@ -891,14 +891,14 @@ export function AddAccountPage() {
               </section>
 
               <section className='max-w-xl space-y-4'>
-                <Input
-                  type='text'
-                  value={copilotLabel}
-                  onChange={(event) => setCopilotLabel(event.target.value)}
-                  className='h-11 rounded-2xl'
-                  placeholder='Optional label'
-                  maxLength={MAX_LABEL_LENGTH}
-                />
+                 <Input
+                   type='text'
+                   value={copilotLabel}
+                   onChange={(event) => setCopilotLabel(event.target.value)}
+                   className='h-11 rounded-2xl'
+                   placeholder='Optional label'
+                   maxLength={MAX_LABEL_LENGTH}
+                 />
                 <div className='flex justify-end'>
                   <Button
                     type='button'
@@ -929,14 +929,14 @@ export function AddAccountPage() {
                       )
                     }
                     disabled={startOAuth.isPending}
-                    className='h-11 rounded-xl px-4'
+                     className='h-11 rounded-full px-5'
                   >
                     {startOAuth.isPending ? 'Starting…' : 'Start OAuth'}
                   </Button>
                 </div>
 
                 {copilotUserCode ? (
-                  <div className='border-border bg-background/60 space-y-3 rounded-2xl border p-4'>
+                  <div className='dashboard-panel space-y-3 rounded-2xl p-4'>
                     <p className='text-muted-foreground text-sm'>
                       Enter this code on GitHub:
                     </p>
@@ -954,12 +954,12 @@ export function AddAccountPage() {
                       <p className='text-muted-foreground text-sm'>{copilotExpiryHint}</p>
                     ) : null}
                     <div className='flex justify-end'>
-                      <Button
-                        asChild
-                        type='button'
-                        variant='outline'
-                        className='h-11 rounded-xl px-4'
-                      >
+                     <Button
+                       asChild
+                       type='button'
+                       variant='outline'
+                       className='h-11 rounded-full px-5'
+                     >
                         <a
                           href={copilotVerificationUri}
                           target='_blank'
@@ -972,7 +972,7 @@ export function AddAccountPage() {
                   </div>
                 ) : null}
 
-                <div className='border-border bg-background/60 text-muted-foreground rounded-2xl border p-4 text-sm leading-6'>
+                <div className='dashboard-panel text-muted-foreground rounded-2xl p-4 text-sm leading-6'>
                   {activeOauthState ? (
                     <>
                       <p>
@@ -1004,7 +1004,7 @@ export function AddAccountPage() {
                 </p>
               </div>
               <CollapsibleTrigger asChild>
-                <Button type='button' variant='outline' className='rounded-xl'>
+                <Button type='button' variant='outline' className='rounded-full px-5'>
                   {showAdvanced ? 'Hide' : 'Show'}
                 </Button>
               </CollapsibleTrigger>
@@ -1109,7 +1109,7 @@ export function AddAccountPage() {
                       uploadName.trim().length === 0 ||
                       uploadBody.trim().length === 0
                     }
-                    className='h-11 rounded-xl px-4'
+                    className='h-11 rounded-full px-5'
                   >
                     {uploadAuthFile.isPending ? 'Uploading…' : 'Upload auth file'}
                   </Button>

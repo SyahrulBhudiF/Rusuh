@@ -32,6 +32,16 @@ export function OverviewPage() {
     [accountSummaries],
   )
 
+  const providerCards = useMemo(
+    () =>
+      summaryRows.map((summary) => ({
+        name: summary.provider,
+        total: summary.total,
+        active: summary.active > 0,
+      })),
+    [summaryRows],
+  )
+
   const hasProviders = providerNames.length > 0
 
   return (
@@ -46,7 +56,7 @@ export function OverviewPage() {
           onClick={() => {
             void queryClient.invalidateQueries({ queryKey: queryKeys.overview })
           }}
-          className='h-11 rounded-xl px-4'
+          className='h-11 rounded-full px-5'
         >
           Refresh
         </Button>
@@ -60,128 +70,143 @@ export function OverviewPage() {
         {overview.data ? (
           <>
             {!hasProviders ? (
-              <section className='border-border bg-muted/30 mb-4 rounded-3xl border p-5'>
+              <section className='dashboard-panel mb-4 rounded-3xl p-5'>
                 <p className='text-sm font-medium'>Start here</p>
                 <p className='text-muted-foreground mt-2 text-sm'>
                   Add an account, then come back here to confirm the runtime is healthy.
                 </p>
                 <div className='mt-4 flex flex-wrap gap-2'>
-                  <Button asChild className='rounded-xl'>
+                  <Button asChild className='rounded-full px-5'>
                     <Link to='/accounts/add'>Add Account</Link>
                   </Button>
                 </div>
               </section>
             ) : null}
 
-            <div className='grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.85fr)]'>
+            <div className='grid gap-6'>
               <section className='space-y-4'>
-                <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
+                <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
                   {overview.data.cards.map((card) => (
-                    <div key={card.label} className='border-border rounded-2xl border p-4'>
-                      <p className='text-muted-foreground text-sm'>{card.label}</p>
-                      <p className='text-foreground mt-2 text-3xl font-semibold'>{card.value}</p>
+                    <div
+                      key={card.label}
+                      className='dashboard-panel rounded-2xl p-4'
+                    >
+                      <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                        {card.label}
+                      </p>
+                      <p className='text-foreground mt-3 text-3xl font-semibold'>{card.value}</p>
                       <p className='text-muted-foreground mt-2 text-sm leading-6'>{card.hint}</p>
                     </div>
                   ))}
                 </div>
 
-                <div className='space-y-3'>
-                  <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
-                    <div>
-                      <h3 className='text-lg font-semibold'>Accounts by provider</h3>
-                      <p className='text-muted-foreground text-sm'>
-                        By provider and lifecycle state.
-                      </p>
+                <div className='grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
+                  <section className='dashboard-panel rounded-2xl p-5'>
+                    <div className='flex items-start justify-between gap-3'>
+                      <div>
+                        <h3 className='text-lg font-semibold'>System Status</h3>
+                        <p className='text-muted-foreground mt-1 text-sm'>
+                          Current service health, routing posture, and model surface.
+                        </p>
+                      </div>
+                      <Badge
+                        variant='outline'
+                        className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
+                      >
+                        {hasProviders ? 'Providers online' : 'No providers'}
+                      </Badge>
                     </div>
-                    <Badge
-                      variant='outline'
-                      className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
-                    >
-                      {accountSummaries?.length ?? 0} provider(s)
-                    </Badge>
-                  </div>
-                  {summaryRows.length > 0 ? (
-                    <div className='space-y-2'>
-                      {summaryRows.map((summary) => (
-                        <div
-                          key={summary.provider}
-                          className='border-border rounded-2xl border p-4'
-                        >
-                          <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
-                            <div>
-                              <p className='text-foreground font-medium'>{summary.provider}</p>
-                              <p className='text-muted-foreground mt-1 text-sm'>
-                                Total {summary.total}
-                              </p>
+                    <dl className='mt-4 space-y-3 text-sm'>
+                      <div className='flex items-center justify-between'>
+                        <dt className='text-muted-foreground'>Providers Online</dt>
+                        <dd className='text-foreground font-medium'>
+                          {hasProviders ? `${providerNames.length} / ${providerNames.length}` : '0'}
+                        </dd>
+                      </div>
+                      <div className='flex items-center justify-between'>
+                        <dt className='text-muted-foreground'>System Health</dt>
+                        <dd className='text-foreground font-medium'>{overview.data.health.status}</dd>
+                      </div>
+                      <div className='flex items-center justify-between'>
+                        <dt className='text-muted-foreground'>Service Status</dt>
+                        <dd className='text-foreground font-medium'>{overview.data.health.service}</dd>
+                      </div>
+                      <div className='flex items-center justify-between'>
+                        <dt className='text-muted-foreground'>Routing Strategy</dt>
+                        <dd className='text-foreground font-medium'>
+                          {overview.data.routing_strategy}
+                        </dd>
+                      </div>
+                      <div className='flex items-center justify-between'>
+                        <dt className='text-muted-foreground'>Active Models</dt>
+                        <dd className='text-foreground font-medium'>
+                          {overview.data.available_model_count}
+                        </dd>
+                      </div>
+                    </dl>
+                    {providerNames.length > 0 ? (
+                      <div className='mt-5 space-y-3'>
+                        <p className='text-muted-foreground text-xs uppercase tracking-[0.2em]'>
+                          Connected Providers
+                        </p>
+                        <div className='space-y-2'>
+                          {providerNames.map((name) => (
+                            <div
+                              key={name}
+                              className='dashboard-panel flex items-center justify-between rounded-2xl px-4 py-3 text-sm'
+                            >
+                              <span className='text-foreground'>{name}</span>
+                              <span className='h-2 w-2 rounded-full bg-emerald-400' />
                             </div>
-                            <div className='flex flex-wrap gap-2'>
-                              {summary.chips.length > 0 ? (
-                                summary.chips.map(([label, count]) => (
-                                  <Badge
-                                    key={String(label)}
-                                    variant='outline'
-                                    className={`dashboard-status rounded-full px-2.5 py-1 text-xs ${statusTone(String(label))}`}
-                                  >
-                                    {label}: {count}
-                                  </Badge>
-                                ))
-                              ) : (
-                                <span className='text-muted-foreground text-sm'>
-                                  No status data
-                                </span>
-                              )}
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  <section className='space-y-4'>
+                    <div className='flex items-center justify-between'>
+                      <div>
+                        <h3 className='text-lg font-semibold'>Configured Providers</h3>
+                        <p className='text-muted-foreground text-sm'>
+                          Provider availability and account inventory.
+                        </p>
+                      </div>
+                      <Badge
+                        variant='outline'
+                        className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
+                      >
+                        {providerCards.length} provider(s)
+                      </Badge>
+                    </div>
+                    {providerCards.length > 0 ? (
+                      <div className='grid gap-3 sm:grid-cols-2'>
+                        {providerCards.map((provider) => (
+                          <div key={provider.name} className='dashboard-panel rounded-2xl p-4'>
+                            <div className='flex items-start justify-between gap-3'>
+                              <div>
+                                <p className='text-foreground font-medium'>{provider.name}</p>
+                                <p className='text-muted-foreground mt-1 text-sm'>
+                                  {provider.total} account{provider.total === 1 ? '' : 's'} connected
+                                </p>
+                              </div>
+                              <Badge
+                                variant='outline'
+                                className={`rounded-full px-2.5 py-1 text-xs ${statusTone(provider.active ? 'active' : 'disabled')}`}
+                              >
+                                {provider.active ? 'Active' : 'Inactive'}
+                              </Badge>
                             </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className='bg-muted/40 text-muted-foreground rounded-2xl p-4 text-sm'>
-                      No connected accounts yet. Add an account to start routing requests.
-                    </div>
-                  )}
+                        ))}
+                      </div>
+                    ) : (
+                      <div className='dashboard-panel text-muted-foreground rounded-2xl p-4 text-sm'>
+                        No providers configured yet.
+                      </div>
+                    )}
+                  </section>
                 </div>
-              </section>
-
-              <section className='space-y-3'>
-                <div>
-                  <h3 className='text-lg font-semibold'>Runtime status</h3>
-                  <p className='text-muted-foreground mt-1 text-sm leading-6'>
-                    Current service health, routing posture, and model surface.
-                  </p>
-                </div>
-                <Badge
-                  variant='outline'
-                  className='dashboard-status w-fit rounded-full px-3 py-1 text-xs'
-                >
-                  {hasProviders ? 'Providers online' : 'No providers'}
-                </Badge>
-                <dl className='space-y-2'>
-                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
-                    <dt className='text-muted-foreground'>Health</dt>
-                    <dd className='text-foreground text-right'>{overview.data.health.status}</dd>
-                  </div>
-                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
-                    <dt className='text-muted-foreground'>Service</dt>
-                    <dd className='text-foreground text-right'>{overview.data.health.service}</dd>
-                  </div>
-                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
-                    <dt className='text-muted-foreground'>Routing</dt>
-                    <dd className='text-foreground text-right'>{overview.data.routing_strategy}</dd>
-                  </div>
-                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
-                    <dt className='text-muted-foreground'>Models</dt>
-                    <dd className='text-foreground text-right'>
-                      {overview.data.available_model_count}
-                    </dd>
-                  </div>
-                  <div className='flex items-start justify-between gap-4 py-2 text-sm'>
-                    <dt className='text-muted-foreground'>Providers</dt>
-                    <dd className='text-foreground text-right'>
-                      {hasProviders ? providerNames.join(', ') : 'None'}
-                    </dd>
-                  </div>
-                </dl>
               </section>
             </div>
           </>

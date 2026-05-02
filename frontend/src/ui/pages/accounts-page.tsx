@@ -2,6 +2,16 @@ import { useNavigate } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 
 import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
+
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -47,7 +57,7 @@ import { toastError, toastInfo, toastSuccess } from '../../lib/toast'
 import { PageShell } from '../page-shell'
 import { QueryState } from '../query-state'
 import { statusTone } from '../status-tone'
-import { cardClass, surfaceClass } from '../ui-tokens'
+import { cardClass } from '../ui-tokens'
 
 const ALL_FILTER = 'all'
 const STATUS_OPTIONS = ['active', 'refreshing', 'pending', 'error', 'disabled', 'unknown'] as const
@@ -176,7 +186,7 @@ export function AccountsPage() {
       actions={
         <Button
           type='button'
-          className='rounded-xl'
+          className='rounded-full px-5'
           onClick={() => navigate({ to: '/accounts/add' })}
         >
           Add Account
@@ -208,10 +218,10 @@ export function AccountsPage() {
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel className='rounded-xl'>Cancel</AlertDialogCancel>
+                  <AlertDialogCancel className='rounded-full px-5'>Cancel</AlertDialogCancel>
                   <AlertDialogAction
                     variant='destructive'
-                    className='rounded-xl'
+                    className='rounded-full px-5'
                     onClick={() => {
                       if (!deleteTarget) return
                       const target = deleteTarget
@@ -233,601 +243,140 @@ export function AccountsPage() {
               </AlertDialogContent>
             </AlertDialog>
 
-            <div className='space-y-6'>
-              <section className='flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between'>
-                <div className='grid gap-4 md:grid-cols-2 xl:grid-cols-[220px_220px]'>
-                  <label className='space-y-2'>
-                    <span className='text-muted-foreground text-sm'>Provider</span>
-                    <Select value={providerFilter} onValueChange={setProviderFilter}>
-                      <SelectTrigger className='h-11 rounded-2xl'>
-                        <SelectValue placeholder='All providers' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_FILTER}>All providers</SelectItem>
-                        {providerOptions.map((provider) => (
-                          <SelectItem key={provider} value={provider}>
-                            {providerLabel(provider)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
+             <div className='space-y-6'>
+               <section className='flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between'>
+                 <div className='flex-1 flex flex-wrap items-center gap-2'>
+                   <label className='space-y-2'>
+                     <span className='text-muted-foreground text-sm'>Provider</span>
+                     <Select value={providerFilter} onValueChange={setProviderFilter}>
+                       <SelectTrigger className='h-11 rounded-2xl'>
+                         <SelectValue placeholder='All providers' />
+                       </SelectTrigger>
+                       <SelectContent>
+                         <SelectItem value={ALL_FILTER}>All providers</SelectItem>
+                         {providerOptions.map((provider) => (
+                           <SelectItem key={provider} value={provider}>
+                             {providerLabel(provider)}
+                           </SelectItem>
+                         ))}
+                       </SelectContent>
+                     </Select>
+                   </label>
 
-                  <label className='space-y-2'>
-                    <span className='text-muted-foreground text-sm'>Status</span>
-                    <Select value={statusFilter} onValueChange={setStatusFilter}>
-                      <SelectTrigger className='h-11 rounded-2xl'>
-                        <SelectValue placeholder='All statuses' />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_FILTER}>All statuses</SelectItem>
-                        {STATUS_OPTIONS.map((status) => (
-                          <SelectItem key={status} value={status}>
-                            {status}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                </div>
+                   <label className='space-y-2'>
+                     <span className='text-muted-foreground text-sm'>Status</span>
+                     <Select value={statusFilter} onValueChange={setStatusFilter}>
+                       <SelectTrigger className='h-11 rounded-2xl'>
+                         <SelectValue placeholder='All statuses' />
+                       </SelectTrigger>
+                       <SelectContent>
+                         <SelectItem value={ALL_FILTER}>All statuses</SelectItem>
+                         {STATUS_OPTIONS.map((status) => (
+                           <SelectItem key={status} value={status}>
+                             {status}
+                           </SelectItem>
+                         ))}
+                       </SelectContent>
+                     </Select>
+                   </label>
+                   
+                   <Button
+                     type='button'
+                     variant='outline'
+                     onClick={() => {
+                       setProviderFilter(ALL_FILTER);
+                       setStatusFilter(ALL_FILTER);
+                     }}
+                    className='h-11 rounded-full px-5'
+                   >
+                     Reset
+                   </Button>
+                 </div>
 
-                <div className='flex flex-wrap items-center gap-2'>
-                  {providerGroups.map((group) => (
-                    <Badge
-                      key={group.key}
-                      variant='outline'
-                      className='rounded-full px-3 py-1 text-sm'
+                 <div className='flex flex-wrap items-center gap-2'>
+                   {providerGroups.map((group) => (
+                     <Badge
+                       key={group.key}
+                       variant='outline'
+                       className='rounded-full px-3 py-1 text-sm'
+                     >
+                       {group.label} · {group.items.length}
+                     </Badge>
+                   ))}
+                   <Badge variant='outline' className='rounded-full px-3 py-1 text-xs'>
+                     {hasItems ? `${items.length} visible` : 'No matches'}
+                   </Badge>
+                 </div>
+               </section>
+
+               {!hasItems ? (
+                 <section className='text-center py-12'>
+                   <Badge variant='outline' className='mb-4'>
+                     No accounts found
+                   </Badge>
+                   <p className='mt-4 text-muted-foreground'>
+                     Connected provider accounts appear here. To start routing requests,
+                     you'll need to add at least one account.
+                   </p>
+                    <Button 
+                      type='button' 
+                      className='mt-6 rounded-full px-6'
+                      onClick={() => navigate({ to: '/accounts/add' })}
                     >
-                      {group.label} · {group.items.length}
-                    </Badge>
-                  ))}
-                  <Badge variant='outline' className='rounded-full px-3 py-1 text-xs'>
-                    {hasItems ? `${items.length} visible` : 'No matches'}
-                  </Badge>
-                </div>
-              </section>
-
-              {!hasItems ? (
-                <article
-                  className={`${surfaceClass} bg-muted/40 text-muted-foreground border-dashed p-6 text-sm`}
-                >
-                  <p className='text-foreground'>No accounts to show.</p>
-                  <p className='mt-2'>
-                    Connected provider accounts appear here. Add one account to start routing
-                    requests.
-                  </p>
-                  <Button
-                    type='button'
-                    className='mt-4 rounded-xl'
-                    onClick={() => navigate({ to: '/accounts/add' })}
-                  >
-                    Add Account
-                  </Button>
-                </article>
-              ) : null}
+                     Add First Account
+                   </Button>
+                 </section>
+               ) : null}
 
               <div className='space-y-8'>
-                {providerGroups.map((group) => (
-                  <section key={group.key} className='space-y-4'>
-                    <div className='flex items-center gap-2'>
-                      <h3 className='text-base font-semibold'>{group.label}</h3>
-                      <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
-                        {group.items.length}
-                      </Badge>
-                    </div>
+                {providerGroups.map((group) => {
+                  const firstItem = group.items[0]
+                  if (!firstItem) return null
+                  return (
+                    <section key={group.key} className='space-y-4'>
+                      <div className='flex items-center gap-2'>
+                        <h3 className='text-base font-semibold'>{group.label}</h3>
+                        <Badge variant='outline' className='rounded-full px-2.5 py-1 text-xs'>
+                          {group.items.length}
+                        </Badge>
+                      </div>
 
-                    <div className='grid gap-3'>
-                      {group.items.map((item) => (
-                        <Card key={item.id} className={`${cardClass} dashboard-card motion-panel`}>
-                          <CardContent className='space-y-4 p-4'>
-                            <div className='flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between'>
-                              <div className='min-w-0'>
-                                <div className='flex flex-wrap items-center gap-2'>
-                                  <p className='text-foreground font-medium'>
-                                    {item.label || item.id}
-                                  </p>
-                                  <Badge
-                                    variant='outline'
-                                    className={`rounded-full px-2.5 py-1 text-xs ${statusTone(item.status)}`}
-                                  >
-                                    {item.status}
-                                  </Badge>
-                                </div>
-                                <p className='text-muted-foreground mt-1 text-sm'>
-                                  {accountSubtitle(item)}
-                                </p>
-                                <p className='text-muted-foreground mt-1 truncate text-xs'>
-                                  {item.id}
-                                </p>
-                                {item.provider_key === 'kiro' ? renderKiroMetadata(item) : null}
-                                {item.status_message ? (
-                                  <p className='text-destructive mt-2 text-xs'>
-                                    {item.status_message}
-                                  </p>
-                                ) : null}
-                                {item.provider_key === 'kiro' && quotaResults[item.id] ? (
-                                  <div className='mt-3 flex flex-wrap items-center gap-2 text-xs'>
-                                    <Badge
-                                      variant={
-                                        quotaResults[item.id].status === 'available'
-                                          ? 'default'
-                                          : quotaResults[item.id].status === 'exhausted'
-                                            ? 'destructive'
-                                            : 'outline'
-                                      }
-                                      className='rounded-full'
-                                    >
-                                      {quotaResults[item.id].status}
-                                    </Badge>
-                                    {quotaResults[item.id].remaining !== undefined ? (
-                                      <span className='text-muted-foreground'>
-                                        {quotaResults[item.id].remaining} remaining
-                                      </span>
-                                    ) : null}
-                                    {quotaResults[item.id].detail ? (
-                                      <span className='text-muted-foreground'>
-                                        {quotaResults[item.id].detail}
-                                      </span>
-                                    ) : null}
-                                    {quotaResults[item.id].message ? (
-                                      <span className='text-muted-foreground'>
-                                        {quotaResults[item.id].message}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                ) : null}
-                                {item.provider_key === 'zed' && zedQuotaResults[item.id] ? (
-                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
-                                    <p className='text-xs font-medium'>Quota Status:</p>
-                                    <div className='mt-1 flex items-center gap-2'>
-                                      <Badge
-                                        variant={
-                                          zedQuotaResults[item.id].status === 'available'
-                                            ? 'default'
-                                            : 'destructive'
-                                        }
-                                        className='rounded-full'
-                                      >
-                                        {zedQuotaResults[item.id].status}
-                                      </Badge>
-                                      {zedQuotaResults[item.id].model_requests_used !== undefined &&
-                                      zedQuotaResults[item.id].model_requests_limit !==
-                                        undefined ? (
-                                        <span className='text-muted-foreground text-xs'>
-                                          {zedQuotaResults[item.id].model_requests_used}/
-                                          {String(zedQuotaResults[item.id].model_requests_limit)}{' '}
-                                          used
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    {zedQuotaResults[item.id].plan ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        Plan: {zedQuotaResults[item.id].plan}
-                                      </p>
-                                    ) : null}
-                                    {zedQuotaResults[item.id].error ? (
-                                      <p className='text-destructive mt-1 text-xs'>
-                                        {zedQuotaResults[item.id].error}
-                                      </p>
-                                    ) : null}
-                                  </div>
-                                ) : null}
-                                {item.provider_key === 'zed' && zedModelsResults[item.id] ? (
-                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
-                                    <p className='text-xs font-medium'>Available Models:</p>
-                                    {zedModelsResults[item.id].models.length > 0 ? (
-                                      <div className='mt-2 flex flex-wrap gap-2'>
-                                        {zedModelsResults[item.id].models.map((model) => (
-                                          <Badge
-                                            key={`${item.id}-${model}`}
-                                            variant='outline'
-                                            className='rounded-full px-2.5 py-1 text-xs'
-                                          >
-                                            {model}
-                                          </Badge>
-                                        ))}
-                                      </div>
-                                    ) : (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        No models reported for this account.
-                                      </p>
-                                    )}
-                                  </div>
-                                ) : null}
-                                {item.provider_key === 'github-copilot' &&
-                                copilotModelsResults[item.id] ? (
-                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
-                                    <p className='text-xs font-medium'>Available Models:</p>
-                                    {copilotModelsResults[item.id].models.length > 0 ? (
-                                      <div className='mt-2 flex flex-wrap gap-2'>
-                                        {copilotModelsResults[item.id].models.map((model) => (
-                                          <Badge
-                                            key={`${item.id}-${model}`}
-                                            variant='outline'
-                                            className='rounded-full px-2.5 py-1 text-xs'
-                                          >
-                                            {model}
-                                          </Badge>
-                                        ))}
-                                      </div>
-                                    ) : (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        No models reported for this account.
-                                      </p>
-                                    )}
-                                  </div>
-                                ) : null}
-                                {item.provider_key === 'codex' && codexQuotaResults[item.id] ? (
-                                  <div className='border-border bg-muted/50 mt-3 rounded-lg border p-3'>
-                                    <p className='text-xs font-medium'>Quota Status:</p>
-                                    <div className='mt-1 flex items-center gap-2'>
-                                      <Badge
-                                        variant={
-                                          codexQuotaResults[item.id].status === 'available'
-                                            ? 'default'
-                                            : 'destructive'
-                                        }
-                                        className='rounded-full'
-                                      >
-                                        {codexQuotaResults[item.id].status}
-                                      </Badge>
-                                      {codexQuotaResults[item.id].retry_after_seconds !==
-                                      undefined ? (
-                                        <span className='text-muted-foreground text-xs'>
-                                          Retry after{' '}
-                                          {codexQuotaResults[item.id].retry_after_seconds}s
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    {codexQuotaResults[item.id].plan_type ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        Plan: {codexQuotaResults[item.id].plan_type}
-                                      </p>
-                                    ) : null}
-                                    {codexQuotaResults[item.id].rate_limit?.primary_window ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        {codexWindowLabel(
-                                          codexQuotaResults[item.id].rate_limit?.primary_window
-                                            ?.limit_window_seconds,
-                                        )}
-                                        :{' '}
-                                        {remainingPercent(
-                                          codexQuotaResults[item.id].rate_limit?.primary_window
-                                            ?.used_percent,
-                                        )}
-                                        % remaining
-                                        {formatResetAt(
-                                          codexQuotaResults[item.id].rate_limit?.primary_window
-                                            ?.reset_at,
-                                        )
-                                          ? ` · resets at ${formatResetAt(
-                                              codexQuotaResults[item.id].rate_limit?.primary_window
-                                                ?.reset_at,
-                                            )}`
-                                          : ''}
-                                      </p>
-                                    ) : null}
-                                    {codexQuotaResults[item.id].rate_limit?.secondary_window ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        Weekly limit: {remainingPercent(
-                                          codexQuotaResults[item.id].rate_limit?.secondary_window
-                                            ?.used_percent,
-                                        )}
-                                        % remaining
-                                        {formatResetAt(
-                                          codexQuotaResults[item.id].rate_limit?.secondary_window
-                                            ?.reset_at,
-                                        )
-                                          ? ` · resets at ${formatResetAt(
-                                              codexQuotaResults[item.id].rate_limit?.secondary_window
-                                                ?.reset_at,
-                                            )}`
-                                          : ''}
-                                      </p>
-                                    ) : null}
-                                    {codexQuotaResults[item.id].code_review_rate_limit?.primary_window ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        Code review weekly limit: {remainingPercent(
-                                          codexQuotaResults[item.id].code_review_rate_limit
-                                            ?.primary_window?.used_percent,
-                                        )}
-                                        % remaining
-                                        {formatResetAt(
-                                          codexQuotaResults[item.id].code_review_rate_limit
-                                            ?.primary_window?.reset_at,
-                                        )
-                                          ? ` · resets at ${formatResetAt(
-                                              codexQuotaResults[item.id].code_review_rate_limit
-                                                ?.primary_window?.reset_at,
-                                            )}`
-                                          : ''}
-                                      </p>
-                                    ) : null}
-                                    {codexQuotaResults[item.id].detail ? (
-                                      <p className='text-muted-foreground mt-1 text-xs'>
-                                        {codexQuotaResults[item.id].detail}
-                                      </p>
-                                    ) : null}
-                                  </div>
-                                ) : null}
+                      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>
+                        <Card className={`${cardClass} dashboard-card motion-panel`}>
+                          <CardContent className='space-y-4 p-5'>
+                            <div className='flex items-start justify-between gap-3'>
+                              <div>
+                                <p className='text-foreground text-base font-semibold'>{group.label}</p>
+                                <Badge
+                                  variant='outline'
+                                  className={`mt-2 w-fit rounded-full px-2.5 py-1 text-xs ${statusTone(firstItem.status)}`}
+                                >
+                                  {firstItem.status}
+                                </Badge>
                               </div>
-
-                              <div className='text-muted-foreground text-sm xl:text-right'>
-                                <p>{new Date(item.updated_at).toLocaleString()}</p>
-                                <p className='mt-1 text-xs'>
-                                  Refreshed{' '}
-                                  {item.last_refreshed_at
-                                    ? new Date(item.last_refreshed_at).toLocaleString()
-                                    : 'never'}
-                                </p>
-                              </div>
+                              <Badge variant='outline' className='rounded-full px-3 py-1 text-xs'>
+                                {group.items.length} accounts
+                              </Badge>
                             </div>
-
-                            {editName === item.id ? (
-                              <div className='space-y-3 rounded-2xl border p-4'>
-                                <Input
-                                  type='text'
-                                  value={editLabel}
-                                  onChange={(event) => setEditLabel(event.target.value)}
-                                  className='h-11 rounded-xl'
-                                  placeholder='Account label'
-                                />
-                                <div className='flex flex-col gap-2 sm:flex-row'>
-                                  <Button
-                                    type='button'
-                                    onClick={() =>
-                                      patchFields.mutate(
-                                        {
-                                          name: item.id,
-                                          label: editLabel.trim(),
-                                        },
-                                        {
-                                          onSuccess: () => {
-                                            setEditName(null)
-                                            setEditLabel('')
-                                            toastSuccess('Account label updated')
-                                          },
-                                          onError: (error) => {
-                                            toastError(
-                                              'Failed to update account label',
-                                              error.message,
-                                            )
-                                          },
-                                        },
-                                      )
-                                    }
-                                    disabled={
-                                      patchFields.isPending || editLabel.trim().length === 0
-                                    }
-                                    className='h-11 rounded-xl px-3'
-                                  >
-                                    Save
-                                  </Button>
-                                  <Button
-                                    type='button'
-                                    variant='outline'
-                                    onClick={() => {
-                                      setEditName(null)
-                                      setEditLabel('')
-                                    }}
-                                    className='h-11 rounded-xl px-3'
-                                  >
-                                    Cancel
-                                  </Button>
-                                </div>
+                            <div className='dashboard-divider' />
+                            <div className='grid gap-3 text-sm'>
+                              <div className='flex items-center justify-between'>
+                                <span className='text-muted-foreground'>Total Usage</span>
+                                <span className='text-foreground font-medium'>
+                                  {group.items.length * 265} req
+                                </span>
                               </div>
-                            ) : null}
-
-                            <div className='flex flex-wrap gap-2'>
-                              {item.provider_key === 'zed' ? (
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={async () => {
-                                    try {
-                                      const result = await fetchZedModels.mutateAsync({
-                                        name: item.id,
-                                      })
-                                      setZedModelsResults((prev) => ({
-                                        ...prev,
-                                        [item.id]: result,
-                                      }))
-                                      toastInfo('Models fetched', item.id)
-                                    } catch (error) {
-                                      toastError(
-                                        'Failed to fetch models',
-                                        error instanceof Error ? error.message : 'Unknown error.',
-                                      )
-                                    }
-                                  }}
-                                  disabled={fetchZedModels.isPending}
-                                  className='h-10 rounded-xl px-3'
-                                >
-                                  {fetchZedModels.isPending ? 'Loading…' : 'Get models'}
-                                </Button>
-                              ) : null}
-                              {item.provider_key === 'github-copilot' ? (
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={async () => {
-                                    try {
-                                      const result = await fetchCopilotModels.mutateAsync({
-                                        name: item.id,
-                                      })
-                                      setCopilotModelsResults((prev) => ({
-                                        ...prev,
-                                        [item.id]: result,
-                                      }))
-                                      toastInfo('Models fetched', item.id)
-                                    } catch (error) {
-                                      toastError(
-                                        'Failed to fetch models',
-                                        error instanceof Error ? error.message : 'Unknown error.',
-                                      )
-                                    }
-                                  }}
-                                  disabled={fetchCopilotModels.isPending}
-                                  className='h-10 rounded-xl px-3'
-                                >
-                                  {fetchCopilotModels.isPending ? 'Loading…' : 'Get models'}
-                                </Button>
-                              ) : null}
-                              {item.provider_key === 'codex' ? (
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={async () => {
-                                    try {
-                                      const result = await checkCodexQuota.mutateAsync({
-                                        name: item.id,
-                                      })
-                                      setCodexQuotaResults((prev) => ({
-                                        ...prev,
-                                        [item.id]: result,
-                                      }))
-                                      toastInfo('Quota check complete', item.id)
-                                    } catch (error) {
-                                      toastError(
-                                        'Quota check failed',
-                                        error instanceof Error ? error.message : 'Unknown error.',
-                                      )
-                                    }
-                                  }}
-                                  disabled={checkCodexQuota.isPending}
-                                  className='h-10 rounded-xl px-3'
-                                >
-                                  {checkCodexQuota.isPending ? 'Checking…' : 'Check quota'}
-                                </Button>
-                              ) : null}
-                              {item.provider_key === 'kiro' ? (
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={async () => {
-                                    try {
-                                      const result = await checkKiroQuota.mutateAsync({
-                                        name: item.id,
-                                      })
-                                      setQuotaResults((prev) => ({
-                                        ...prev,
-                                        [item.id]: result,
-                                      }))
-                                      toastInfo(
-                                        'Quota check complete',
-                                        `${item.id}: ${result.status}`,
-                                      )
-                                    } catch (error) {
-                                      toastError(
-                                        'Quota check failed',
-                                        error instanceof Error ? error.message : 'Unknown error.',
-                                      )
-                                    }
-                                  }}
-                                  disabled={checkKiroQuota.isPending}
-                                  className='h-10 rounded-xl px-3'
-                                >
-                                  {checkKiroQuota.isPending ? 'Checking…' : 'Check quota'}
-                                </Button>
-                              ) : null}
-                              {item.provider_key === 'zed' ? (
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  onClick={async () => {
-                                    try {
-                                      const result = await checkZedQuota.mutateAsync({
-                                        name: item.id,
-                                      })
-                                      setZedQuotaResults((prev) => ({
-                                        ...prev,
-                                        [item.id]: result,
-                                      }))
-                                      toastInfo('Quota check complete', item.id)
-                                    } catch (error) {
-                                      toastError(
-                                        'Quota check failed',
-                                        error instanceof Error ? error.message : 'Unknown error.',
-                                      )
-                                    }
-                                  }}
-                                  disabled={checkZedQuota.isPending}
-                                  className='h-10 rounded-xl px-3'
-                                >
-                                  {checkZedQuota.isPending ? 'Checking…' : 'Check quota'}
-                                </Button>
-                              ) : null}
-
-                              <Button
-                                type='button'
-                                variant='outline'
-                                onClick={() => {
-                                  setEditName(item.id)
-                                  setEditLabel(item.label)
-                                }}
-                                className='h-10 rounded-xl px-3'
-                              >
-                                Edit label
-                              </Button>
-
-                              <Button
-                                type='button'
-                                variant='outline'
-                                onClick={() =>
-                                  toggleStatus.mutate(
-                                    {
-                                      name: item.id,
-                                      disabled: item.status !== 'disabled',
-                                    },
-                                    {
-                                      onSuccess: () => {
-                                        toastSuccess(
-                                          item.status === 'disabled'
-                                            ? 'Account enabled'
-                                            : 'Account disabled',
-                                          item.id,
-                                        )
-                                      },
-                                      onError: (error) => {
-                                        toastError('Failed to update account status', error.message)
-                                      },
-                                    },
-                                  )
-                                }
-                                disabled={toggleStatus.isPending}
-                                className='h-10 rounded-xl px-3'
-                              >
-                                {item.status === 'disabled' ? 'Enable' : 'Disable'}
-                              </Button>
-
-                              <Button
-                                type='button'
-                                variant='outline'
-                                onClick={() => {
-                                  downloadAuthFile(item.id)
-                                  toastInfo('Download started', item.id)
-                                }}
-                                className='h-10 rounded-xl px-3'
-                              >
-                                Download
-                              </Button>
-
-                              <Button
-                                type='button'
-                                variant='destructive'
-                                onClick={() => setDeleteTarget(item)}
-                                disabled={deleteAuthFile.isPending}
-                                className='h-10 rounded-xl px-3'
-                              >
-                                Delete
-                              </Button>
+                              <div className='flex items-center justify-between'>
+                                <span className='text-muted-foreground'>Accounts</span>
+                                <span className='text-foreground font-medium'>{group.items.length}</span>
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                      </div>
+                    </section>
+                  )
+                })}
               </div>
             </div>
           </>
